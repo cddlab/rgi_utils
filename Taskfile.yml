@@ -4,16 +4,16 @@ tasks:
   lint:
     desc: Run ruff linter and formatter check
     cmds:
-      - uv run ruff check .
-      - uv run ruff format --check .
+      - uv run --no-sync ruff check .
+      - uv run --no-sync ruff format --check .
 
   format:
     desc: Run ruff formatter
     cmds:
-      - uv run ruff format .
-      - uv run ruff check --fix .
+      - uv run --no-sync ruff format .
+      - uv run --no-sync ruff check --fix .
 
   test:
-    desc: Run pytest
+    desc: Run pytest using /venv Python (preserves existing torch ecosystem)
     cmds:
-      - uv run pytest
+      - PYTHONPATH=src /venv/bin/python3 -m pytest

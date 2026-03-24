@@ -1,7 +1,7 @@
 [project]
 name = "rgi-utils"
 version = "0.1.0"
-description = "Add your description here"
+description = "Restraint-Guided Inference utilities for PyTorch-based structure prediction models"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = []
@@ -11,6 +11,13 @@ dev = [
     "pytest>=9.0.2",
     "ruff>=0.15.7",
 ]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.ruff]
 line-length = 88
