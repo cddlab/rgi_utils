@@ -12,8 +12,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --frozen
       - name: Lint
         run: |
           uv run ruff check .
@@ -24,7 +26,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true       # cache ~/.cache/uv keyed on uv.lock
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --frozen      # exact versions from uv.lock, no re-resolution
       - name: Test
-        run: uv run pytest
+        run: uv run pytest -m "not gpu"

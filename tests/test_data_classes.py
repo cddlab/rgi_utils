@@ -5,7 +5,7 @@ import pytest
 
 from rgi_utils.angle_restr_data import AngleData
 from rgi_utils.bond_restr_data import BondData
-from rgi_utils.chiral_data import ChiralData, calc_chiral_vol
+from rgi_utils.chiral_data import ChiralData, calc_chiral_vol, length, unit_vec
 
 
 class TestBondData:
@@ -48,6 +48,30 @@ class TestBondData:
         crds2 = np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
         assert b.calc(crds2) > 0.0
 
+    def test_slack_lower_bound(self):
+        # dist=1.2 < r1=1.3 → delta = 1.2 - 1.3 = -0.1 → ene = 0.01
+        b = self._make_bond(r0=1.5, w=1.0, slack=0.2)
+        crds = np.array([[0.0, 0.0, 0.0], [1.2, 0.0, 0.0]])
+        assert b.calc(crds) == pytest.approx(0.01)
+
+    def test_half_bond_no_energy_when_compressed(self):
+        # half=True: no energy when dist < r0 (compressed)
+        b = BondData(0, 1, r0=2.0, w=1.0, slack=0.0, half=True)
+        crds = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        assert b.calc(crds) == 0.0
+
+    def test_half_bond_energy_when_stretched(self):
+        # half=True: normal energy when dist > r0 (stretched)
+        b = BondData(0, 1, r0=1.0, w=1.0, slack=0.0, half=True)
+        crds = np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+        assert b.calc(crds) == pytest.approx(1.0)
+
+    def test_calc_sd(self):
+        b = self._make_bond(r0=1.0)
+        crds = np.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
+        # (3.0 - 1.0)^2 = 4.0
+        assert b.calc_sd(crds) == pytest.approx(4.0)
+
 
 class TestAngleData:
     def _make_angle(self, th0, w=1.0, slack=0.0):
@@ -85,6 +109,24 @@ class TestAngleData:
         grad = np.zeros_like(crds)
         a.grad(crds, grad)
         assert np.any(np.abs(grad) > 0)
+
+    def test_slack_no_energy_within_range(self):
+        slack = math.radians(10.0)
+        th0 = math.radians(90.0)
+        a = self._make_angle(th0=th0, w=1.0, slack=slack)
+        # 95 deg is inside [80, 100] → no energy
+        th = math.radians(95.0)
+        crds = np.array(
+            [[1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [math.cos(th), math.sin(th), 0.0]]
+        )
+        assert a.calc(crds) == 0.0
+
+    def test_calc_sd(self):
+        th0 = math.radians(90.0)
+        a = self._make_angle(th0=th0)
+        # 180 deg (straight): deviation = 90 deg
+        crds = np.array([[-1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        assert a.calc_sd(crds) == pytest.approx(90.0**2)
 
 
 class TestChiralData:
@@ -128,3 +170,47 @@ class TestChiralData:
         grad = np.zeros_like(crds_inv)
         c.grad(crds_inv, grad)
         assert np.any(np.abs(grad) > 0)
+
+    def test_calc_sd_at_ideal(self):
+        crds = self._tetrahedral_crds()
+        vol = calc_chiral_vol(crds, 0, [1, 2, 3])
+        c = self._make_chiral(vol)
+        assert c.calc_sd(crds) == pytest.approx(0.0)
+
+    def test_calc_sd_inverted(self):
+        crds = self._tetrahedral_crds()
+        vol = calc_chiral_vol(crds, 0, [1, 2, 3])
+        c = self._make_chiral(vol)
+        crds_inv = crds.copy()
+        crds_inv[3] = [0.0, 0.0, -1.0]
+        # actual vol = -1.0, chiral_vol = 1.0 → sd = (−1−1)^2 = 4.0
+        assert c.calc_sd(crds_inv) == pytest.approx(4.0)
+
+    def test_negative_chiral_vol_slack(self):
+        # negative chiral_vol: threshold = chiral_vol + slack
+        crds = self._tetrahedral_crds()
+        crds[3] = [0.0, 0.0, -1.0]  # inverted → vol = −1.0
+        vol = calc_chiral_vol(crds, 0, [1, 2, 3])
+        assert vol < 0
+        c = ChiralData(0, 1, 2, 3, chiral_vol=vol, w=1.0, slack=0.0)
+        assert c.calc(crds) == pytest.approx(0.0, abs=1e-10)
+
+
+class TestHelperFunctions:
+    def test_length(self):
+        v = np.array([3.0, 4.0, 0.0])
+        assert length(v) == pytest.approx(5.0)
+
+    def test_unit_vec(self):
+        v = np.array([3.0, 0.0, 0.0])
+        u, vl = unit_vec(v)
+        assert vl == pytest.approx(3.0)
+        assert np.allclose(u, [1.0, 0.0, 0.0])
+
+    def test_calc_chiral_vol(self):
+        # v1=(1,0,0), v2=(0,1,0), v3=(0,0,1): triple product = 1.0
+        crds = np.array(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+        )
+        vol = calc_chiral_vol(crds, 0, [1, 2, 3])
+        assert vol == pytest.approx(1.0)
