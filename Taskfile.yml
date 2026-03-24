@@ -17,3 +17,8 @@ tasks:
     desc: Run pytest using /venv Python (preserves existing torch ecosystem)
     cmds:
       - PYTHONPATH=src /venv/bin/python3 -m pytest
+
+  test-ci:
+    desc: Run only non-GPU tests (mirrors CI environment)
+    cmds:
+      - PYTHONPATH=src /venv/bin/python3 -m pytest -m "not gpu"

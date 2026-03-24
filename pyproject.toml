@@ -4,7 +4,14 @@ version = "0.1.0"
 description = "Restraint-Guided Inference utilities for PyTorch-based structure prediction models"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "numpy",
+    "rdkit",
+    "scipy",
+    "pytorch-minimize",
+    "torch==2.6.0",
+    "torch-cluster",
+]
 
 [dependency-groups]
 dev = [
@@ -19,6 +26,19 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.uv]
+# Pre-built CPU wheels for torch-cluster (must match torch version above)
+find-links = ["https://data.pyg.org/whl/torch-2.6.0+cpu.html"]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+# Install CPU-only torch to keep CI image small and fast
+torch = [{ index = "pytorch-cpu" }]
+
 [tool.ruff]
 line-length = 88
 
@@ -27,3 +47,6 @@ select = ["E", "F", "I"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "gpu: requires a GPU (deselect with '-m \"not gpu\"')",
+]

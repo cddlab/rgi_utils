@@ -1,7 +1,10 @@
+import numpy as np
+import pytest
 import torch
 
 from rgi_utils import CombinedRestraints
 from rgi_utils.atom_context import AtomRecord
+from rgi_utils.bond_restr_data import BondData
 
 
 class MockAdapter:
@@ -110,3 +113,44 @@ class TestDistanceRestraintIntegration:
 
         assert set(dist_restr.target_sites1) == {0, 1}
         assert set(dist_restr.target_sites2) == {2, 3}
+
+
+class TestCombinedRestraintsCalcGrad:
+    """Integration tests for CombinedRestraints.calc() and grad()."""
+
+    def setup_method(self):
+        _reset_singleton()
+
+    def _cr_with_bond(self, r0: float, w: float = 1.0) -> CombinedRestraints:
+        cr = CombinedRestraints.get_instance()
+        cr.set_config({})
+        cr.bond_data.append(BondData(0, 1, r0=r0, w=w))
+        cr.nbatch = 1
+        cr.natoms = 2
+        return cr
+
+    def test_calc_zero_at_ideal(self):
+        cr = self._cr_with_bond(r0=2.0)
+        crds = np.array([[[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]]]).reshape(-1)
+        assert cr.calc(crds) == pytest.approx(0.0)
+
+    def test_calc_nonzero_when_stretched(self):
+        cr = self._cr_with_bond(r0=1.0)
+        crds = np.array([[[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]]]).reshape(-1)
+        # w=1, delta=2 → energy = 4
+        assert cr.calc(crds) == pytest.approx(4.0)
+
+    def test_grad_nonzero_when_stretched(self):
+        cr = self._cr_with_bond(r0=1.0)
+        crds = np.array([[[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]]]).reshape(-1)
+        g = cr.grad(crds)
+        assert np.any(np.abs(g) > 0)
+
+    def test_reset_indices_clears_bond_atom_refs(self):
+        cr = CombinedRestraints.get_instance()
+        cr.set_config({})
+        b = BondData(5, 7, r0=1.0)
+        cr.bond_data.append(b)
+        cr.reset_indices()
+        assert b.aid0 == -1
+        assert b.aid1 == -1
