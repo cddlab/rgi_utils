@@ -58,11 +58,13 @@ class TestAngleData:
         th0 = math.radians(109.5)
         a = self._make_angle(th0=th0, slack=math.radians(1.0))
         # Place atoms at th0 angle
-        crds = np.array([
-            [1.0, 0.0, 0.0],
-            [0.0, 0.0, 0.0],
-            [math.cos(th0), math.sin(th0), 0.0],
-        ])
+        crds = np.array(
+            [
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [math.cos(th0), math.sin(th0), 0.0],
+            ]
+        )
         assert a.calc(crds) == 0.0
 
     def test_calc_nonzero_when_bent(self):
@@ -92,12 +94,14 @@ class TestChiralData:
 
     def _tetrahedral_crds(self):
         # ideal tetrahedral geometry centered at atom 0
-        return np.array([
-            [0.0, 0.0, 0.0],   # center
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0],
-        ])
+        return np.array(
+            [
+                [0.0, 0.0, 0.0],  # center
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ]
+        )
 
     def test_calc_zero_at_ideal(self):
         crds = self._tetrahedral_crds()

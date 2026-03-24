@@ -252,8 +252,7 @@ class RestrTorchImpl:
         else:
             self.vdw_liglig_idx = None
 
-    def update_intra_vdw_idx(self, vdw_thr: float,
-                             lig_crds: torch.Tensor) -> None:
+    def update_intra_vdw_idx(self, vdw_thr: float, lig_crds: torch.Tensor) -> None:
         # ligand-ligand
         idx_j_lig, idx_i_lig = torch_cluster.radius(
             x=lig_crds,
@@ -504,14 +503,14 @@ class RestrTorchImpl:
 
             batch_offsets = torch.arange(self.nbatch, device=self.device) * self.natoms
 
-            sites1_indices_global = (
-                restr["sites1"].unsqueeze(0) + batch_offsets.unsqueeze(1)
-            )
+            sites1_indices_global = restr["sites1"].unsqueeze(
+                0
+            ) + batch_offsets.unsqueeze(1)
             sites1_indices_global = sites1_indices_global.view(-1)
 
-            sites2_indices_global = (
-                restr["sites2"].unsqueeze(0) + batch_offsets.unsqueeze(1)
-            )
+            sites2_indices_global = restr["sites2"].unsqueeze(
+                0
+            ) + batch_offsets.unsqueeze(1)
             sites2_indices_global = sites2_indices_global.view(-1)
 
             source1 = (

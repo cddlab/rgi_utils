@@ -23,9 +23,11 @@ class BoltzFeatsAdapter:
 
         # compute per-atom asym_id by matrix-multiplying atom_to_token with token
         # asym_ids
-        asym_id_atom = torch.bmm(
-            atom_to_token.float(), asym_id_token.unsqueeze(-1).float()
-        ).squeeze(-1).long()
+        asym_id_atom = (
+            torch.bmm(atom_to_token.float(), asym_id_token.unsqueeze(-1).float())
+            .squeeze(-1)
+            .long()
+        )
         # asym_id_atom shape: (batch, natoms) — filter by pad mask (batch=0 only)
         asym_id_atom_b0 = asym_id_atom[0]
         atom_to_token_b0 = atom_to_token[0]

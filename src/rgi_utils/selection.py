@@ -3,10 +3,10 @@ from typing import Dict, List, Protocol, Union, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
+
 @runtime_checkable
 class SelectionNode(Protocol):
-    def eval(self, mol: Dict[str, Union[str, int]]) -> bool:
-        ...
+    def eval(self, mol: Dict[str, Union[str, int]]) -> bool: ...
 
     def __repr__(self) -> str:
         attrs = ", ".join(f"{k}={v!r}" for k, v in self.__dict__.items())
@@ -21,58 +21,74 @@ class SelectionNode(Protocol):
 class Chain(SelectionNode):
     def __init__(self, names: List[str]):
         self.names = names
+
     def eval(self, mol: Dict[str, Union[str, int]]) -> bool:
         chain = mol.get("chain")
         return isinstance(chain, str) and chain in self.names
 
+
 class ResId(SelectionNode):
     def __init__(self, ids: List[int]):
         self.ids = ids
+
     def eval(self, mol: Dict[str, Union[str, int]]) -> bool:
         resid = mol.get("resid")
         return isinstance(resid, int) and resid in self.ids
 
+
 class Index(SelectionNode):
     def __init__(self, indices: List[int]):
         self.indices = indices
+
     def eval(self, mol: Dict[str, Union[str, int]]) -> bool:
         index = mol.get("index")
         return isinstance(index, int) and index in self.indices
 
+
 class Not(SelectionNode):
     def __init__(self, selection: SelectionNode):
         self.selection = selection
+
     def eval(self, mol: Dict[str, Union[str, int]]) -> bool:
         return not self.selection.eval(mol)
+
 
 class And(SelectionNode):
     def __init__(self, selections: List[SelectionNode]):
         self.selections = selections
+
     def eval(self, mol: Dict[str, Union[str, int]]) -> bool:
         if not self.selections:
             return True
         return all(s.eval(mol) for s in self.selections)
 
+
 class Or(SelectionNode):
     def __init__(self, selections: List[SelectionNode]):
         self.selections = selections
+
     def eval(self, mol: Dict[str, Union[str, int]]) -> bool:
         if not self.selections:
             return False
         return any(s.eval(mol) for s in self.selections)
 
+
 class Bracket(SelectionNode):
     def __init__(self, selection: SelectionNode):
         self.selection = selection
+
     def eval(self, mol: Dict[str, Union[str, int]]) -> bool:
         return self.selection.eval(mol)
+
 
 # --- Parser Error ---
 class ParseError(ValueError):
     pass
 
+
 # --- Parser Class ---
 RESERVED_KEYWORDS = {"and", "or", "not", "to", "resid", "index", "chain"}
+
 
 class SelectionParser:
     def __init__(self, text: str):
@@ -92,8 +108,10 @@ class SelectionParser:
 
     def _consume_tag(self, tag: str):
         if self.text.startswith(tag, self.pos):
-            if tag.isalpha() and (self.pos + len(tag) < len(self.text) and \
-                                  self.text[self.pos + len(tag)].isalnum()):
+            if tag.isalpha() and (
+                self.pos + len(tag) < len(self.text)
+                and self.text[self.pos + len(tag)].isalnum()
+            ):
                 pass
             self.pos += len(tag)
             return tag
@@ -115,7 +133,7 @@ class SelectionParser:
             self.pos += 1
             while self.pos < len(self.text) and self.text[self.pos].isalnum():
                 self.pos += 1
-            return self.text[start_pos:self.pos]
+            return self.text[start_pos : self.pos]
         raise ParseError(f"Expected alphanumeric characters at position {self.pos}")
 
     def _parse_digit1(self) -> str:
@@ -124,7 +142,7 @@ class SelectionParser:
             self.pos += 1
             while self.pos < len(self.text) and self.text[self.pos].isdigit():
                 self.pos += 1
-            return self.text[start_pos:self.pos]
+            return self.text[start_pos : self.pos]
         raise ParseError(f"Expected digits at position {self.pos}")
 
     def _parse_usize(self) -> int:
@@ -199,7 +217,9 @@ class SelectionParser:
     # --- Grammar hierarchy ---
     def _parse_atom(self) -> SelectionNode:
         atom_parsers = [
-            self._parse_chain, self._parse_resid, self._parse_index,
+            self._parse_chain,
+            self._parse_resid,
+            self._parse_index,
         ]
         for parser_func in atom_parsers:
             saved_pos = self.pos
@@ -213,9 +233,9 @@ class SelectionParser:
         )
 
     def _parse_bracket(self) -> SelectionNode:
-        self._consume_char('(')
+        self._consume_char("(")
         expr = self.parse_expr()
-        self._consume_char(')')
+        self._consume_char(")")
         return Bracket(expr)
 
     def _parse_primary(self) -> SelectionNode:
@@ -290,7 +310,7 @@ class SelectionParser:
         parsed_node = self.parse_expr()
         if self.pos < len(self.text):
             raise ParseError(
-                f"Unexpected trailing characters: '{self.text[self.pos:]}'"
+                f"Unexpected trailing characters: '{self.text[self.pos :]}'"
                 f" at position {self.pos}"
             )
         return parsed_node
@@ -303,6 +323,7 @@ def parse_selection(selection_string: str) -> Union[SelectionNode, str]:
         return parser.parse()
     except ParseError as e:
         return str(e)
+
 
 # --- AtomSelector Class ---
 class AtomSelector:

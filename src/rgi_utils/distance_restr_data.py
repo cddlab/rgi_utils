@@ -51,8 +51,7 @@ class DistanceData:
                 self.distance_restraint_type = "harmonic"
                 self.target_distance = float(self.target_distance)
             else:
-                logger.error("target_distance is None")
-                exit(1)
+                raise ValueError("target_distance is None")
         elif "flat-bottomed" in config:
             self.target_distance1 = config["flat-bottomed"].get(
                 "target_distance1", None
@@ -65,13 +64,11 @@ class DistanceData:
                 self.target_distance1 = float(self.target_distance1)
                 self.target_distance2 = float(self.target_distance2)
                 if self.target_distance1 > self.target_distance2:
-                    logger.error(
+                    raise ValueError(
                         "target_distance1 must be smaller than target_distance2"
                     )
-                    exit(1)
             else:
-                logger.error("target_distance1 or 2 is None")
-                exit(1)
+                raise ValueError("target_distance1 or 2 is None")
         elif "flat-bottomed1" in config:
             self.target_distance1 = config["flat-bottomed1"].get(
                 "target_distance1", None
@@ -80,8 +77,7 @@ class DistanceData:
                 self.distance_restraint_type = "flat-bottomed1"
                 self.target_distance1 = float(self.target_distance1)
             else:
-                logger.error("target_distance1 is None")
-                exit(1)
+                raise ValueError("target_distance1 is None")
         elif "flat-bottomed2" in config:
             self.target_distance2 = config["flat-bottomed2"].get(
                 "target_distance2", None
@@ -90,8 +86,7 @@ class DistanceData:
                 self.distance_restraint_type = "flat-bottomed2"
                 self.target_distance2 = float(self.target_distance2)
             else:
-                logger.error("target_distance2 is None")
-                exit(1)
+                raise ValueError("target_distance2 is None")
         self.run_restr = (
             (self.atom_selection1 is not None)
             and (self.atom_selection2 is not None)
@@ -99,12 +94,10 @@ class DistanceData:
         )
 
         if self.calc_method not in ["unfixed-absolute"]:
-            logger.error("calc_method must be unfixed-absolute")
-            exit(1)
+            raise ValueError("calc_method must be unfixed-absolute")
 
         if not self.run_restr:
-            logger.error("distance restraints not run")
-            exit(1)
+            raise ValueError("distance restraints not run")
 
         logger.info(f"{self.distance_restraint_type=}")
 
@@ -166,7 +159,7 @@ class DistanceData:
                 delta = dist - self.target_distance2
         else:
             raise NotImplementedError
-        return delta ** 2
+        return delta**2
 
     def grad(self, crds: np.ndarray, grad: np.ndarray) -> None:
         if self.calc_method == "unfixed-absolute":
@@ -229,4 +222,4 @@ class DistanceData:
         ):
             delta = dist - self.target_distance2
 
-        return delta ** 2
+        return delta**2
