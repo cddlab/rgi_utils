@@ -1,5 +1,6 @@
 import pytest
-from rgi_utils.selection import AtomSelector, ParseError
+
+from rgi_utils.selection import AtomSelector
 
 
 def mol(chain="A", resid=1, index=0):

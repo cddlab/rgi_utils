@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
+
 import numpy as np
+
 from rgi_utils.chiral_data import length
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -95,7 +100,7 @@ class BondData:
         v1 = a0 - a1
         n1l = length(v1)
 
-        print(  # noqa: T201
+        logger.info(
             f"B {self.aid0}-{self.aid1}:"
             f" cur {n1l:.2f} ref {self.r0:.2f} dif {n1l - self.r0:.2f}"
         )

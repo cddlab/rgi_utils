@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import logging
+
+import numpy as np
 import torch
-from rgi_utils.bond_restr_data import BondData
+import torch_cluster
+from rdkit import Chem
+from torchmin.function import ScalarFunction, de_value, sf_value
+
 from rgi_utils.angle_restr_data import AngleData
+from rgi_utils.bond_restr_data import BondData
 from rgi_utils.chiral_data import ChiralData
 from rgi_utils.distance_restr_data import DistanceData
-from torchmin.function import sf_value, ScalarFunction, de_value
-import torch_cluster
-import numpy as np
-from rdkit import Chem
+
+logger = logging.getLogger(__name__)
 
 
 def calculate_distances(atom_pos: torch.Tensor, atom_idx: torch.Tensor):
@@ -53,15 +58,15 @@ class RestrTorchImpl:
         """Prepare bond indices and r0s for the given bond data."""
         if len(bond_data) == 0:
             self.use_bonds = False
-            print(f"{self.use_bonds=}")
+            logger.info(f"{self.use_bonds=}")
             return
         elif bond_data[0].w <= 0.0:
             self.use_bonds = False
-            print(f"{self.use_bonds=}")
+            logger.info(f"{self.use_bonds=}")
             return
         else:
             self.use_bonds = True
-        print(f"{self.use_bonds=}")
+        logger.info(f"{self.use_bonds=}")
 
         data = []
         r0s = []
@@ -87,15 +92,15 @@ class RestrTorchImpl:
         """Prepare angle indices and th0s for the given angle data."""
         if len(angle_data) == 0:
             self.use_angles = False
-            print(f"{self.use_angles=}")
+            logger.info(f"{self.use_angles=}")
             return
         elif angle_data[0].w <= 0.0:
             self.use_angles = False
-            print(f"{self.use_angles=}")
+            logger.info(f"{self.use_angles=}")
             return
         else:
             self.use_angles = True
-        print(f"{self.use_angles=}")
+        logger.info(f"{self.use_angles=}")
 
         device = self.device
         data = []
@@ -123,15 +128,15 @@ class RestrTorchImpl:
         """Prepare chiral indices and volumes for the given chiral data."""
         if len(ch_data) == 0:
             self.use_chirals = False
-            print(f"{self.use_chirals=}")
+            logger.info(f"{self.use_chirals=}")
             return
         elif ch_data[0].w <= 0.0:
             self.use_chirals = False
-            print(f"{self.use_chirals=}")
+            logger.info(f"{self.use_chirals=}")
             return
         else:
             self.use_chirals = True
-        print(f"{self.use_chirals=}")
+        logger.info(f"{self.use_chirals=}")
 
         device = self.device
         data = []
@@ -161,7 +166,7 @@ class RestrTorchImpl:
                     return 0.0
                 return peri.GetRvdw(int(x))
             except Exception as e:
-                print(f"elem2rvdw: {x}: {e}")
+                logger.warning(f"elem2rvdw: {x}: {e}")
                 return 0.0
 
         vdwr = np.vectorize(elem2rvdw)(elems)
@@ -181,11 +186,11 @@ class RestrTorchImpl:
             self.use_vdw = False
         else:
             self.use_vdw = True
-        print(f"{self.use_vdw=}")
+        logger.info(f"{self.use_vdw=}")
 
         device = self.device
         atoms = np.arange(natoms)
-        print(f"Atoms: {atoms=}")
+        logger.info(f"Atoms: {atoms=}")
 
         self.ligand_idx = torch.tensor(ligand_atoms, device=device, dtype=torch.long)
         self.prot_idx = torch.tensor(
@@ -210,7 +215,7 @@ class RestrTorchImpl:
             self.vdw_scale = config.get("scale", 0.75)
             self.vdw_dmax = config.get("dmax", 5.0)
             self.vdw_lig_only = config.get("ligand_only", False)
-            print(
+            logger.info(
                 f"Use VdW restr scale={self.vdw_scale}, dmax={self.vdw_dmax},"
                 f" ligand_only={self.vdw_lig_only}"
             )
@@ -265,7 +270,9 @@ class RestrTorchImpl:
             idx_i_lig_global = self.lind_flat[idx_i_lig]
             idx_j_lig_global = self.lind_flat[idx_j_lig]
 
-            self.vdw_liglig_idx = torch.stack([idx_i_lig_global, idx_j_lig_global], dim=1)
+            self.vdw_liglig_idx = torch.stack(
+                [idx_i_lig_global, idx_j_lig_global], dim=1
+            )
 
             vdwr1 = self.vdwr[self.vdw_liglig_idx[:, 0]]
             vdwr2 = self.vdwr[self.vdw_liglig_idx[:, 1]]
@@ -275,7 +282,11 @@ class RestrTorchImpl:
                 sorted_vdw_pairs = torch.sort(self.vdw_liglig_idx, dim=1)[0]
                 sorted_bond_pairs = torch.sort(self.bond_idx, dim=1)[0]
 
-                is_bond_mask = (sorted_vdw_pairs.unsqueeze(1) == sorted_bond_pairs.unsqueeze(0)).all(dim=2).any(dim=1)
+                is_bond_mask = (
+                    (sorted_vdw_pairs.unsqueeze(1) == sorted_bond_pairs.unsqueeze(0))
+                    .all(dim=2)
+                    .any(dim=1)
+                )
 
                 keep_mask = ~is_bond_mask
 
@@ -287,14 +298,16 @@ class RestrTorchImpl:
         else:
             self.vdw_liglig_idx = None
 
-    def setup_distance(self, distance_data: list[DistanceData], nbatch: int, natoms: int):
+    def setup_distance(
+        self, distance_data: list[DistanceData], nbatch: int, natoms: int
+    ):
         if len(distance_data) == 0:
             self.use_distance = False
-            print(f"{self.use_distance=}")
+            logger.info(f"{self.use_distance=}")
             return
         else:
             self.use_distance = True
-            print(f"{self.use_distance=}")
+            logger.info(f"{self.use_distance=}")
         self.distance_restraints = []
         device = self.device
 
@@ -303,8 +316,12 @@ class RestrTorchImpl:
                 continue
 
             restr_info = {
-                "sites1": torch.tensor(dist_restr.target_local_sites1, dtype=torch.long, device=device),
-                "sites2": torch.tensor(dist_restr.target_local_sites2, dtype=torch.long, device=device),
+                "sites1": torch.tensor(
+                    dist_restr.target_local_sites1, dtype=torch.long, device=device
+                ),
+                "sites2": torch.tensor(
+                    dist_restr.target_local_sites2, dtype=torch.long, device=device
+                ),
                 "type": dist_restr.distance_restraint_type,
                 "target_dist": dist_restr.target_distance,
                 "target_dist1": dist_restr.target_distance1,
@@ -317,7 +334,7 @@ class RestrTorchImpl:
         if len(self.distance_restraints) == 0:
             self.use_distance = False
 
-        print(f"{self.use_distance=}")
+        logger.info(f"{self.use_distance=}")
 
     def calc_bond_grad(
         self,
@@ -487,14 +504,26 @@ class RestrTorchImpl:
 
             batch_offsets = torch.arange(self.nbatch, device=self.device) * self.natoms
 
-            sites1_indices_global = restr["sites1"].unsqueeze(0) + batch_offsets.unsqueeze(1)
+            sites1_indices_global = (
+                restr["sites1"].unsqueeze(0) + batch_offsets.unsqueeze(1)
+            )
             sites1_indices_global = sites1_indices_global.view(-1)
 
-            sites2_indices_global = restr["sites2"].unsqueeze(0) + batch_offsets.unsqueeze(1)
+            sites2_indices_global = (
+                restr["sites2"].unsqueeze(0) + batch_offsets.unsqueeze(1)
+            )
             sites2_indices_global = sites2_indices_global.view(-1)
 
-            source1 = grad_atom1.unsqueeze(1).expand(-1, restr["num_sites1"], -1).reshape(-1, 3)
-            source2 = grad_atom2.unsqueeze(1).expand(-1, restr["num_sites2"], -1).reshape(-1, 3)
+            source1 = (
+                grad_atom1.unsqueeze(1)
+                .expand(-1, restr["num_sites1"], -1)
+                .reshape(-1, 3)
+            )
+            source2 = (
+                grad_atom2.unsqueeze(1)
+                .expand(-1, restr["num_sites2"], -1)
+                .reshape(-1, 3)
+            )
 
             grad.index_add_(0, sites1_indices_global, source1)
             grad.index_add_(0, sites2_indices_global, source2)
@@ -516,11 +545,11 @@ class RestrTorchImpl:
             flag = x < 0
 
             for ib in range(self.nbatch):
-                print(f"Protein-Ligand contacts: batch {ib}")
+                logger.info(f"Protein-Ligand contacts: batch {ib}")
                 d = dist[idx == ib]
                 f = flag[idx == ib]
-                print(f"  num of d < {self.vdw_scale}: {int(f.sum())}")
-                print(f"  min dist: {float(d.min())}")
+                logger.info(f"  num of d < {self.vdw_scale}: {int(f.sum())}")
+                logger.info(f"  min dist: {float(d.min())}")
 
         if self.vdw_liglig_idx is not None:
             atom_pos = atom_pos.reshape(-1, 3)
@@ -532,11 +561,11 @@ class RestrTorchImpl:
             flag = x < 0
 
             for ib in range(self.nbatch):
-                print(f"Ligand-Ligand contacts: batch {ib}")
+                logger.info(f"Ligand-Ligand contacts: batch {ib}")
                 d = dist[idx == ib]
                 f = flag[idx == ib]
-                print(f"  num of d < {self.vdw_scale}: {int(f.sum())}")
-                print(f"  min dist: {float(d.min())}")
+                logger.info(f"  num of d < {self.vdw_scale}: {int(f.sum())}")
+                logger.info(f"  min dist: {float(d.min())}")
 
     def grad(self, crds: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         device = self.device
@@ -552,7 +581,9 @@ class RestrTorchImpl:
             f += self.calc_chiral_grad(gpu_crds, gpu_grad)
         if self.use_distance:
             f += self.calc_distance_grad(gpu_crds, gpu_grad)
-        if self.use_vdw and (self.vdw_idx is not None or self.vdw_liglig_idx is not None):
+        if self.use_vdw and (
+            self.vdw_idx is not None or self.vdw_liglig_idx is not None
+        ):
             f += self.calc_vdw_grad(gpu_crds, gpu_grad)
 
         gpu_grad = gpu_grad.reshape(-1)

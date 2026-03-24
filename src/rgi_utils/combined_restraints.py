@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 import itertools
+import logging
 
 import numpy as np
 import torch
+import torchmin
 from rdkit import Chem
 from scipy import optimize
-import torchmin
-from rgi_utils.chiral_data import ChiralData, calc_chiral_vol
-from rgi_utils.angle_restr_data import AngleData, get_angle_idxs
-from rgi_utils.bond_restr_data import BondData
-from rgi_utils.distance_restr_data import DistanceData
-from rgi_utils.atom_context import FrameworkAdapter
 
-from rgi_utils.torch_restr_impl import RestrTorchImpl, MyScalarFunc
+from rgi_utils.angle_restr_data import AngleData, get_angle_idxs
+from rgi_utils.atom_context import FrameworkAdapter
+from rgi_utils.bond_restr_data import BondData
+from rgi_utils.chiral_data import ChiralData, calc_chiral_vol
+from rgi_utils.distance_restr_data import DistanceData
+from rgi_utils.torch_restr_impl import MyScalarFunc, RestrTorchImpl
+
+logger = logging.getLogger(__name__)
 
 
 class CombinedRestraints:
@@ -150,7 +153,7 @@ class CombinedRestraints:
     def _get_parsed_atom(self, chains, keys):
         cnam, ires, anam = keys
         if cnam not in chains:
-            print(f"{cnam=} not found in chains")
+            logger.warning(f"{cnam=} not found in chains")
             return None, None
         res = None
         for r in chains[cnam].residues:
@@ -158,14 +161,14 @@ class CombinedRestraints:
                 res = r
                 break
         if res is None:
-            print(f"{ires=} not found in {cnam=}")
+            logger.warning(f"{ires=} not found in {cnam=}")
             return None, None
 
         for i, a in enumerate(res.atoms):
             if a.name == anam:
                 return i, res.atoms
 
-        print(f"{anam=} not found in {cnam=}, {ires=}")
+        logger.warning(f"{anam=} not found in {cnam=}, {ires=}")
         return None, None
 
     def link_bonds_by_conf(self, chains, config) -> None:
@@ -181,11 +184,11 @@ class CombinedRestraints:
 
             ai1, atoms1 = self._get_parsed_atom(chains, atom1)
             if ai1 is None:
-                print(f"{atom1=} not found")
+                logger.warning(f"{atom1=} not found")
                 continue
             ai2, atoms2 = self._get_parsed_atom(chains, atom2)
             if ai2 is None:
-                print(f"{atom2=} not found")
+                logger.warning(f"{atom2=} not found")
                 continue
             self.make_link_bond(ai1, atoms1, ai2, atoms2, r0, half=half)
 
@@ -210,7 +213,7 @@ class CombinedRestraints:
             idxs = new_idxs
 
         if self.verbose:
-            print(f"{idxs=}")
+            logger.info(f"{idxs=}")
         for idx in idxs:
             ai, aj, ak = idx
             if atom_names is not None:
@@ -222,7 +225,7 @@ class CombinedRestraints:
                     or an2 not in atom_names
                     or an3 not in atom_names
                 ):
-                    print(f"skip {an1=} {an2=} {an3=}")
+                    logger.info(f"skip {an1=} {an2=} {an3=}")
                     continue
 
             self.make_angle(ai, aj, ak, mol, conf, atoms)
@@ -240,7 +243,7 @@ class CombinedRestraints:
         self.register_site(atoms[aj[0]], lambda x: ch.setup(x, 1))
         self.register_site(atoms[aj[1]], lambda x: ch.setup(x, 2))
         self.register_site(atoms[aj[2]], lambda x: ch.setup(x, 3))
-        print(f"chiral restr {ai} - {aj}: vol={chiral_vol:.2f}")
+        logger.info(f"chiral restr {ai} - {aj}: vol={chiral_vol:.2f}")
 
     def make_chiral(
         self,
@@ -294,7 +297,7 @@ class CombinedRestraints:
                 continue
             self.active_sites.append(ind)
 
-        print(f"{self.active_sites=}")
+        logger.info(f"{self.active_sites=}")
         if self.gpu:
             ligand_atoms = self.active_sites
             # all atoms are active sites for GPU mode
@@ -302,7 +305,7 @@ class CombinedRestraints:
         else:
             # add atom index used in distance restraints
             for dist_restr in self.distance_data:
-                print(f"{dist_restr=}")
+                logger.info(f"{dist_restr=}")
                 self.active_sites += dist_restr.target_sites1
                 self.active_sites += dist_restr.target_sites2
 
@@ -312,8 +315,8 @@ class CombinedRestraints:
         # clean active_sites: unique and sorted
         self.active_sites = sorted(set(self.active_sites))
         if self.verbose:
-            print(f"{self.active_sites=}")
-            print(f"{len(self.active_sites)=}")
+            logger.info(f"{self.active_sites=}")
+            logger.info(f"{len(self.active_sites)=}")
 
         for i, ind in enumerate(self.active_sites):
             for dist_restr in self.distance_data:
@@ -333,11 +336,14 @@ class CombinedRestraints:
         if self.verbose:
             for i, ch in enumerate(self.chiral_data):
                 if ch.is_valid():
-                    print(f"{i}: {ch.aid0}-{ch.aid1}-{ch.aid2}-{ch.aid3}")
-                    print(f"     {ltog[ch.aid0]}-{ltog[ch.aid1]}-{ltog[ch.aid2]}-{ltog[ch.aid3]}")
+                    logger.info(f"{i}: {ch.aid0}-{ch.aid1}-{ch.aid2}-{ch.aid3}")
+                    logger.info(
+                        f"     {ltog[ch.aid0]}-{ltog[ch.aid1]}"
+                        f"-{ltog[ch.aid2]}-{ltog[ch.aid3]}"
+                    )
 
         if self.gpu:
-            print(f"GPU {nbatch=}, {natoms=}")
+            logger.info(f"GPU {nbatch=}, {natoms=}")
             self.torch_impl = RestrTorchImpl(
                 self.bond_data,
                 self.angle_data,
@@ -361,8 +367,8 @@ class CombinedRestraints:
 
     def show_start(self) -> None:
         """Show the start."""
-        print("=== start restr ===")
-        print(f"{self.method=} {self.max_iter=}")
+        logger.info("=== start restr ===")
+        logger.info(f"{self.method=} {self.max_iter=}")
 
     def print_stat_tensor(self, crds_in) -> None:
         crds = crds_in.detach().cpu().numpy()
@@ -386,9 +392,9 @@ class CombinedRestraints:
                         ch.print(crds[i])
                     ch_sd += ch.calc_sd(crds[i])
                     ch_ene += ch.calc(crds[i])
-                print(f"chiral E={ch_ene:.5f}")
+                logger.info(f"chiral E={ch_ene:.5f}")
                 ch_rmsd = np.sqrt(ch_sd / len(self.chiral_data))
-                print(f"chiral rmsd={ch_rmsd:.5f}")
+                logger.info(f"chiral rmsd={ch_rmsd:.5f}")
 
             if len(self.bond_data) > 0:
                 b_ene = 0.0
@@ -398,9 +404,9 @@ class CombinedRestraints:
                         b.print(crds[i])
                     b_ene += b.calc(crds[i])
                     b_sd += b.calc_sd(crds[i])
-                print(f"bond E={b_ene:.5f}")
+                logger.info(f"bond E={b_ene:.5f}")
                 b_rmsd = np.sqrt(b_sd / len(self.bond_data))
-                print(f"bond rmsd={b_rmsd:.5f}")
+                logger.info(f"bond rmsd={b_rmsd:.5f}")
 
             if len(self.angle_data) > 0:
                 a_ene = 0.0
@@ -410,9 +416,9 @@ class CombinedRestraints:
                         a.print(crds[i])
                     a_ene += a.calc(crds[i])
                     a_sd += a.calc_sd(crds[i])
-                print(f"angle E={a_ene:.5f}")
+                logger.info(f"angle E={a_ene:.5f}")
                 a_rmsd = np.sqrt(a_sd / len(self.angle_data))
-                print(f"angle rmsd={a_rmsd:.5f}")
+                logger.info(f"angle rmsd={a_rmsd:.5f}")
 
             if len(self.distance_data) > 0:
                 d_ene = 0.0
@@ -422,9 +428,9 @@ class CombinedRestraints:
                         d.print(crds[i])
                     d_ene += d.calc(crds[i])
                     d_sd += d.calc_sd(crds[i])
-                print(f"distance E={d_ene:.5f}")
+                logger.info(f"distance E={d_ene:.5f}")
                 d_rmsd = np.sqrt(d_sd / len(self.distance_data))
-                print(f"distance rmsd={d_rmsd:.5f}")
+                logger.info(f"distance rmsd={d_rmsd:.5f}")
 
     def minimize(self, batch_crds_in: torch.Tensor, istep: int, sigma_t: float) -> None:
         """Minimize the restraints."""
@@ -435,7 +441,7 @@ class CombinedRestraints:
         crds_in = batch_crds_in
 
         if self.verbose:
-            print(f"=== minimization {istep} ===")  # noqa: T201
+            logger.info(f"=== minimization {istep} ===")
 
         if self.gpu:
             self.minimize_gpu(crds_in, istep)
@@ -470,18 +476,18 @@ class CombinedRestraints:
         opt = torchmin.minimize(func, crds, method=self.method, options=options)
 
         if self.verbose:
-            print(f"{opt.message=}")
-            print(f"{opt.success=}")
-            print(f"{opt.status=}")
+            logger.info(f"{opt.message=}")
+            logger.info(f"{opt.success=}")
+            logger.info(f"{opt.status=}")
 
         crds_in[:] = opt.x
 
         if self.verbose:
-            print(f"step {istep} done")
+            logger.info(f"step {istep} done")
 
     def finalize(self, batch_crds_in: torch.Tensor, istep: int) -> None:
         """Finalize the restraints."""
-        print(f"=== final stats {istep} ===")
+        logger.info(f"=== final stats {istep} ===")
         self.print_stat_tensor(batch_crds_in)
 
     def calc(self, crds_in: np.ndarray) -> float:

@@ -17,11 +17,12 @@ class BoltzFeatsAdapter:
         """Iterate over all non-padded atoms, yielding AtomRecord for each."""
         feats = self.feats
         asym_id_token = feats["asym_id"]
-        atom_pad_mask = feats["atom_pad_mask"]
+        _atom_pad_mask = feats["atom_pad_mask"]
         atom_to_token = feats["atom_to_token"]
         record = feats["record"]
 
-        # compute per-atom asym_id by matrix-multiplying atom_to_token with token asym_ids
+        # compute per-atom asym_id by matrix-multiplying atom_to_token with token
+        # asym_ids
         asym_id_atom = torch.bmm(
             atom_to_token.float(), asym_id_token.unsqueeze(-1).float()
         ).squeeze(-1).long()

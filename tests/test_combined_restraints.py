@@ -1,7 +1,5 @@
-import math
-import numpy as np
 import torch
-import pytest
+
 from rgi_utils import CombinedRestraints
 from rgi_utils.atom_context import AtomRecord
 

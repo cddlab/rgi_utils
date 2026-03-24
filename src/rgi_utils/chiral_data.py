@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
+import math
 from dataclasses import dataclass
 
 import numpy as np
 from rdkit import Chem
-import math
+
+logger = logging.getLogger(__name__)
 
 
 def length(v: np.ndarray, eps: float = 1e-6) -> float:
@@ -118,7 +121,7 @@ class ChiralData:
 
         if self.fmax > 0:
             if n1l > self.fmax or n2l > self.fmax or n3l > self.fmax or ncl > self.fmax:
-                print(f"Force mean: {(n1l + n2l + n3l + ncl) / 4}")
+                logger.info(f"Force mean: {(n1l + n2l + n3l + ncl) / 4}")
             n1l = min(n1l, self.fmax)
             n2l = min(n2l, self.fmax)
             n3l = min(n3l, self.fmax)
@@ -160,17 +163,17 @@ class ChiralData:
             raise ValueError(f"Invalid chiral atom neighbors {iatm=} {aj=}")
 
         chiral_vol = calc_chiral_vol(conf.GetPositions(), iatm, aj)
-        print(f"{chiral_vol=:.2f}")
+        logger.info(f"{chiral_vol=:.2f}")
 
         atom_name = atom.GetProp("name")
         chiral_tag = atom.GetChiralTag()
-        print(f"{iatm=} {atom_name=} {aj} {ajname} {chiral_tag=}")
+        logger.info(f"{iatm=} {atom_name=} {aj} {ajname} {chiral_tag=}")
         return chiral_vol, aj[0], aj[1], aj[2]
 
     def print(self, crds: np.ndarray) -> None:
         """Print the chiral data."""
         vol = calc_chiral_vol(crds, self.aid0, [self.aid1, self.aid2, self.aid3])
-        print(  # noqa: T201
+        logger.info(
             f"C {self.aid0}-{self.aid1}-{self.aid2}-{self.aid3}:"
             f" cur {vol:.2f} ref {self.chiral_vol:.2f} dif {vol - self.chiral_vol:.2f}"
         )

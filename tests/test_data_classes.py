@@ -1,8 +1,10 @@
 import math
+
 import numpy as np
 import pytest
-from rgi_utils.bond_restr_data import BondData
+
 from rgi_utils.angle_restr_data import AngleData
+from rgi_utils.bond_restr_data import BondData
 from rgi_utils.chiral_data import ChiralData, calc_chiral_vol
 
 
@@ -75,7 +77,9 @@ class TestAngleData:
         a = self._make_angle(th0=th0, w=1.0, slack=0.0)
         # 120-degree angle (non-degenerate): deviation = 30 degrees from ideal 90
         # atom2 at (0.5, sqrt(3)/2, 0) gives 120 degrees at atom1
-        crds = np.array([[-1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.5, math.sqrt(3) / 2, 0.0]])
+        crds = np.array(
+            [[-1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.5, math.sqrt(3) / 2, 0.0]]
+        )
         grad = np.zeros_like(crds)
         a.grad(crds, grad)
         assert np.any(np.abs(grad) > 0)

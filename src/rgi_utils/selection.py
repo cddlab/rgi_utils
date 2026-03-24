@@ -1,4 +1,7 @@
-from typing import List, Union, Dict, Any, Protocol, runtime_checkable
+import logging
+from typing import Dict, List, Protocol, Union, runtime_checkable
+
+logger = logging.getLogger(__name__)
 
 @runtime_checkable
 class SelectionNode(Protocol):
@@ -46,14 +49,16 @@ class And(SelectionNode):
     def __init__(self, selections: List[SelectionNode]):
         self.selections = selections
     def eval(self, mol: Dict[str, Union[str, int]]) -> bool:
-        if not self.selections: return True
+        if not self.selections:
+            return True
         return all(s.eval(mol) for s in self.selections)
 
 class Or(SelectionNode):
     def __init__(self, selections: List[SelectionNode]):
         self.selections = selections
     def eval(self, mol: Dict[str, Union[str, int]]) -> bool:
-        if not self.selections: return False
+        if not self.selections:
+            return False
         return any(s.eval(mol) for s in self.selections)
 
 class Bracket(SelectionNode):
@@ -81,7 +86,9 @@ class SelectionParser:
         if self._peek() == char:
             self.pos += 1
             return char
-        raise ParseError(f"Expected '{char}' at position {self.pos}, got '{self._peek()}'")
+        raise ParseError(
+            f"Expected '{char}' at position {self.pos}, got '{self._peek()}'"
+        )
 
     def _consume_tag(self, tag: str):
         if self.text.startswith(tag, self.pos):
@@ -131,7 +138,10 @@ class SelectionParser:
         identifier = self._parse_alphanumeric1()
         if identifier in RESERVED_KEYWORDS - {"resid", "index"}:
             if identifier in {"and", "or", "not", "to"}:
-                raise ParseError(f"Identifier cannot be a reserved keyword: '{identifier}' at position {self.pos - len(identifier)}")
+                raise ParseError(
+                    f"Identifier cannot be a reserved keyword:"
+                    f" '{identifier}' at position {self.pos - len(identifier)}"
+                )
         return identifier
 
     def _parse_list_of_identifiers(self) -> List[str]:
@@ -197,7 +207,10 @@ class SelectionParser:
                 return parser_func()
             except ParseError:
                 self.pos = saved_pos
-        raise ParseError(f"Expected an atomic selection (e.g., 'chain A', 'resid 1') at position {self.pos}")
+        raise ParseError(
+            f"Expected an atomic selection (e.g., 'chain A', 'resid 1')"
+            f" at position {self.pos}"
+        )
 
     def _parse_bracket(self) -> SelectionNode:
         self._consume_char('(')
@@ -216,7 +229,10 @@ class SelectionParser:
                 return self._parse_atom()
             except ParseError as e_atom:
                 if self.text[saved_pos:].startswith("("):
-                    raise ParseError(f"Syntax error in parenthesized expression or mismatched parentheses near position {saved_pos}") from e_atom
+                    raise ParseError(
+                        f"Syntax error in parenthesized expression or"
+                        f" mismatched parentheses near position {saved_pos}"
+                    ) from e_atom
                 raise
 
     def _parse_not(self) -> SelectionNode:
@@ -273,7 +289,10 @@ class SelectionParser:
     def parse(self) -> SelectionNode:
         parsed_node = self.parse_expr()
         if self.pos < len(self.text):
-            raise ParseError(f"Unexpected trailing characters: '{self.text[self.pos:]}' at position {self.pos}")
+            raise ParseError(
+                f"Unexpected trailing characters: '{self.text[self.pos:]}'"
+                f" at position {self.pos}"
+            )
         return parsed_node
 
 
@@ -305,7 +324,7 @@ class AtomSelector:
         e.g. mol = { "chain": "A", "resid": 1, "index": 0 }
         """
         if self._error:
-            print(f"Cannot evaluate: parsing failed with error: {self._error}")
+            logger.warning(f"Cannot evaluate: parsing failed with error: {self._error}")
             return False
         if self.parsed_selection is None:
             raise RuntimeError("Selection was not successfully parsed.")

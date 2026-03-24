@@ -15,7 +15,8 @@ class AtomRecord:
 
 @runtime_checkable
 class FrameworkAdapter(Protocol):
-    """Protocol that any structure prediction framework must implement to provide atom records."""
+    """Protocol that any structure prediction framework must implement to provide atom
+    records."""
 
     def iter_atoms(self) -> Iterator[AtomRecord]:
         """Iterate over all non-padded atoms in the structure."""

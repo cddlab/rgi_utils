@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 
 import numpy as np
 from rdkit import Chem
+
 from rgi_utils.chiral_data import unit_vec
 
+logger = logging.getLogger(__name__)
 
 _angl_patt = Chem.MolFromSmarts("*~*~*")
 
@@ -142,7 +145,7 @@ class AngleData:
             self.aid0, self.aid1, self.aid2, crds
         )
 
-        print(  # noqa: T201
+        logger.info(
             f"A {self.aid0}-{self.aid1}-{self.aid2}:"
             f" cur {math.degrees(theta):.2f}"
             f" ref {math.degrees(self.th0):.2f}"
