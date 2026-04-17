@@ -6,11 +6,11 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "numpy",
-    "rdkit",
+    "rdkit>=2024.3.2",
     "scipy",
-    "pytorch-minimize",
-    "torch==2.6.0",
-    "torch-cluster",
+    "pytorch-minimize @ git+https://github.com/ishitani/pytorch-minimize.git@nobackprop",
+    "torch>=2.2",
+    "torch_cluster",
 ]
 
 [dependency-groups]
