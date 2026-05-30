@@ -93,3 +93,30 @@ def test_vdw_config_protein_background():
     # disabled when weight <= 0
     spec0 = build_spec([lc], [], {"vdw": {"weight": 0.0}}, elements=elements)
     assert spec0.vdw_config is None
+
+
+def test_intramolecular_vdw_static_arrays():
+    """vdw mode=intramolecular builds a static spec.vdw (works in jax/numpy too),
+    not the dynamic ligand-protein vdw_config."""
+    m = Chem.MolFromSmiles("CCCC")  # butane: only C1-C4 has topological dist > 2
+    m = Chem.AddHs(m)
+    AllChem.EmbedMolecule(m, randomSeed=1)
+    m = Chem.RemoveHs(m)  # 4 heavy atoms
+    n = m.GetNumAtoms()
+    c = np.asarray(m.GetConformer().GetPositions())
+    lc = LigandConf(mol=m, conf_coords=c, global_indices=np.arange(n))
+
+    spec = build_spec(
+        [lc], [], {"vdw": {"weight": 1.0, "mode": "intramolecular", "dmax": 10.0}}
+    )
+    # static VdwArrays, not the dynamic ligand-protein config
+    assert spec.vdw is not None
+    assert spec.vdw_config is None
+    # butane: the only non-bonded heavy pair is C1-C4 (topological distance 3)
+    assert spec.vdw.idx.shape == (1, 2)
+    assert float(spec.vdw.weight[0]) == 1.0
+    assert int(spec.vdw.idx.max()) < spec.n_active  # valid local indices
+
+    # default mode keeps the dynamic path (no static vdw; needs elements)
+    spec_dyn = build_spec([lc], [], {"vdw": {"weight": 1.0}})
+    assert spec_dyn.vdw is None

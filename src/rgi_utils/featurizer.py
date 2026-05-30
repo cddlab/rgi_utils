@@ -28,6 +28,7 @@ from rgi_utils.spec import (
     ChiralArrays,
     DistanceArrays,
     RestraintSpec,
+    VdwArrays,
     VdwConfig,
 )
 
@@ -188,6 +189,59 @@ def _build_vdw_config(
     )
 
 
+def _build_intramolecular_vdw(
+    ligand_confs: list[LigandConf],
+    conformer_config: dict,
+    g2l: dict,
+) -> VdwArrays | None:
+    """Static intramolecular VdW repulsion within each ligand (all backends).
+
+    Penalizes non-bonded atom pairs within one ligand — topological distance > 2
+    (so 1-2 bonds and 1-3 angles are skipped) and reference-conformer distance
+    < ``dmax`` — with a lower bound ``scale * (r_i + r_j)``. Unlike the dynamic
+    ligand-protein ``VdwConfig`` (torch only), the pair list is fixed, so this
+    term also works in the jax/numpy backends via ``VdwArrays``. Opt-in through
+    ``conformer_config['vdw']['mode'] == 'intramolecular'`` so the default
+    ligand-protein VdW (boltz/protenix) is unaffected.
+    """
+    vcfg = (conformer_config or {}).get("vdw", {}) or {}
+    weight = float(vcfg.get("weight", 0.0) or 0.0)
+    if weight <= 0.0 or not ligand_confs:
+        return None
+    from rdkit.Chem import rdmolops
+
+    scale = float(vcfg.get("scale", 0.75))
+    dmax = float(vcfg.get("dmax", 5.0))
+    idx_pairs: list[list[int]] = []
+    r_min_list: list[float] = []
+    for lc in ligand_confs:
+        mol = lc.mol
+        crds = np.asarray(lc.conf_coords, dtype=np.float64)
+        gidx = np.asarray(lc.global_indices, dtype=np.int64)
+        n = mol.GetNumAtoms()
+        if n < 2:
+            continue
+        topo = rdmolops.GetDistanceMatrix(mol)
+        radii = [_vdw_radius(a.GetAtomicNum()) for a in mol.GetAtoms()]
+        for i in range(n):
+            for j in range(i + 1, n):
+                if topo[i, j] <= 2:  # skip 1-2 (bond) and 1-3 (angle) pairs
+                    continue
+                if _bond_length(crds, i, j) >= dmax:
+                    continue
+                idx_pairs.append([g2l[int(gidx[i])], g2l[int(gidx[j])]])
+                r_min_list.append(scale * (radii[i] + radii[j]))
+    if not idx_pairs:
+        return None
+    n_pair = len(idx_pairs)
+    return VdwArrays(
+        idx=np.array(idx_pairs, dtype=np.int64),
+        r_min=np.array(r_min_list, dtype=np.float64),
+        weight=np.full(n_pair, weight),
+        mask=np.ones(n_pair),
+    )
+
+
 def build_spec(
     ligand_confs: list[LigandConf] | None = None,
     distance_restraints: list | None = None,
@@ -231,7 +285,16 @@ def build_spec(
 
     active_sites = np.array(sorted(active), dtype=np.int64)
     g2l = {int(g): i for i, g in enumerate(active_sites)}
-    vdw_config = _build_vdw_config(ligand_confs, cfg, active_sites, g2l, elements)
+    # Two VdW flavours share the conformer_config['vdw'] block: opt-in
+    # intramolecular (static VdwArrays, all backends) vs the default dynamic
+    # ligand-protein term (VdwConfig, torch only). mode selects which.
+    vdw_mode = (cfg.get("vdw", {}) or {}).get("mode", "ligand_protein")
+    if vdw_mode == "intramolecular":
+        vdw_arrays = _build_intramolecular_vdw(ligand_confs, cfg, g2l)
+        vdw_config = None
+    else:
+        vdw_arrays = None
+        vdw_config = _build_vdw_config(ligand_confs, cfg, active_sites, g2l, elements)
 
     # ---- conformer arrays (local indices) -------------------------------------
     bond = None
@@ -319,9 +382,18 @@ def build_spec(
         angle=angle,
         chiral=chiral,
         distance=distance,
+        vdw=vdw_arrays,
         vdw_config=vdw_config,
         conf_start_sigma=conf_start_sigma,
     )
+    if vdw_config is not None:
+        vdw_desc = (
+            f"{len(vdw_config.ligand_local)}lig/{len(vdw_config.protein_global)}prot"
+        )
+    elif vdw_arrays is not None:
+        vdw_desc = f"{len(vdw_arrays.idx)}intra"
+    else:
+        vdw_desc = "off"
     logger.info(
         "built spec: n_active=%d bonds=%d angles=%d chirals=%d distances=%d vdw=%s",
         spec.n_active,
@@ -329,8 +401,6 @@ def build_spec(
         len(angles),
         len(chirals),
         len(distance_restraints),
-        "off"
-        if vdw_config is None
-        else f"{len(vdw_config.ligand_local)}lig/{len(vdw_config.protein_global)}prot",
+        vdw_desc,
     )
     return spec
