@@ -13,7 +13,7 @@ class AtomRecord:
     """Framework-agnostic representation of a single atom for selection."""
 
     chain: str  # chain name (e.g. "A")
-    resid: int  # 1-based residue index (token index + 1)
+    resid: int  # 1-based residue/token ordinal WITHIN the chain (resets per chain)
     index: int  # global padded atom index
 
 

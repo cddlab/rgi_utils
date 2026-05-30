@@ -45,17 +45,28 @@ class BoltzFeatsAdapter:
 
     # --- FrameworkAdapter -----------------------------------------------------
     def iter_atoms(self) -> Iterator[AtomRecord]:
-        """Yield AtomRecord for every atom (for distance restraint selection)."""
+        """Yield AtomRecord for every atom (for distance restraint selection).
+
+        ``resid`` is the 1-based residue/token ordinal WITHIN the chain (it resets
+        to 1 at each chain), so a selection like "chain B and resid 5" means
+        residue 5 of chain B in every framework (consistent with protenix's
+        per-chain res_id and AF3) — not a cumulative global token index.
+        """
         asym_id_atom_b0, atom_to_token_b0 = self._per_atom()
         record = self.feats["record"]
         for chain in record[0].chains:
             chain_id = chain.chain_id
             chain_sites = torch.where(asym_id_atom_b0 == chain_id)[0].tolist()
-            for gidx in chain_sites:
-                token_idx = torch.argmax(atom_to_token_b0[gidx, :]).item()
+            toks = [
+                int(torch.argmax(atom_to_token_b0[gidx, :]).item())
+                for gidx in chain_sites
+            ]
+            # rank this chain's tokens -> per-chain 1-based ordinal
+            tok2resid = {t: i + 1 for i, t in enumerate(sorted(set(toks)))}
+            for gidx, t in zip(chain_sites, toks):
                 yield AtomRecord(
                     chain=chain.chain_name,
-                    resid=int(token_idx) + 1,
+                    resid=tok2resid[t],
                     index=int(gidx),
                 )
 

@@ -114,6 +114,16 @@ class CombinedRestraints:
 
     def _build_optimizer(self) -> None:
         b = self._backend
+        # Dynamic ligand-protein VdW (vdw_config) is implemented in the torch
+        # optimizer only; warn loudly rather than silently dropping it elsewhere.
+        vc = self.spec.vdw_config
+        if vc is not None and getattr(vc, "weight", 0) > 0 and b != "torch":
+            logger.warning(
+                "VdW restraint requested but backend=%s ignores it "
+                "(dynamic ligand-protein VdW is implemented for the torch "
+                "backend only); no VdW term will be applied.",
+                b,
+            )
         if b == "torch":
             from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
 
@@ -206,11 +216,27 @@ class CombinedRestraints:
         return self._optimizer.energy(coords)
 
     # --- Legacy parse-time builders (boltz schema.py back-compat) -------------
-    # Conformer restraints are now built from LigandConf via the featurizer, so
-    # these are no-ops. TODO(phase3b): migrate boltz schema to provide LigandConf
-    # through the adapter, then remove these.
+    # Ligand conformer restraints are now built from LigandConf via the
+    # featurizer, so the ligand-path calls (make_bond/make_angle_restraints and
+    # make_chiral without invert) are intentional no-ops. A few restraint kinds
+    # are NOT yet ported and would otherwise be lost silently — warn loudly.
+    _warned: set = set()
+
+    @classmethod
+    def _warn_unsupported(cls, feature: str) -> None:
+        if feature not in cls._warned:
+            cls._warned.add(feature)
+            logger.warning(
+                "rgi_utils does not yet support %s restraints; they are ignored. "
+                "(distance + ligand bond/angle/chiral/vdw are supported.)",
+                feature,
+            )
+
     def make_chiral(self, *args, **kwargs) -> None:
-        pass
+        # invert=True is the polymer D-residue chirality flip (not yet ported);
+        # the plain ligand call is handled by the featurizer.
+        if kwargs.get("invert"):
+            self._warn_unsupported("inverted-chirality (D-residue)")
 
     def make_bond(self, *args, **kwargs) -> None:
         pass
@@ -219,7 +245,10 @@ class CombinedRestraints:
         pass
 
     def make_link_bond(self, *args, **kwargs) -> None:
-        pass
+        self._warn_unsupported("inter-chain link-bond")
 
     def link_bonds_by_conf(self, *args, **kwargs) -> None:
-        pass
+        # only warn when there is actually link-bond config to apply
+        cfg = args[1] if len(args) > 1 else kwargs.get("config")
+        if cfg:
+            self._warn_unsupported("link_bonds_by_conf")
