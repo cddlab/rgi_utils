@@ -8,9 +8,22 @@ dependencies = [
     "numpy",
     "rdkit>=2024.3.2",
     "scipy",
-    "pytorch-minimize @ git+https://github.com/ishitani/pytorch-minimize.git@nobackprop",
+]
+
+[project.optional-dependencies]
+# PyTorch backend (boltz, protenix). Uses torch.optim.LBFGS — no extra optimizer dep.
+torch = [
     "torch>=2.2",
+]
+# Optional VdW dynamic neighbor search (torch backend only); the torch_cluster
+# wheel comes from the find-links below and must match the installed torch.
+vdw = [
     "torch_cluster",
+]
+# JAX backend (alphafold3). Uses jax.lax.fori_loop gradient descent — no jaxopt.
+jax = [
+    "jax",
+    "jaxlib",
 ]
 
 [dependency-groups]

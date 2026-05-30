@@ -7,38 +7,80 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 task lint        # ruff check + format validation
 task format      # ruff format + auto-fix lint
-task test        # run all tests (uses /venv Python to preserve torch ecosystem)
+task test        # run all tests (uses /venv Python; in docker images)
 task test-ci     # run non-GPU tests only (-m "not gpu")
 ```
 
-Single test:
+Local dev (this checkout) uses `.venv`:
 ```bash
-/venv/bin/python -m pytest tests/test_selection.py::TestBooleanOperations -v
+.venv/bin/python -m pytest -m "not gpu" -q          # full non-GPU suite
+.venv/bin/python -m pytest tests/test_optim.py -v   # single file
+uvx ruff check src tests && uvx ruff format --check src tests
 ```
+GPU paths (real CUDA torch / jax devices) are exercised by the host tools via
+`sbatch`, not on the login node.
 
 ## Architecture
 
-**rgi_utils** — Restraint-Guided Inference utilities for PyTorch-based structure prediction models.
+**rgi_utils** — Restraint-Guided Inference (RGI): inject distance + ligand
+conformer restraints into a structure-prediction diffusion loop via gradient
+optimization. Shared by boltz/protenix (torch) and alphafold3 (jax).
 
-### Core flow
+Design = **3 layers + autodiff + static shapes + GPU-complete optimization**:
 
-1. **`CombinedRestraints`** (`combined_restraints.py`) is the singleton entry point. Callers:
-   - call `set_config()` with a dict of restraint parameters
-   - call `setup()` with a `FrameworkAdapter` + coordinate/feature tensors to build restraint data
-   - call `set_feats()` to resolve distance restraint atom selections
-   - call `minimize()` to run CPU (scipy) or GPU (torchmin) optimization
+1. **Spec layer** (`spec.py`, backend-agnostic): `RestraintSpec` holds every
+   restraint as padded NumPy arrays. All indices are *local* indices into
+   `active_sites` (the subset of atoms that participate in any restraint);
+   `active_sites` itself stores *global* flat atom indices. Multiple ligands are
+   collision-free because each supplies disjoint global indices.
 
-2. **Framework adapters** (`boltz/adapter.py`) implement the `FrameworkAdapter` protocol from `atom_context.py`, providing an `iter_atoms()` generator that yields `AtomRecord(chain, resid, index)` for each non-padded atom.
+2. **Energy layer** (`energy/{numpy,torch,jax}_energy.py`, differentiable pure
+   functions): identical flat-bottomed maths in all three backends —
+   `bond/angle/chiral/vdw/distance`. `prepare_spec(spec)` → backend arrays;
+   `total_energy(positions, prepared)` → scalar. Gradients come from autodiff
+   (no hand-written grad). `numpy_energy` is the reference;
+   `tests/test_backend_parity.py` checks energy+grad agreement across backends.
 
-3. **Restraint data classes** (`bond_restr_data.py`, `angle_restr_data.py`, `chiral_data.py`, `distance_restr_data.py`) each implement `calc()` / `grad()` / `print()` / `calc_sd()`. They operate on flat coordinate arrays (CPU) or tensors (GPU via `torch_restr_impl.py`).
+3. **Optim layer** (`optim/{numpy,torch,jax}_optim.py`, GPU-complete): optimize
+   only `active_sites` coords, scatter back. torch = `LBFGS` autograd on GPU
+   tensors; jax = `fori_loop`+`value_and_grad` JIT-able inside `lax.scan` (no
+   `pure_callback`, no scipy); numpy = `scipy.optimize.minimize` (CPU fallback).
 
-4. **`RestrTorchImpl`** (`torch_restr_impl.py`) packs all restraint indices and parameters into batched tensors for GPU execution, including dynamic VdW contact detection via `torch_cluster` radius search.
+Supporting modules:
+- **`featurizer.py`**: `build_spec(ligand_confs, distance_restraints,
+  conformer_config, elements)` — the single place RDKit mols become bond/angle/
+  chiral restraints (global indices, multi-ligand) and the dynamic ligand-protein
+  `VdwConfig` is assembled.
+- **`config.py`**: `RestraintsConfig.from_dict()` parses the shared
+  `restraints_config` (one source of truth for boltz YAML / protenix JSON / AF3).
+- **`combined.py`**: `CombinedRestraints` singleton entry point —
+  `set_config(dict)` → `setup(adapter, nbatch)` → `minimize(coords, step, sigma)`
+  → `finalize(coords, step)`. Picks the backend from config; torch/jax imported
+  lazily. JAX tools that run inside `lax.scan` grab the pure minimizer via
+  `get_minimizer()` instead of calling `minimize` per step.
+- **Framework adapters** (`boltz/adapter.py`, more per tool): implement
+  `iter_atoms()` (→ `AtomRecord(chain, resid, index)` for distance selection) and
+  optionally `iter_ligand_confs()` + `get_elements()` (conformer + VdW).
+- **Atom selection DSL** (`selection.py`): `AtomSelector` parses
+  `"(chain A or chain B) and resid 1 to 10"`; used by `DistanceData`
+  (`distance_restr_data.py`) to resolve COM-based distance groups.
 
-5. **Atom selection DSL** (`selection.py`): `AtomSelector` parses strings like `"(chain A or chain B) and resid 1 to 10"` into a node tree and evaluates it against `AtomRecord` lists. Used by `DistanceData` to resolve COM-based distance restraint atom sets.
+### VdW (ligand-protein)
+
+The static `vdw_energy` (idx pairs) lives in the energy layer for parity. The
+*dynamic* ligand-protein clash term lives in `optim/torch_optim.py`: the ligand
+moves (it is in `active_sites`), the protein is a **fixed background** read from
+the full coordinate tensor (`VdwConfig.protein_global`), so only the ligand is
+pushed out of contacts. Penalty `weight * clamp(d - scale*(r_i+r_j), max=0)**2`,
+all-pairs (zero gradient beyond contact) — same maths as boltz's radius search.
 
 ### Key design points
 
 - `CombinedRestraints` is a singleton; call `reset()` between uses in tests.
-- `AtomRecord.index` is a **padded** index (raw tensor position); `resid` is 1-based residue id.
-- Distance restraints support four types: `harmonic`, `flat-bottomed`, `flat-bottomed1`, `flat-bottomed2`. The only supported `calc_method` is `unfixed-absolute` (COM-based).
+- `AtomRecord.index` is a **padded** index (raw tensor position); `resid` is
+  1-based residue id.
+- Distance restraints: `harmonic`, `flat-bottomed`, `flat-bottomed1`,
+  `flat-bottomed2`; only `calc_method=unfixed-absolute` (COM-based).
+- Top-level `import rgi_utils` must work with numpy only (no torch/jax) — keep
+  heavy imports lazy inside the backend modules.
 - GPU tests are marked `@pytest.mark.gpu` and excluded in CI.

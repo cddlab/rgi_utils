@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterator, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Iterator, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    import numpy as np
+    from rdkit import Chem
 
 
 @dataclass
@@ -13,11 +17,50 @@ class AtomRecord:
     index: int  # global padded atom index
 
 
+@dataclass
+class LigandConf:
+    """One ligand's ideal conformer, used to build conformer restraints.
+
+    ``global_indices[i]`` is the global padded atom index of RDKit mol atom ``i``,
+    so bond/angle/chiral restraints derived from the mol can be expressed directly
+    in the framework's atom space. Multiple ligands are handled by supplying one
+    ``LigandConf`` each — their disjoint ``global_indices`` prevent any site
+    collision.
+    """
+
+    mol: "Chem.Mol"  # H-removed RDKit mol
+    conf_coords: "np.ndarray"  # (n_lig_atoms, 3) ideal conformer coordinates
+    global_indices: "np.ndarray"  # (n_lig_atoms,) global padded atom index per mol atom
+    invert_chirality: bool = False
+    atom_names: list[str] | None = None  # optional filter (e.g. CCD atom names)
+
+
 @runtime_checkable
 class FrameworkAdapter(Protocol):
-    """Protocol that any structure prediction framework must implement to provide atom
-    records."""
+    """Minimal protocol: iterate non-padded atoms for distance-restraint selection."""
 
     def iter_atoms(self) -> Iterator[AtomRecord]:
         """Iterate over all non-padded atoms in the structure."""
+        ...
+
+
+@runtime_checkable
+class ConformerAdapter(Protocol):
+    """Optional protocol for conformer (bond/angle/chiral) and VdW restraints.
+
+    A framework only needs to implement this if it uses conformer/VdW restraints.
+    ``CombinedRestraints`` checks for it at runtime, so distance-only tools can
+    implement just ``FrameworkAdapter``.
+    """
+
+    def num_atoms(self) -> int:
+        """Total number of (padded) atoms — the global flat coordinate length."""
+        ...
+
+    def get_elements(self) -> "np.ndarray":
+        """(num_atoms,) atomic numbers; 0 marks padding. Used for VdW radii."""
+        ...
+
+    def iter_ligand_confs(self) -> Iterator[LigandConf]:
+        """Yield one LigandConf per ligand that should get conformer restraints."""
         ...

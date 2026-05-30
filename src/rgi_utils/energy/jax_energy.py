@@ -1,0 +1,205 @@
+"""Pure JAX restraint energies — differentiable via ``jax.grad``.
+
+All functions take ``positions`` of shape ``(..., n_active, 3)`` and return a
+scalar (leading batch dims are summed over). Indices are local indices into
+active_sites. Adapted from the AlphaFold 3 restraint prototype.
+"""
+
+from __future__ import annotations
+
+import jax.numpy as jnp
+
+_EPS = 1e-12
+
+
+def bond_energy(positions, idx, r0, slack, weight, half, mask):
+    """Flat-bottomed bond length energy; ``half`` penalizes stretch only."""
+    ai, aj = idx[:, 0], idx[:, 1]
+    diff = positions[..., ai, :] - positions[..., aj, :]
+    dist = jnp.sqrt(jnp.sum(diff**2, axis=-1) + _EPS)
+    r_upper = r0 + slack
+    r_lower = r0 - slack
+    delta_full = jnp.where(
+        dist > r_upper,
+        dist - r_upper,
+        jnp.where(dist < r_lower, dist - r_lower, 0.0),
+    )
+    delta_half = jnp.maximum(0.0, dist - r_upper)
+    delta = jnp.where(half > 0.5, delta_half, delta_full)
+    return jnp.sum(weight * delta**2 * mask)
+
+
+def angle_energy(positions, idx, th0, slack, weight, mask):
+    """Flat-bottomed bond angle energy; vertex is column 1."""
+    ai, aj, ak = idx[:, 0], idx[:, 1], idx[:, 2]
+    rij = positions[..., ai, :] - positions[..., aj, :]
+    rkj = positions[..., ak, :] - positions[..., aj, :]
+    nij = jnp.sqrt(jnp.sum(rij**2, axis=-1) + _EPS)
+    nkj = jnp.sqrt(jnp.sum(rkj**2, axis=-1) + _EPS)
+    cos_th = jnp.sum(rij * rkj, axis=-1) / (nij * nkj)
+    cos_th = jnp.clip(cos_th, -1.0 + 1e-7, 1.0 - 1e-7)
+    theta = jnp.arccos(cos_th)
+    th_u = th0 + slack
+    th_l = th0 - slack
+    delta = jnp.where(
+        theta > th_u, theta - th_u, jnp.where(theta < th_l, theta - th_l, 0.0)
+    )
+    return jnp.sum(weight * delta**2 * mask)
+
+
+def chiral_energy(positions, idx, vol0, slack, weight, mask):
+    """Chiral volume (scalar triple product) energy; center is column 0."""
+    a0 = positions[..., idx[:, 0], :]
+    a1 = positions[..., idx[:, 1], :]
+    a2 = positions[..., idx[:, 2], :]
+    a3 = positions[..., idx[:, 3], :]
+    v1 = a1 - a0
+    v2 = a2 - a0
+    v3 = a3 - a0
+    vol = jnp.sum(v1 * jnp.cross(v2, v3), axis=-1)
+    thr = jnp.where(vol0 > 0, vol0 - slack, vol0 + slack)
+    delta = vol - thr
+    return jnp.sum(weight * delta**2 * mask)
+
+
+def vdw_energy(positions, idx, r_min, weight, mask):
+    """VdW repulsion (lower-bound only): penalize d < r_min."""
+    ai, aj = idx[:, 0], idx[:, 1]
+    diff = positions[..., ai, :] - positions[..., aj, :]
+    dist = jnp.sqrt(jnp.sum(diff**2, axis=-1) + _EPS)
+    delta = jnp.minimum(0.0, dist - r_min)
+    return jnp.sum(weight * delta**2 * mask)
+
+
+def distance_energy(
+    positions,
+    grp1_idx,
+    grp2_idx,
+    grp1_mask,
+    grp2_mask,
+    target1,
+    target2,
+    dist_type,
+    mask,
+):
+    """COM distance energy between two atom groups. dist_type: 0=harmonic,
+    1=flat-bottomed, 2=lower-bound, 3=upper-bound."""
+    grp1_pos = positions[..., grp1_idx, :]  # (..., n_dist, max_grp, 3)
+    grp2_pos = positions[..., grp2_idx, :]
+    m1 = grp1_mask[..., None]
+    m2 = grp2_mask[..., None]
+    com1 = jnp.sum(grp1_pos * m1, axis=-2) / (
+        jnp.sum(grp1_mask, axis=-1)[..., None] + _EPS
+    )
+    com2 = jnp.sum(grp2_pos * m2, axis=-2) / (
+        jnp.sum(grp2_mask, axis=-1)[..., None] + _EPS
+    )
+    diff = com2 - com1
+    dist = jnp.sqrt(jnp.sum(diff**2, axis=-1) + _EPS)
+    delta_harmonic = dist - target1
+    delta_flat = jnp.where(
+        dist < target1, dist - target1, jnp.where(dist > target2, dist - target2, 0.0)
+    )
+    delta_lower = jnp.minimum(0.0, dist - target1)
+    delta_upper = jnp.maximum(0.0, dist - target2)
+    delta = jnp.where(
+        dist_type == 0,
+        delta_harmonic,
+        jnp.where(
+            dist_type == 1,
+            delta_flat,
+            jnp.where(dist_type == 2, delta_lower, delta_upper),
+        ),
+    )
+    return jnp.sum(delta**2 * mask)
+
+
+def total_energy(positions, prepared):
+    """Sum all restraint energies. ``prepared`` is the dict from ``prepare_spec``."""
+    ene = jnp.asarray(0.0, dtype=positions.dtype)
+    if "bond" in prepared:
+        b = prepared["bond"]
+        ene = ene + bond_energy(
+            positions, b["idx"], b["r0"], b["slack"], b["weight"], b["half"], b["mask"]
+        )
+    if "angle" in prepared:
+        a = prepared["angle"]
+        ene = ene + angle_energy(
+            positions, a["idx"], a["th0"], a["slack"], a["weight"], a["mask"]
+        )
+    if "chiral" in prepared:
+        c = prepared["chiral"]
+        ene = ene + chiral_energy(
+            positions, c["idx"], c["vol0"], c["slack"], c["weight"], c["mask"]
+        )
+    if "vdw" in prepared:
+        v = prepared["vdw"]
+        ene = ene + vdw_energy(positions, v["idx"], v["r_min"], v["weight"], v["mask"])
+    if "distance" in prepared:
+        d = prepared["distance"]
+        ene = ene + distance_energy(
+            positions,
+            d["grp1_idx"],
+            d["grp2_idx"],
+            d["grp1_mask"],
+            d["grp2_mask"],
+            d["target1"],
+            d["target2"],
+            d["dist_type"],
+            d["mask"],
+        )
+    return ene
+
+
+def prepare_spec(spec):
+    """Convert a backend-agnostic ``RestraintSpec`` into jnp arrays."""
+    prepared = {}
+    if spec.bond is not None and spec.bond.mask.sum() > 0:
+        b = spec.bond
+        prepared["bond"] = {
+            "idx": jnp.asarray(b.idx, dtype=jnp.int32),
+            "r0": jnp.asarray(b.r0),
+            "slack": jnp.asarray(b.slack),
+            "weight": jnp.asarray(b.weight),
+            "half": jnp.asarray(b.half),
+            "mask": jnp.asarray(b.mask),
+        }
+    if spec.angle is not None and spec.angle.mask.sum() > 0:
+        a = spec.angle
+        prepared["angle"] = {
+            "idx": jnp.asarray(a.idx, dtype=jnp.int32),
+            "th0": jnp.asarray(a.th0),
+            "slack": jnp.asarray(a.slack),
+            "weight": jnp.asarray(a.weight),
+            "mask": jnp.asarray(a.mask),
+        }
+    if spec.chiral is not None and spec.chiral.mask.sum() > 0:
+        c = spec.chiral
+        prepared["chiral"] = {
+            "idx": jnp.asarray(c.idx, dtype=jnp.int32),
+            "vol0": jnp.asarray(c.vol0),
+            "slack": jnp.asarray(c.slack),
+            "weight": jnp.asarray(c.weight),
+            "mask": jnp.asarray(c.mask),
+        }
+    if spec.vdw is not None and spec.vdw.mask.sum() > 0:
+        v = spec.vdw
+        prepared["vdw"] = {
+            "idx": jnp.asarray(v.idx, dtype=jnp.int32),
+            "r_min": jnp.asarray(v.r_min),
+            "weight": jnp.asarray(v.weight),
+            "mask": jnp.asarray(v.mask),
+        }
+    if spec.distance is not None and spec.distance.mask.sum() > 0:
+        d = spec.distance
+        prepared["distance"] = {
+            "grp1_idx": jnp.asarray(d.grp1_idx, dtype=jnp.int32),
+            "grp2_idx": jnp.asarray(d.grp2_idx, dtype=jnp.int32),
+            "grp1_mask": jnp.asarray(d.grp1_mask),
+            "grp2_mask": jnp.asarray(d.grp2_mask),
+            "target1": jnp.asarray(d.target1),
+            "target2": jnp.asarray(d.target2),
+            "dist_type": jnp.asarray(d.dist_type, dtype=jnp.int32),
+            "mask": jnp.asarray(d.mask),
+        }
+    return prepared

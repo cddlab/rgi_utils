@@ -1,0 +1,224 @@
+"""``CombinedRestraints`` — the single entry point used by every tool.
+
+Lifecycle:
+    restr = CombinedRestraints.get_instance()
+    restr.set_config(config_dict)          # parse YAML/JSON restraints_config
+    restr.setup(adapter, nbatch)           # resolve distances + build conformer spec
+    restr.minimize(coords, step, sigma)    # called each denoising step
+    restr.finalize(coords, step)           # optional stats
+
+The backend (numpy/torch/jax) is chosen from the config; torch/jax optimizers are
+imported lazily so importing this module needs neither. JAX tools that run inside
+``jax.lax.scan`` should grab the pure minimizer via ``get_minimizer()`` instead of
+calling ``minimize`` per step.
+"""
+
+from __future__ import annotations
+
+import logging
+
+from rgi_utils.config import RestraintsConfig
+from rgi_utils.featurizer import build_spec
+
+logger = logging.getLogger(__name__)
+
+
+def _enable_verbose_logging() -> None:
+    """Attach a stdout handler to the rgi_utils logger for verbose runs.
+
+    Libraries normally stay silent (NullHandler in __init__). When the user sets
+    verbose=true we surface restraint stats on stdout for debugging.
+    """
+    pkg = logging.getLogger("rgi_utils")
+    if not any(isinstance(h, logging.StreamHandler) for h in pkg.handlers):
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("[rgi_utils] %(levelname)s %(message)s"))
+        pkg.addHandler(handler)
+    pkg.setLevel(logging.INFO)
+
+
+class CombinedRestraints:
+    _instance = None
+
+    @classmethod
+    def get_instance(cls) -> "CombinedRestraints":
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+    @classmethod
+    def reset(cls) -> None:
+        """Reset the singleton (call between independent uses / tests)."""
+        cls._instance = None
+
+    def __init__(self) -> None:
+        self.config = RestraintsConfig()
+        self.spec = None
+        self._backend = None
+        self._optimizer = None
+        self._minimize_fn = None
+
+    def set_config(self, config: dict) -> None:
+        self.config = RestraintsConfig.from_dict(config)
+        if self.config.verbose:
+            _enable_verbose_logging()
+
+    def setup(self, adapter, nbatch: int = 1) -> None:
+        """Resolve distance selections and build the conformer spec from the adapter."""
+        cfg = self.config
+        for dr in cfg.distance_data:
+            dr.resolve_sites(adapter)
+
+        ligand_confs = []
+        if hasattr(adapter, "iter_ligand_confs"):
+            ligand_confs = list(adapter.iter_ligand_confs())
+
+        elements = None
+        if hasattr(adapter, "get_elements"):
+            try:
+                elements = adapter.get_elements()
+            except Exception as exc:  # element info is optional (VdW only)
+                logger.warning("get_elements failed, VdW disabled: %s", exc)
+
+        self.spec = build_spec(
+            ligand_confs, cfg.distance_data, cfg.conformer_config, elements=elements
+        )
+        self._backend = cfg.resolve_backend()
+        self._optimizer = None
+        self._minimize_fn = None
+
+        if not self.spec.is_active():
+            logger.info("CombinedRestraints: no active restraints")
+            if cfg.verbose:
+                # print() (not just logging) so it survives host logging configs
+                print("[rgi_utils] setup: NO ACTIVE RESTRAINTS", flush=True)
+            return
+        self._build_optimizer()
+        if cfg.verbose:
+            d = self.spec.distance
+            n_dist = 0 if d is None else int(d.mask.sum())
+            vc = self.spec.vdw_config
+            vdw_s = (
+                "off"
+                if vc is None
+                else f"{len(vc.ligand_local)}lig/{len(vc.protein_global)}prot"
+            )
+            msg = (
+                f"[rgi_utils] setup: backend={self._backend} "
+                f"n_active={self.spec.n_active} "
+                f"conformer={self.spec.has_conformer()} n_distance={n_dist} "
+                f"vdw={vdw_s} start_sigma={cfg.start_sigma}"
+            )
+            logger.info(msg)
+            print(msg, flush=True)
+
+    def _build_optimizer(self) -> None:
+        b = self._backend
+        if b == "torch":
+            from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+
+            self._optimizer = TorchRestraintOptimizer(
+                self.spec, max_iter=self.config.max_iter, method=self.config.method
+            )
+        elif b == "jax":
+            from rgi_utils.optim.jax_optim import make_minimizer
+
+            self._minimize_fn = make_minimizer(
+                self.spec,
+                max_iter=self.config.max_iter,
+                learning_rate=self.config.learning_rate,
+                start_sigma=self.config.start_sigma,
+            )
+        elif b == "numpy":
+            from rgi_utils.optim.numpy_optim import NumpyRestraintOptimizer
+
+            self._optimizer = NumpyRestraintOptimizer(
+                self.spec, max_iter=self.config.max_iter, method=self.config.method
+            )
+        else:
+            raise ValueError(f"unknown backend: {b}")
+
+    def is_active(self) -> bool:
+        return self.spec is not None and self.spec.is_active()
+
+    def get_minimizer(self):
+        """Return the pure ``(coords, sigma) -> coords`` jax minimizer (jax backend)."""
+        return self._minimize_fn
+
+    def minimize(self, coords, istep: int = 0, sigma=None):
+        """Optimize coordinates for one denoising step. Returns the (possibly new)
+        coordinate object. torch/numpy mutate in place; jax returns a new array."""
+        if not self.is_active():
+            return coords
+        b = self._backend
+        if b == "jax":
+            s = sigma if sigma is not None else 1e30
+            return self._minimize_fn(coords, s)
+        if sigma is not None and sigma > self.config.start_sigma:
+            return coords
+        if b == "torch":
+            self._optimizer.minimize(
+                coords, sigma=sigma, start_sigma=self.config.start_sigma
+            )
+            return coords
+        if b == "numpy":
+            return self._minimize_numpy(coords)
+        return coords
+
+    def _minimize_numpy(self, coords):
+        import numpy as np
+
+        if hasattr(coords, "detach"):  # torch tensor on the numpy backend (gpu:false)
+            import torch
+
+            arr = coords.detach().cpu().numpy().astype(np.float64)
+            self._optimizer.minimize(arr)
+            with torch.no_grad():
+                coords.copy_(
+                    torch.as_tensor(arr, device=coords.device, dtype=coords.dtype)
+                )
+            return coords
+        arr = np.asarray(coords)
+        self._optimizer.minimize(arr)
+        return arr
+
+    def finalize(self, coords, istep: int = 0) -> None:
+        if not self.is_active() or not self.config.verbose:
+            return
+        try:
+            e = self._restraint_energy(coords)
+            msg = f"[rgi_utils] finalize (step {istep}): restraint energy = {e:.5f}"
+            logger.info(msg)
+            print(msg, flush=True)
+        except Exception as exc:  # stats are best-effort
+            logger.warning("finalize stats failed: %s", exc)
+
+    def _restraint_energy(self, coords) -> float:
+        b = self._backend
+        if b == "numpy":
+            arr = coords.detach().cpu().numpy() if hasattr(coords, "detach") else coords
+            return self._optimizer.energy(arr)
+        if b == "jax":
+            from rgi_utils.optim.jax_optim import energy_of
+
+            return energy_of(self.spec, coords)
+        return self._optimizer.energy(coords)
+
+    # --- Legacy parse-time builders (boltz schema.py back-compat) -------------
+    # Conformer restraints are now built from LigandConf via the featurizer, so
+    # these are no-ops. TODO(phase3b): migrate boltz schema to provide LigandConf
+    # through the adapter, then remove these.
+    def make_chiral(self, *args, **kwargs) -> None:
+        pass
+
+    def make_bond(self, *args, **kwargs) -> None:
+        pass
+
+    def make_angle_restraints(self, *args, **kwargs) -> None:
+        pass
+
+    def make_link_bond(self, *args, **kwargs) -> None:
+        pass
+
+    def link_bonds_by_conf(self, *args, **kwargs) -> None:
+        pass

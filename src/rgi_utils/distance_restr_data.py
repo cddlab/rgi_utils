@@ -129,10 +129,11 @@ class DistanceData:
         assert len(self.target_sites1) != 0, "target_sites1 is empty"
         assert len(self.target_sites2) != 0, "target_sites2 is empty"
 
-        logger.info(f"{len(self.target_sites1)=}")
-        logger.info(f"{self.target_sites1=}")
-        logger.info(f"{len(self.target_sites2)=}")
-        logger.info(f"{self.target_sites2=}")
+        logger.info(
+            "distance restraint resolved: group1=%d atoms, group2=%d atoms",
+            len(self.target_sites1),
+            len(self.target_sites2),
+        )
 
     def _calculate_com_vector(self, crds: np.ndarray) -> np.ndarray:
         com1 = np.mean(crds[self.target_local_sites1, :], axis=0)
