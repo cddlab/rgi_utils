@@ -40,28 +40,27 @@ def make_minimizer(
 
     active_idx = jnp.asarray(spec.active_sites, dtype=jnp.int32)
     prepared = jax_energy.prepare_spec(spec)
-
-    def energy_fn(active):
-        return jax_energy.total_energy(active, prepared)
-
+    max_ss = spec.max_start_sigma()
     # ``backtracking`` enforces sufficient decrease (Armijo), like torch's
     # strong-Wolfe line search. The default ``zoom``/``hager-zhang`` searches can
     # accept a huge first step that collapses atoms onto each other, where the
     # eps-regularised distance makes the gradient vanish (a false stationary
     # point) — backtracking rejects that step.
-    m = (method or "lbfgs").lower()
-    if m in ("cg", "ncg", "nonlinear-cg", "nonlinearcg"):
-        solver = jaxopt.NonlinearCG(
-            fun=energy_fn, maxiter=max_iter, linesearch="backtracking",
-            implicit_diff=False,
-        )
-    else:
-        solver = jaxopt.LBFGS(
-            fun=energy_fn, maxiter=max_iter, linesearch="backtracking",
-            implicit_diff=False,
-        )
+    is_cg = (method or "lbfgs").lower() in ("cg", "ncg", "nonlinear-cg", "nonlinearcg")
 
-    def _descend(coords):
+    def _descend(coords, sigma):
+        # Build the (sigma-gated) energy + solver per call so each restraint is
+        # active only when sigma <= its start_sigma (folded into the energy mask).
+        def energy_fn(active):
+            return jax_energy.total_energy(active, prepared, sigma)
+
+        solver_cls = jaxopt.NonlinearCG if is_cg else jaxopt.LBFGS
+        solver = solver_cls(
+            fun=energy_fn,
+            maxiter=max_iter,
+            linesearch="backtracking",
+            implicit_diff=False,
+        )
         active = coords[..., active_idx, :]
         active_opt = solver.run(active).params
         # Robustness: a degenerate geometry can still make a solver step diverge;
@@ -72,8 +71,12 @@ def make_minimizer(
     def minimize(coords, sigma):
         if not spec.is_active():
             return coords
+        # skip the whole step only when sigma exceeds every restraint's start_sigma
         return jax.lax.cond(
-            jnp.asarray(sigma) <= start_sigma, _descend, lambda c: c, coords
+            jnp.asarray(sigma) <= max_ss,
+            lambda c: _descend(c, sigma),
+            lambda c: c,
+            coords,
         )
 
     return minimize

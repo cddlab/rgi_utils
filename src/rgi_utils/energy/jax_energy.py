@@ -114,29 +114,49 @@ def distance_energy(
     return jnp.sum(delta**2 * mask)
 
 
-def total_energy(positions, prepared):
-    """Sum all restraint energies. ``prepared`` is the dict from ``prepare_spec``."""
+def total_energy(positions, prepared, sigma=None):
+    """Sum all restraint energies. ``sigma`` (current noise level) gates each
+    restraint via ``sigma <= start_sigma`` folded into the mask (conformer terms
+    share ``conf_start_sigma``; distances have their own). ``sigma=None`` disables
+    gating. Pure jnp so it stays JIT/vmap-able."""
+    if sigma is None:
+        cg = 1.0
+    else:
+        cg = (jnp.asarray(sigma) <= prepared.get("conf_start_sigma", 1e30)).astype(
+            positions.dtype
+        )
     ene = jnp.asarray(0.0, dtype=positions.dtype)
     if "bond" in prepared:
         b = prepared["bond"]
         ene = ene + bond_energy(
-            positions, b["idx"], b["r0"], b["slack"], b["weight"], b["half"], b["mask"]
+            positions,
+            b["idx"],
+            b["r0"],
+            b["slack"],
+            b["weight"],
+            b["half"],
+            b["mask"] * cg,
         )
     if "angle" in prepared:
         a = prepared["angle"]
         ene = ene + angle_energy(
-            positions, a["idx"], a["th0"], a["slack"], a["weight"], a["mask"]
+            positions, a["idx"], a["th0"], a["slack"], a["weight"], a["mask"] * cg
         )
     if "chiral" in prepared:
         c = prepared["chiral"]
         ene = ene + chiral_energy(
-            positions, c["idx"], c["vol0"], c["slack"], c["weight"], c["mask"]
+            positions, c["idx"], c["vol0"], c["slack"], c["weight"], c["mask"] * cg
         )
     if "vdw" in prepared:
         v = prepared["vdw"]
-        ene = ene + vdw_energy(positions, v["idx"], v["r_min"], v["weight"], v["mask"])
+        ene = ene + vdw_energy(
+            positions, v["idx"], v["r_min"], v["weight"], v["mask"] * cg
+        )
     if "distance" in prepared:
         d = prepared["distance"]
+        dmask = d["mask"]
+        if sigma is not None:
+            dmask = dmask * (jnp.asarray(sigma) <= d["start_sigma"]).astype(dmask.dtype)
         ene = ene + distance_energy(
             positions,
             d["grp1_idx"],
@@ -146,14 +166,14 @@ def total_energy(positions, prepared):
             d["target1"],
             d["target2"],
             d["dist_type"],
-            d["mask"],
+            dmask,
         )
     return ene
 
 
 def prepare_spec(spec):
     """Convert a backend-agnostic ``RestraintSpec`` into jnp arrays."""
-    prepared = {}
+    prepared = {"conf_start_sigma": float(getattr(spec, "conf_start_sigma", -1.0))}
     if spec.bond is not None and spec.bond.mask.sum() > 0:
         b = spec.bond
         prepared["bond"] = {
@@ -201,5 +221,6 @@ def prepare_spec(spec):
             "target2": jnp.asarray(d.target2),
             "dist_type": jnp.asarray(d.dist_type, dtype=jnp.int32),
             "mask": jnp.asarray(d.mask),
+            "start_sigma": jnp.asarray(d.start_sigma),
         }
     return prepared

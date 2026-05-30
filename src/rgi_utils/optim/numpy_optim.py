@@ -26,17 +26,18 @@ class NumpyRestraintOptimizer:
         self.method = method
 
     def minimize(self, coords, sigma=None, start_sigma=None, max_iter=None):
-        """Optimize ``coords`` (..., n_atom, 3) numpy array in-place."""
+        """Optimize ``coords`` (..., n_atom, 3) numpy array in-place. Restraints
+        are gated per-term on ``sigma <= start_sigma`` inside the energy."""
         if not self.spec.is_active():
             return coords
-        if sigma is not None and start_sigma is not None and sigma > start_sigma:
+        if sigma is not None and sigma > self.spec.max_start_sigma():
             return coords
         active = coords[..., self.active_sites, :]
         shape = active.shape
         prepared = self.prepared
 
         def f(x):
-            return float(numpy_energy.total_energy(x.reshape(shape), prepared))
+            return float(numpy_energy.total_energy(x.reshape(shape), prepared, sigma))
 
         x0 = np.asarray(active, dtype=np.float64).reshape(-1)
         res = optimize.minimize(

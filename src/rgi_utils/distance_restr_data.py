@@ -26,6 +26,7 @@ class DistanceData:
     target_local_sites2: list
     calc_method: str  # ["unfixed-absolute"]
     run_restr: bool
+    start_sigma: float  # apply this restraint only when noise level <= start_sigma
 
     def __init__(self):
         self.atom_selection1 = None
@@ -40,11 +41,15 @@ class DistanceData:
         self.target_local_sites2 = None
         self.calc_method = None
         self.run_restr = None
+        self.start_sigma = None  # per-restraint; filled by config (default = global)
 
     def set_config(self, config: dict):
         self.atom_selection1 = config.get("atom_selection1", None)
         self.atom_selection2 = config.get("atom_selection2", None)
         self.calc_method = config.get("calc_method", "unfixed-absolute")
+        # per-distance start_sigma (None -> the global default is applied later)
+        if "start_sigma" in config:
+            self.start_sigma = float(config["start_sigma"])
         if "harmonic" in config:
             self.target_distance = config["harmonic"].get("target_distance", None)
             if self.target_distance is not None:

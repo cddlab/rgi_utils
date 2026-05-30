@@ -22,7 +22,8 @@ class RestraintsConfig:
     backend: str | None = None  # "numpy" | "torch" | "jax"; None = auto
     method: str = "CG"
     max_iter: int = 100
-    start_sigma: float = -1.0
+    start_sigma: float = -1.0  # global default for every restraint
+    conf_start_sigma: float = -1.0  # one value for all conformer (ligand) restraints
     learning_rate: float = 0.01  # jax gradient-descent step size
     conformer_config: dict = field(default_factory=dict)
     distance_data: list = field(default_factory=list)
@@ -30,19 +31,28 @@ class RestraintsConfig:
     @classmethod
     def from_dict(cls, config: dict | None) -> "RestraintsConfig":
         config = config or {}
+        global_start_sigma = float(config.get("start_sigma", -1.0))
+        conformer_config = config.get("conformer_restraints_config", {}) or {}
         cfg = cls(
             verbose=config.get("verbose", False),
             gpu=config.get("gpu", False),
             backend=config.get("backend", None),
             method=config.get("method", "CG"),
             max_iter=config.get("max_iter", 100),
-            start_sigma=config.get("start_sigma", -1.0),
+            start_sigma=global_start_sigma,
+            # one conformer start_sigma for all ligands (falls back to global)
+            conf_start_sigma=float(
+                conformer_config.get("start_sigma", global_start_sigma)
+            ),
             learning_rate=config.get("learning_rate", 0.01),
-            conformer_config=config.get("conformer_restraints_config", {}) or {},
+            conformer_config=conformer_config,
         )
         for entry in config.get("distance_restraints_config", []) or []:
             dd = DistanceData()
             dd.set_config(entry)
+            # each distance restraint may set its own start_sigma; else global
+            if dd.start_sigma is None:
+                dd.start_sigma = global_start_sigma
             cfg.distance_data.append(dd)
         return cfg
 

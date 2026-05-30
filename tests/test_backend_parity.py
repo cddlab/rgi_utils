@@ -56,6 +56,7 @@ def _make_spec() -> RestraintSpec:
         target2=np.array([6.0, 5.0]),
         dist_type=np.array([0, 1], dtype=np.int64),  # harmonic + flat-bottomed
         mask=np.array([1.0, 1.0]),
+        start_sigma=np.array([100.0, 5.0]),  # different per-distance start_sigma
     )
     # large r_min so these pairs are "clashing" (non-zero VdW energy) for the
     # random positions; the third pair is masked out (padding).
@@ -73,6 +74,7 @@ def _make_spec() -> RestraintSpec:
         chiral=chiral,
         vdw=vdw,
         distance=distance,
+        conf_start_sigma=10.0,  # conformer terms active when sigma <= 10
     )
 
 
@@ -145,3 +147,42 @@ def test_grad_parity():
     assert np.allclose(g_t, g_fd, atol=1e-4), f"max diff {np.abs(g_t - g_fd).max()}"
     assert np.allclose(g_j, g_fd, atol=1e-4), f"max diff {np.abs(g_j - g_fd).max()}"
     assert np.allclose(g_t, g_j, atol=1e-6), f"max diff {np.abs(g_t - g_j).max()}"
+
+
+def test_sigma_gating_parity():
+    """Per-restraint start_sigma gating agrees across backends and actually gates."""
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.energy import jax_energy, torch_energy
+
+    spec = _make_spec()  # conf_start_sigma=10; distance start_sigma=[100, 5]
+    pos = _positions()
+    prep_np = numpy_energy.prepare_spec(spec)
+    prep_t = torch_energy.prepare_spec(spec, dtype=torch.float64)
+    prep_j = jax_energy.prepare_spec(spec)
+    pt = torch.tensor(pos, dtype=torch.float64)
+    pj = jnp.asarray(pos)
+
+    def e_all(sigma):
+        return (
+            float(numpy_energy.total_energy(pos, prep_np, sigma)),
+            float(torch_energy.total_energy(pt, prep_t, sigma)),
+            float(jax_energy.total_energy(pj, prep_j, sigma)),
+        )
+
+    # cross-backend agreement at several noise levels
+    for sigma in (200.0, 50.0, 8.0, 3.0):
+        en, et, ej = e_all(sigma)
+        assert abs(en - et) < 1e-6 and abs(en - ej) < 1e-6, f"sigma={sigma}"
+
+    e_ungated = float(numpy_energy.total_energy(pos, prep_np))  # sigma=None
+    # above every start_sigma -> nothing active -> zero
+    assert e_all(200.0)[0] == 0.0
+    # sigma=3 is <= every start_sigma -> all active -> equals the ungated energy
+    assert abs(e_all(3.0)[0] - e_ungated) < 1e-9
+    # sigma=50 (conf off, dist start_sigma=5 off, only dist start_sigma=100 on)
+    # has strictly fewer active terms than sigma=3
+    assert e_all(50.0)[0] <= e_all(3.0)[0]

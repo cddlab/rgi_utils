@@ -81,7 +81,11 @@ class CombinedRestraints:
                 logger.warning("get_elements failed, VdW disabled: %s", exc)
 
         self.spec = build_spec(
-            ligand_confs, cfg.distance_data, cfg.conformer_config, elements=elements
+            ligand_confs,
+            cfg.distance_data,
+            cfg.conformer_config,
+            elements=elements,
+            conf_start_sigma=cfg.conf_start_sigma,
         )
         self._backend = cfg.resolve_backend()
         self._optimizer = None
@@ -103,11 +107,23 @@ class CombinedRestraints:
                 if vc is None
                 else f"{len(vc.ligand_local)}lig/{len(vc.protein_global)}prot"
             )
+            # Per-restraint start_sigma: conformer terms share conf_start_sigma;
+            # each distance restraint has its own (show the observed range).
+            if d is None or n_dist == 0:
+                dist_ss = "n/a"
+            else:
+                ss = d.start_sigma
+                dist_ss = (
+                    f"{float(ss.min()):g}"
+                    if float(ss.min()) == float(ss.max())
+                    else f"{float(ss.min()):g}..{float(ss.max()):g}"
+                )
             msg = (
                 f"[rgi_utils] setup: backend={self._backend} "
                 f"n_active={self.spec.n_active} "
                 f"conformer={self.spec.has_conformer()} n_distance={n_dist} "
-                f"vdw={vdw_s} start_sigma={cfg.start_sigma}"
+                f"vdw={vdw_s} conf_start_sigma={self.spec.conf_start_sigma:g} "
+                f"dist_start_sigma={dist_ss}"
             )
             logger.info(msg)
             print(msg, flush=True)
@@ -162,35 +178,34 @@ class CombinedRestraints:
         if not self.is_active():
             return coords
         b = self._backend
+        # Per-restraint gating now lives in the energy (sigma <= start_sigma per
+        # term); each optimizer additionally skips the step when sigma exceeds
+        # every restraint's start_sigma (spec.max_start_sigma()).
         if b == "jax":
             s = sigma if sigma is not None else 1e30
             return self._minimize_fn(coords, s)
-        if sigma is not None and sigma > self.config.start_sigma:
-            return coords
         if b == "torch":
-            self._optimizer.minimize(
-                coords, sigma=sigma, start_sigma=self.config.start_sigma
-            )
+            self._optimizer.minimize(coords, sigma=sigma)
             return coords
         if b == "numpy":
-            return self._minimize_numpy(coords)
+            return self._minimize_numpy(coords, sigma)
         return coords
 
-    def _minimize_numpy(self, coords):
+    def _minimize_numpy(self, coords, sigma=None):
         import numpy as np
 
         if hasattr(coords, "detach"):  # torch tensor on the numpy backend (gpu:false)
             import torch
 
             arr = coords.detach().cpu().numpy().astype(np.float64)
-            self._optimizer.minimize(arr)
+            self._optimizer.minimize(arr, sigma=sigma)
             with torch.no_grad():
                 coords.copy_(
                     torch.as_tensor(arr, device=coords.device, dtype=coords.dtype)
                 )
             return coords
         arr = np.asarray(coords)
-        self._optimizer.minimize(arr)
+        self._optimizer.minimize(arr, sigma=sigma)
         return arr
 
     def finalize(self, coords, istep: int = 0) -> None:

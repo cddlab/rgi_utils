@@ -122,6 +122,7 @@ class DistanceArrays:
     target2: np.ndarray  # (n_dist,) upper target
     dist_type: np.ndarray  # (n_dist,) int code (see DIST_* above)
     mask: np.ndarray  # (n_dist,)
+    start_sigma: np.ndarray  # (n_dist,) per-restraint; active when sigma<=start_sigma
 
 
 @dataclass
@@ -140,6 +141,9 @@ class RestraintSpec:
     vdw: VdwArrays | None = None
     vdw_config: VdwConfig | None = None
     distance: DistanceArrays | None = None
+    # one start_sigma for ALL conformer (bond/angle/chiral/vdw) restraints; each
+    # distance restraint carries its own in DistanceArrays.start_sigma.
+    conf_start_sigma: float = -1.0
 
     def has_conformer(self) -> bool:
         """True if any conformer (bond/angle/chiral/vdw) restraint exists."""
@@ -157,3 +161,13 @@ class RestraintSpec:
     def is_active(self) -> bool:
         """True if there is any work to do."""
         return self.n_active > 0 and (self.has_conformer() or self.has_distance())
+
+    def max_start_sigma(self) -> float:
+        """Largest start_sigma over all active restraints. The optimizer can skip
+        a step entirely when the noise level exceeds this (nothing is active yet)."""
+        vals = []
+        if self.has_conformer():
+            vals.append(float(self.conf_start_sigma))
+        if self.has_distance() and self.distance is not None:
+            vals.append(float(np.max(self.distance.start_sigma)))
+        return max(vals) if vals else -1.0

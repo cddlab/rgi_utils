@@ -114,29 +114,47 @@ def distance_energy(
     return np.sum(delta**2 * mask)
 
 
-def total_energy(positions, prepared):
-    """Sum all restraint energies. ``prepared`` is the dict from ``prepare_spec``."""
+def total_energy(positions, prepared, sigma=None):
+    """Sum all restraint energies. ``prepared`` is the dict from ``prepare_spec``.
+
+    ``sigma`` is the current diffusion noise level: each restraint contributes
+    only when ``sigma <= start_sigma`` (a 0/1 gate folded into its mask). The
+    conformer terms (bond/angle/chiral/vdw) share one ``conf_start_sigma``; each
+    distance restraint has its own. ``sigma=None`` disables gating (all active).
+    """
+    cg = 1.0 if sigma is None else (sigma <= prepared.get("conf_start_sigma", 1e30))
     ene = 0.0
     if "bond" in prepared:
         b = prepared["bond"]
         ene = ene + bond_energy(
-            positions, b["idx"], b["r0"], b["slack"], b["weight"], b["half"], b["mask"]
+            positions,
+            b["idx"],
+            b["r0"],
+            b["slack"],
+            b["weight"],
+            b["half"],
+            b["mask"] * cg,
         )
     if "angle" in prepared:
         a = prepared["angle"]
         ene = ene + angle_energy(
-            positions, a["idx"], a["th0"], a["slack"], a["weight"], a["mask"]
+            positions, a["idx"], a["th0"], a["slack"], a["weight"], a["mask"] * cg
         )
     if "chiral" in prepared:
         c = prepared["chiral"]
         ene = ene + chiral_energy(
-            positions, c["idx"], c["vol0"], c["slack"], c["weight"], c["mask"]
+            positions, c["idx"], c["vol0"], c["slack"], c["weight"], c["mask"] * cg
         )
     if "vdw" in prepared:
         v = prepared["vdw"]
-        ene = ene + vdw_energy(positions, v["idx"], v["r_min"], v["weight"], v["mask"])
+        ene = ene + vdw_energy(
+            positions, v["idx"], v["r_min"], v["weight"], v["mask"] * cg
+        )
     if "distance" in prepared:
         d = prepared["distance"]
+        dmask = d["mask"]
+        if sigma is not None:
+            dmask = dmask * (sigma <= d["start_sigma"])
         ene = ene + distance_energy(
             positions,
             d["grp1_idx"],
@@ -146,14 +164,14 @@ def total_energy(positions, prepared):
             d["target1"],
             d["target2"],
             d["dist_type"],
-            d["mask"],
+            dmask,
         )
     return ene
 
 
 def prepare_spec(spec):
     """Convert a backend-agnostic ``RestraintSpec`` into NumPy arrays (dict form)."""
-    prepared = {}
+    prepared = {"conf_start_sigma": float(getattr(spec, "conf_start_sigma", -1.0))}
     if spec.bond is not None and spec.bond.mask.sum() > 0:
         b = spec.bond
         prepared["bond"] = {
@@ -201,5 +219,6 @@ def prepare_spec(spec):
             "target2": np.asarray(d.target2, dtype=np.float64),
             "dist_type": np.asarray(d.dist_type, dtype=np.int64),
             "mask": np.asarray(d.mask, dtype=np.float64),
+            "start_sigma": np.asarray(d.start_sigma, dtype=np.float64),
         }
     return prepared

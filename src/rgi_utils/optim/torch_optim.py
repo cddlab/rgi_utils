@@ -87,13 +87,19 @@ class TorchRestraintOptimizer:
         return v["weight"] * torch.sum(delta**2)
 
     def minimize(self, coords, sigma=None, start_sigma=None, max_iter=None):
-        """Optimize ``coords`` (..., n_atom, 3) in-place. No-op above start_sigma."""
+        """Optimize ``coords`` (..., n_atom, 3) in-place. Each restraint is gated
+        on ``sigma <= its start_sigma`` inside the energy; the whole step is
+        skipped only when ``sigma`` exceeds every restraint's start_sigma."""
         if not self.spec.is_active():
             return coords
-        if sigma is not None and start_sigma is not None and sigma > start_sigma:
+        if sigma is not None and sigma > self.spec.max_start_sigma():
             return coords
         self._ensure(coords.device, coords.dtype)
         mi = max_iter if max_iter is not None else self.max_iter
+        # VdW is a conformer restraint -> gated by conf_start_sigma
+        vdw_active = self._vdw is not None and (
+            sigma is None or sigma <= float(self.spec.conf_start_sigma)
+        )
 
         # boltz / Lightning run prediction under torch.inference_mode, where leaf
         # tensors cannot require grad. Re-enable autograd and copy the slices into
@@ -104,7 +110,7 @@ class TorchRestraintOptimizer:
             active.copy_(coords[..., self._active_idx, :])
             active.requires_grad_(True)
             prot_pos = None
-            if self._vdw is not None:
+            if vdw_active:
                 prot_pos = torch.empty_like(coords[..., self._vdw["prot_global"], :])
                 prot_pos.copy_(coords[..., self._vdw["prot_global"], :])
             opt = torch.optim.LBFGS(
@@ -114,7 +120,7 @@ class TorchRestraintOptimizer:
 
             def closure():
                 opt.zero_grad()
-                e = torch_energy.total_energy(active, prepared)
+                e = torch_energy.total_energy(active, prepared, sigma)
                 if prot_pos is not None:
                     e = e + self._vdw_energy(active, prot_pos)
                 e.backward()

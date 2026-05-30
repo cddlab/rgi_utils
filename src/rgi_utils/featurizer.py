@@ -193,6 +193,7 @@ def build_spec(
     distance_restraints: list | None = None,
     conformer_config: dict | None = None,
     elements: np.ndarray | None = None,
+    conf_start_sigma: float = -1.0,
 ) -> RestraintSpec:
     """Build a RestraintSpec. ``distance_restraints`` are DistanceData with
     ``target_sites1``/``target_sites2`` already resolved to global indices."""
@@ -285,6 +286,7 @@ def build_spec(
         target1 = np.zeros(n)
         target2 = np.zeros(n)
         dist_type = np.zeros(n, dtype=np.int64)
+        dist_start_sigma = np.full(n, -1.0)
         for di, dr in enumerate(distance_restraints):
             s1 = [g2l[int(s)] for s in dr.target_sites1]
             s2 = [g2l[int(s)] for s in dr.target_sites2]
@@ -296,6 +298,8 @@ def build_spec(
             dist_type[di] = code
             target1[di] = t1
             target2[di] = t2
+            ss = getattr(dr, "start_sigma", None)
+            dist_start_sigma[di] = float(ss) if ss is not None else conf_start_sigma
         distance = DistanceArrays(
             grp1_idx=grp1_idx,
             grp2_idx=grp2_idx,
@@ -305,6 +309,7 @@ def build_spec(
             target2=target2,
             dist_type=dist_type,
             mask=np.ones(n),
+            start_sigma=dist_start_sigma,
         )
 
     spec = RestraintSpec(
@@ -315,6 +320,7 @@ def build_spec(
         chiral=chiral,
         distance=distance,
         vdw_config=vdw_config,
+        conf_start_sigma=conf_start_sigma,
     )
     logger.info(
         "built spec: n_active=%d bonds=%d angles=%d chirals=%d distances=%d vdw=%s",

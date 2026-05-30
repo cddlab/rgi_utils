@@ -19,7 +19,8 @@ def _distorted_ethane():
     c = np.asarray(m.GetConformer().GetPositions())
     n = m.GetNumAtoms()
     lc = LigandConf(mol=m, conf_coords=c, global_indices=np.arange(n))
-    spec = build_spec([lc], [], {})
+    # conf_start_sigma large so the conformer restraint is active at any sigma
+    spec = build_spec([lc], [], {}, conf_start_sigma=1e30)
 
     n_atom = n + 5  # padding atoms beyond the ligand
     coords = np.zeros((1, n_atom, 3))
