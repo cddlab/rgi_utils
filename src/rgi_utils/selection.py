@@ -339,6 +339,10 @@ class AtomSelector:
             self._error = result
             raise ValueError(f"Failed to parse selection string: {self._error}")
 
+    def matches(self, mol: Dict[str, Union[str, int]]) -> bool:
+        """Selection-match alias; some callers (e.g. AF3) call ``matches``."""
+        return getattr(self, "eval")(mol)
+
     def eval(self, mol: Dict[str, Union[str, int]]) -> bool:
         """
         mol: Dict[str, str | int]
