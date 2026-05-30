@@ -171,6 +171,72 @@ def total_energy(positions, prepared, sigma=None):
     return ene
 
 
+def energy_breakdown(positions, prepared, sigma=None):
+    """Per-term restraint energies (same maths + gating as ``total_energy``).
+
+    Returns ``{bond, angle, chiral, vdw, distance}`` python floats (host-side).
+    Not for use inside JIT (the floats force a device->host sync); for diagnostics.
+    """
+    if sigma is None:
+        cg = 1.0
+    else:
+        cg = (jnp.asarray(sigma) <= prepared.get("conf_start_sigma", 1e30)).astype(
+            positions.dtype
+        )
+    out = {"bond": 0.0, "angle": 0.0, "chiral": 0.0, "vdw": 0.0, "distance": 0.0}
+    if "bond" in prepared:
+        b = prepared["bond"]
+        out["bond"] = float(
+            bond_energy(
+                positions,
+                b["idx"],
+                b["r0"],
+                b["slack"],
+                b["weight"],
+                b["half"],
+                b["mask"] * cg,
+            )
+        )
+    if "angle" in prepared:
+        a = prepared["angle"]
+        out["angle"] = float(
+            angle_energy(
+                positions, a["idx"], a["th0"], a["slack"], a["weight"], a["mask"] * cg
+            )
+        )
+    if "chiral" in prepared:
+        c = prepared["chiral"]
+        out["chiral"] = float(
+            chiral_energy(
+                positions, c["idx"], c["vol0"], c["slack"], c["weight"], c["mask"] * cg
+            )
+        )
+    if "vdw" in prepared:
+        v = prepared["vdw"]
+        out["vdw"] = float(
+            vdw_energy(positions, v["idx"], v["r_min"], v["weight"], v["mask"] * cg)
+        )
+    if "distance" in prepared:
+        d = prepared["distance"]
+        dmask = d["mask"]
+        if sigma is not None:
+            dmask = dmask * (jnp.asarray(sigma) <= d["start_sigma"]).astype(dmask.dtype)
+        out["distance"] = float(
+            distance_energy(
+                positions,
+                d["grp1_idx"],
+                d["grp2_idx"],
+                d["grp1_mask"],
+                d["grp2_mask"],
+                d["target1"],
+                d["target2"],
+                d["dist_type"],
+                dmask,
+            )
+        )
+    return out
+
+
 def prepare_spec(spec):
     """Convert a backend-agnostic ``RestraintSpec`` into jnp arrays."""
     prepared = {"conf_start_sigma": float(getattr(spec, "conf_start_sigma", -1.0))}

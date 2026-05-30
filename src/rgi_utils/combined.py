@@ -212,12 +212,57 @@ class CombinedRestraints:
         if not self.is_active() or not self.config.verbose:
             return
         try:
-            e = self._restraint_energy(coords)
-            msg = f"[rgi_utils] finalize (step {istep}): restraint energy = {e:.5f}"
+            bd = self._restraint_breakdown(coords)
+            total = bd["bond"] + bd["angle"] + bd["chiral"] + bd["vdw"] + bd["distance"]
+            msg = (
+                f"[rgi_utils] finalize (step {istep}): "
+                f"bond={bd['bond']:.5f} angle={bd['angle']:.5f} "
+                f"chiral={bd['chiral']:.5f} vdw={bd['vdw']:.5f} "
+                f"distance={bd['distance']:.5f} total={total:.5f}"
+            )
             logger.info(msg)
             print(msg, flush=True)
         except Exception as exc:  # stats are best-effort
             logger.warning("finalize stats failed: %s", exc)
+
+    def _restraint_breakdown(self, coords) -> dict:
+        """Per-term restraint energies at ``coords`` (active atoms), backend-aware."""
+        import numpy as np
+
+        spec = self.spec
+        active_idx = spec.active_sites
+        b = self._backend
+        if b == "jax":
+            import jax.numpy as jnp
+
+            from rgi_utils.energy import jax_energy
+
+            active = jnp.asarray(coords)[..., active_idx, :]
+            return jax_energy.energy_breakdown(active, jax_energy.prepare_spec(spec))
+        if b == "torch":
+            import torch
+
+            from rgi_utils.energy import torch_energy
+
+            c = (
+                coords
+                if isinstance(coords, torch.Tensor)
+                else torch.as_tensor(np.asarray(coords))
+            )
+            active = c[..., active_idx, :].to(torch.float64)
+            prepared = torch_energy.prepare_spec(
+                spec, dtype=torch.float64, device=active.device
+            )
+            return torch_energy.energy_breakdown(active, prepared)
+        from rgi_utils.energy import numpy_energy
+
+        arr = (
+            coords.detach().cpu().numpy()
+            if hasattr(coords, "detach")
+            else np.asarray(coords)
+        )
+        active = arr[..., active_idx, :]
+        return numpy_energy.energy_breakdown(active, numpy_energy.prepare_spec(spec))
 
     def _restraint_energy(self, coords) -> float:
         b = self._backend
