@@ -20,10 +20,11 @@ torch = [
 vdw = [
     "torch_cluster",
 ]
-# JAX backend (alphafold3). Uses jax.lax.fori_loop gradient descent — no jaxopt.
+# JAX backend (alphafold3). Uses jaxopt LBFGS/NonlinearCG (jittable, in-JIT).
 jax = [
     "jax",
     "jaxlib",
+    "jaxopt",
 ]
 
 [dependency-groups]

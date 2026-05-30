@@ -1,10 +1,12 @@
 """GPU restraint optimizer for JAX tools (alphafold3).
 
-Builds a JIT/scan/vmap-compatible minimizer: gradient descent via
-``jax.lax.fori_loop`` over an analytic ``jax.grad`` energy, gated on the noise
-level with ``jax.lax.cond``. There is NO ``pure_callback`` and NO scipy — the
-whole optimization runs inside XLA on the accelerator, which is what fixes the
-slow distance restraints in the old AF3 prototype.
+Builds a JIT/scan/vmap-compatible minimizer using a ``jaxopt`` solver
+(NonlinearCG or LBFGS) over an analytic ``jax.grad`` energy, gated on the noise
+level with ``jax.lax.cond``. There is NO ``pure_callback`` and NO scipy backend
+— jaxopt's solvers are pure JAX, so the whole optimization runs inside XLA on
+the accelerator. This fixes the slow AF3 restraint path (which used
+``jaxopt.ScipyMinimize`` outside JIT) while giving proper line-searched
+convergence rather than fixed-step gradient descent.
 """
 
 from __future__ import annotations
@@ -20,28 +22,51 @@ logger = logging.getLogger(__name__)
 
 
 def make_minimizer(
-    spec, max_iter: int = 200, learning_rate: float = 0.01, start_sigma: float = -1.0
+    spec,
+    max_iter: int = 200,
+    learning_rate: float = 0.01,
+    start_sigma: float = -1.0,
+    method: str = "lbfgs",
 ):
     """Return ``minimize(coords, sigma) -> coords``.
 
     ``coords`` has shape (..., n_atom, 3). The returned function is pure and
-    JIT-able, so it can be called inside ``jax.lax.scan`` in the diffusion loop.
+    JIT/vmap-able, so it runs inside the diffusion loop's ``hk.scan``/``hk.vmap``.
+    ``method`` selects the jaxopt solver: ``"cg"`` -> NonlinearCG, else LBFGS.
+    ``learning_rate`` is accepted for API compatibility but unused (the solver
+    runs its own line search).
     """
+    import jaxopt
+
     active_idx = jnp.asarray(spec.active_sites, dtype=jnp.int32)
     prepared = jax_energy.prepare_spec(spec)
 
     def energy_fn(active):
         return jax_energy.total_energy(active, prepared)
 
-    grad_fn = jax.grad(energy_fn)
+    # ``backtracking`` enforces sufficient decrease (Armijo), like torch's
+    # strong-Wolfe line search. The default ``zoom``/``hager-zhang`` searches can
+    # accept a huge first step that collapses atoms onto each other, where the
+    # eps-regularised distance makes the gradient vanish (a false stationary
+    # point) — backtracking rejects that step.
+    m = (method or "lbfgs").lower()
+    if m in ("cg", "ncg", "nonlinear-cg", "nonlinearcg"):
+        solver = jaxopt.NonlinearCG(
+            fun=energy_fn, maxiter=max_iter, linesearch="backtracking",
+            implicit_diff=False,
+        )
+    else:
+        solver = jaxopt.LBFGS(
+            fun=energy_fn, maxiter=max_iter, linesearch="backtracking",
+            implicit_diff=False,
+        )
 
     def _descend(coords):
         active = coords[..., active_idx, :]
-
-        def step(_, a):
-            return a - learning_rate * grad_fn(a)
-
-        active_opt = jax.lax.fori_loop(0, max_iter, step, active)
+        active_opt = solver.run(active).params
+        # Robustness: a degenerate geometry can still make a solver step diverge;
+        # keep the input coordinates if the result is non-finite.
+        active_opt = jnp.where(jnp.all(jnp.isfinite(active_opt)), active_opt, active)
         return coords.at[..., active_idx, :].set(active_opt)
 
     def minimize(coords, sigma):

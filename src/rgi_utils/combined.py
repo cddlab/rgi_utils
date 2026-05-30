@@ -128,6 +128,7 @@ class CombinedRestraints:
                 max_iter=self.config.max_iter,
                 learning_rate=self.config.learning_rate,
                 start_sigma=self.config.start_sigma,
+                method=self.config.method,
             )
         elif b == "numpy":
             from rgi_utils.optim.numpy_optim import NumpyRestraintOptimizer
