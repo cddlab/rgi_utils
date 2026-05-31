@@ -80,8 +80,27 @@ class ProtenixAdapter:
             return
         chains = np.asarray(aa.label_asym_id)
         resids = np.asarray(aa.res_id)
+        hetero = np.asarray(aa.hetero, dtype=bool)
+        # Per-chain 1-based residue/token ordinal, matching boltz/AF3 so one
+        # selection string means the same atom in every tool. protenix tokenizes a
+        # ligand per atom but sets res_id=1 for ALL atoms of a single-CCD ligand,
+        # so res_id can't be trusted directly: count polymer residues by res_id
+        # group, but give each hetero (ligand) atom its own ordinal -> 1..N.
+        chain_resmap: dict[str, dict[int, int]] = {}
+        chain_counter: dict[str, int] = {}
         for i in range(len(aa)):
-            yield AtomRecord(chain=str(chains[i]), resid=int(resids[i]), index=int(i))
+            ch = str(chains[i])
+            if bool(hetero[i]):
+                chain_counter[ch] = chain_counter.get(ch, 0) + 1
+                ordinal = chain_counter[ch]
+            else:
+                rid = int(resids[i])
+                seen = chain_resmap.setdefault(ch, {})
+                if rid not in seen:
+                    chain_counter[ch] = chain_counter.get(ch, 0) + 1
+                    seen[rid] = chain_counter[ch]
+                ordinal = seen[rid]
+            yield AtomRecord(chain=ch, resid=ordinal, index=int(i))
 
     # --- ConformerAdapter -----------------------------------------------------
     def num_atoms(self) -> int:
@@ -100,18 +119,31 @@ class ProtenixAdapter:
 
     def iter_ligand_confs(self) -> Iterator[LigandConf]:
         aa = self.atom_array
-        if aa is None or getattr(aa, "bonds", None) is None:
+        if aa is None:
             return
         hetero = np.asarray(aa.hetero, dtype=bool)
         asym = np.asarray(aa.label_asym_id)
         coords_all = np.asarray(aa.coord, dtype=np.float64)
         elements_all = np.asarray(aa.element)
-        bond_arr = aa.bonds.as_array()  # (n_bond, 3): i, j, order
+        # per-ligand conformer_restraints flag (annotation set by json_to_feature);
+        # default on when the annotation is absent (older feats / no opt-out).
+        conf_rest_annot = None
+        if "conformer_restraints" in aa.get_annotation_categories():
+            conf_rest_annot = np.asarray(aa.conformer_restraints, dtype=bool)
+        # bonds may be absent (a structure whose only hetero atoms are monatomic
+        # ions has no BondList); treat as no bonds rather than bailing out so the
+        # ions still surface as LigandConf for ligand-protein VdW (matching boltz).
+        bond_arr = (
+            aa.bonds.as_array()  # (n_bond, 3): i, j, order
+            if getattr(aa, "bonds", None) is not None
+            else np.empty((0, 3), dtype=np.int64)
+        )
 
         for chain_id in np.unique(asym[hetero]):
             idxs = np.where((asym == chain_id) & hetero)[0]
-            if len(idxs) < 2:  # lone ion: no conformer geometry to restrain
-                continue
+            # Emit every hetero chain, including a monatomic ion (1 atom, 0 bonds):
+            # it yields no bond/angle/chiral terms but still joins ligand-protein
+            # VdW, matching boltz. _build_ligand_mol handles a 1-atom, 0-bond mol.
             g2l = {int(g): li for li, g in enumerate(idxs)}
             bonds_local = [
                 (g2l[int(i)], g2l[int(j)], int(o))
@@ -120,8 +152,12 @@ class ProtenixAdapter:
             ]
             coords = coords_all[idxs]
             mol = _build_ligand_mol(elements_all[idxs], coords, bonds_local)
+            conf_rest = True
+            if conf_rest_annot is not None:
+                conf_rest = bool(conf_rest_annot[idxs].any())
             yield LigandConf(
                 mol=mol,
                 conf_coords=coords,
                 global_indices=idxs.astype(np.int64),
+                conformer_restraints=conf_rest,
             )

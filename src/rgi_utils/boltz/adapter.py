@@ -100,6 +100,13 @@ class BoltzFeatsAdapter:
         asym_id_atom_b0, _ = self._per_atom()
         elements = np.asarray(self.get_elements())
         record = feats["record"]
+        # per-ligand conformer_restraints flag, stored per-atom (the ch_rest input
+        # flag -> ref_conformer_restraint); a ligand chain's atoms share one value.
+        # Absent (older feats) -> default on.
+        ref_conf_restr = feats.get("ref_conformer_restraint")
+        rcr0 = None
+        if ref_conf_restr is not None:
+            rcr0 = ref_conf_restr[0] if ref_conf_restr.dim() > 1 else ref_conf_restr
 
         for chain in record[0].chains:
             mol = ligand_mols.get(chain.chain_id)
@@ -144,8 +151,13 @@ class BoltzFeatsAdapter:
                 continue
 
             conf_coords = np.asarray(mol.GetConformer().GetPositions())
+            # honor the per-ligand opt-out (ch_rest); any flagged atom -> on
+            conf_restr = True
+            if rcr0 is not None and len(chain_sites) > 0:
+                conf_restr = bool(rcr0[chain_sites].any().item())
             yield LigandConf(
                 mol=mol,
                 conf_coords=conf_coords,
                 global_indices=global_indices,
+                conformer_restraints=conf_restr,
             )

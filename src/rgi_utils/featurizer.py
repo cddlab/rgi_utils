@@ -252,6 +252,12 @@ def build_spec(
     """Build a RestraintSpec. ``distance_restraints`` are DistanceData with
     ``target_sites1``/``target_sites2`` already resolved to global indices."""
     ligand_confs = ligand_confs or []
+    # Honor the per-ligand opt-out: a ligand flagged conformer_restraints=False
+    # gets no bond/angle/chiral/VdW restraints (skipped entirely, as if it had
+    # not been passed). This is the single enforcement point for every tool.
+    ligand_confs = [
+        lc for lc in ligand_confs if getattr(lc, "conformer_restraints", True)
+    ]
     distance_restraints = [
         dr for dr in (distance_restraints or []) if getattr(dr, "run_restr", False)
     ]

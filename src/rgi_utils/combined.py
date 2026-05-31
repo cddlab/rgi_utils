@@ -203,7 +203,11 @@ class CombinedRestraints:
         # term); each optimizer additionally skips the step when sigma exceeds
         # every restraint's start_sigma (spec.max_start_sigma()).
         if b == "jax":
-            s = sigma if sigma is not None else 1e30
+            # sigma=None means "no gating, all restraints active" (matching the
+            # numpy/torch branches). The gate is `sigma <= start_sigma`, so the
+            # None sentinel must be LOW (-inf) to pass every gate; 1e30 would skip
+            # everything (1e30 <= start_sigma is always False).
+            s = sigma if sigma is not None else float("-inf")
             return self._minimize_fn(coords, s)
         if b == "torch":
             self._optimizer.minimize(coords, sigma=sigma)
@@ -235,6 +239,19 @@ class CombinedRestraints:
         try:
             bd = self._restraint_breakdown(coords)
             total = bd["bond"] + bd["angle"] + bd["chiral"] + bd["vdw"] + bd["distance"]
+            # The dynamic ligand-protein VdW (spec.vdw_config) is applied only
+            # inside the torch optimizer and is absent from the static per-term
+            # breakdown above (energy_breakdown reads only spec.vdw). Recover it
+            # as (optimizer.energy - static total) so the logged vdw/total match
+            # what minimize actually applied.
+            if (
+                self._backend == "torch"
+                and getattr(self.spec, "vdw_config", None) is not None
+                and self._optimizer is not None
+            ):
+                dyn_vdw = float(self._optimizer.energy(coords)) - total
+                bd["vdw"] += dyn_vdw
+                total += dyn_vdw
             msg = (
                 f"[rgi_utils] finalize (step {istep}): "
                 f"bond={bd['bond']:.5f} angle={bd['angle']:.5f} "

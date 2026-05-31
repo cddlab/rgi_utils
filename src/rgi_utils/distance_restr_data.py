@@ -18,8 +18,8 @@ class DistanceData:
     target_distance: float
     target_distance1: float  # used in flat-bottomed, flat-bottomed1
     target_distance2: float  # used in flat-bottomed, flat-bottomed2
-    restraints_type: str  # ["harmonic", "flat-bottomed", "flat-bottomed1",
-    # "flat-bottomed2"]
+    distance_restraint_type: str | None  # harmonic / flat-bottomed /
+    # flat-bottomed1 / flat-bottomed2 (assigned by set_config)
     target_sites1: list
     target_sites2: list
     target_local_sites1: list
@@ -34,7 +34,10 @@ class DistanceData:
         self.target_distance = None
         self.target_distance1 = None
         self.target_distance2 = None
-        self.restraints_type = None
+        # the attribute actually read by set_config/calc/grad/featurizer; init to
+        # None so a config missing all type keys falls through to the clear
+        # ValueError("distance restraints not run") instead of an AttributeError.
+        self.distance_restraint_type = None
         self.target_sites1 = None
         self.target_sites2 = None
         self.target_local_sites1 = None

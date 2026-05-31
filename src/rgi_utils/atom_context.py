@@ -33,6 +33,11 @@ class LigandConf:
     global_indices: "np.ndarray"  # (n_lig_atoms,) global padded atom index per mol atom
     invert_chirality: bool = False
     atom_names: list[str] | None = None  # optional filter (e.g. CCD atom names)
+    # per-ligand opt-in: when False this ligand is skipped entirely (no bond/
+    # angle/chiral/VdW restraints). Adapters set it from the tool's per-ligand
+    # ``conformer_restraints`` input flag; default True keeps existing callers
+    # (which already pass only restrained ligands) unchanged.
+    conformer_restraints: bool = True
 
 
 @runtime_checkable
