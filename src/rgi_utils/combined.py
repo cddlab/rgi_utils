@@ -1,16 +1,23 @@
-"""``CombinedRestraints`` — the single entry point used by every tool.
+"""``CombinedRestraints`` — the restraint entry point used by every tool.
 
-Lifecycle:
-    restr = CombinedRestraints.get_instance()
-    restr.set_config(config_dict)          # parse YAML/JSON restraints_config
-    restr.setup(adapter, nbatch)           # resolve distances + build conformer spec
+Supported (instance-scoped) lifecycle — construct ONE per structure so batch
+runs never cross-contaminate:
+    restr = CombinedRestraints()
+    restr.setup(adapter, nbatch, config=restraints_config)  # config optional
     restr.minimize(coords, step, sigma)    # called each denoising step
-    restr.finalize(coords, step)           # optional stats
+    restr.finalize(coords, step)           # optional per-term energy stats
+
+``setup`` clears any prior derived state and (re)builds the spec, so reusing an
+instance is safe too. Two calls ``set_config(dict)`` then ``setup(adapter)`` are
+equivalent to passing ``config=`` to ``setup``.
 
 The backend (numpy/torch/jax) is chosen from the config; torch/jax optimizers are
 imported lazily so importing this module needs neither. JAX tools that run inside
-``jax.lax.scan`` should grab the pure minimizer via ``get_minimizer()`` instead of
-calling ``minimize`` per step.
+``jax.lax.scan`` should grab the pure minimizer via ``get_minimizer()``.
+
+``get_instance()`` / ``reset()`` are a back-compat singleton shim (kept for
+existing tests and boltz's legacy parse-time builders); new code should use the
+instance-scoped lifecycle above, not the singleton.
 """
 
 from __future__ import annotations
@@ -63,8 +70,22 @@ class CombinedRestraints:
         if self.config.verbose:
             _enable_verbose_logging()
 
-    def setup(self, adapter, nbatch: int = 1) -> None:
-        """Resolve distance selections and build the conformer spec from the adapter."""
+    def setup(self, adapter, nbatch: int = 1, config: dict | None = None) -> None:
+        """Build the restraint spec from the adapter (and optional ``config``).
+
+        Instance-scoped lifecycle (the supported pattern):
+        ``CombinedRestraints() -> setup(adapter, config=...) -> minimize ->
+        finalize``. Derived state (spec / optimizers) is cleared up front so a
+        reused instance never carries a stale spec, and passing ``config`` folds
+        the old two-call ``set_config -> setup`` into one. Constructing a fresh
+        instance per structure makes batch runs cross-contamination-free.
+        """
+        # Clear derived state first: a reused instance must not keep a stale spec.
+        self.spec = None
+        self._optimizer = None
+        self._minimize_fn = None
+        if config is not None:
+            self.set_config(config)
         cfg = self.config
         for dr in cfg.distance_data:
             dr.resolve_sites(adapter)
