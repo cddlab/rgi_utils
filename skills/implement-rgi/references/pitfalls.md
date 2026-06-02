@@ -77,3 +77,55 @@ tool. That keeps one implementation and brings the feature to every tool at once
 Example: AF3's intramolecular VdW became `featurizer._build_intramolecular_vdw`,
 opt-in via `vdw: {mode: intramolecular}`, leaving boltz/protenix's dynamic VdW
 untouched.
+
+## 10. The structure's atom coords may be ZEROED — take conformer geometry from the reference
+Some tools zero their atom-array coordinates at inference (a placeholder the
+diffusion fills in). openfold-3 does exactly this (`atom_array.coord[:] = 0.0`,
+"for consistency"). If `iter_ligand_confs` reads those coords, every conformer
+restraint TARGET (bond length, bond angle, chiral volume) is built from a
+degenerate origin cloud → bonds target 0, angles target 90°, and the minimizer
+**collapses the ligand**. **Fix**: take conformer geometry from the tool's
+*reference conformer* (a separate per-atom feature — openfold `ref_pos`, chai
+`atom_ref_pos` — built from the RDKit reference mol). Per-mol random
+rotation/translation is fine: rigid transforms preserve bond/angle/chiral values.
+Check at build time that `LigandConf.conf_coords` are non-zero and spread out.
+
+## 11. No intra-ligand bonds in the structure context — perceive them, then re-enable implicit-H
+A tool may expose the reference conformer coords but NOT the ligand's intra-molecular
+bonds. chai's `atom_covalent_bond_indices` holds only inter-residue/glycan links, so
+a normal ligand arrives with zero bonds → a bond-less mol → bond/angle/chiral all
+empty (a silent no-op). **Fix**: build the mol from the conformer and perceive
+connectivity — `build_ligand_mol(elements, ref_coords, [], perceive_bonds=True)`
+(RDKit `DetermineConnectivity`). **GOTCHA inside the fix**: `DetermineConnectivity`
+leaves every atom `noImplicit=True` with 0 implicit H, so heavy-atom stereocentres
+look 3-coordinate and `AssignStereochemistryFrom3D` assigns ZERO chiral tags — the
+chiral restraints then silently vanish while bond/angle (pure geometry) look fine.
+`build_ligand_mol` handles this by running `SetNoImplicit(False)` +
+`UpdatePropertyCache(strict=False)` before stereo perception. Do NOT reach for
+`DetermineBonds`/`DetermineBondOrders` instead — they raise on charged ligands
+(e.g. ATP triphosphate).
+
+## 12. Identify ligand atoms by entity type, not biotite `hetero`
+biotite sets `hetero=True` for ANY non-standard CCD residue — including a
+non-canonical residue inserted into a protein/NA chain — so keying ligand detection
+on `hetero` misclassifies modified polymer residues as ligands. **Fix**: use the
+tool's entity/molecule-type signal instead (openfold `molecule_type_id == LIGAND`,
+chai `token_entity_type == LIGAND`). Fall back to `hetero` only if no such
+annotation exists.
+
+## 13. A `finalize` energy of 0.0 can mean "no restraints", not "satisfied"
+The decisive proof that a restraint type is working is the **setup spec count**, not
+the finalize energy. A term that built **zero** restraints reports energy `0.00000`
+— indistinguishable at a glance from a perfectly-satisfied restraint. Always read
+the setup log (`built spec: bonds=.. angles=.. chirals=.. distances=.. vdw=..`) and
+confirm the count is non-zero for what you requested. The chai chiral no-op (pitfall
+11) hid for a full GPU run precisely because its `chiral=0.00000` was read as
+"satisfied" when it was actually "0 chiral restraints built".
+
+## 14. The tool may import an undeclared dep, or resolve a CPU build
+Integration code that adds `import yaml` (chai) needs PyYAML, which the tool may not
+declare — install it into the tool's env. And a bare `torch>=X` dependency resolves
+to the **CPU** wheel from PyPI by default; install from the CUDA index
+(`--index-url https://download.pytorch.org/whl/cu12x`) or RGI's GPU path is silently
+unavailable (`torch.cuda.is_available() == False`). These bite only at real-GPU run
+time, not at import — see pitfall 13's lesson about not trusting a clean-looking run.

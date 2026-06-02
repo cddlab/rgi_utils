@@ -24,7 +24,9 @@ GPU paths (real CUDA torch / jax devices) are exercised by the host tools via
 
 **rgi_utils** — Restraint-Guided Inference (RGI): inject distance + ligand
 conformer restraints into a structure-prediction diffusion loop via gradient
-optimization. Shared by boltz/protenix (torch) and alphafold3 (jax).
+optimization. Shared by boltz / protenix / chai-lab / openfold-3 (torch) and
+alphafold3 (jax). The end-to-end guide for integrating a new tool is the skill at
+`skills/implement-rgi/` (SKILL.md + references/).
 
 Design = **3 layers + autodiff + static shapes + GPU-complete optimization**:
 
@@ -53,32 +55,57 @@ Supporting modules:
   `VdwConfig` is assembled.
 - **`config.py`**: `RestraintsConfig.from_dict()` parses the shared
   `restraints_config` (one source of truth for boltz YAML / protenix JSON / AF3).
-- **`combined.py`**: `CombinedRestraints` singleton entry point —
-  `set_config(dict)` → `setup(adapter, nbatch)` → `minimize(coords, step, sigma)`
-  → `finalize(coords, step)`. Picks the backend from config; torch/jax imported
-  lazily. JAX tools that run inside `lax.scan` grab the pure minimizer via
-  `get_minimizer()` instead of calling `minimize` per step.
-- **Framework adapters** (`boltz/adapter.py`, more per tool): implement
-  `iter_atoms()` (→ `AtomRecord(chain, resid, index)` for distance selection) and
-  optionally `iter_ligand_confs()` + `get_elements()` (conformer + VdW).
+- **`combined.py`**: `CombinedRestraints` entry point — **instance-scoped, one per
+  structure** (NOT a singleton): `CombinedRestraints()` →
+  `setup(adapter, nbatch, config=dict)` (folds in the old `set_config`; clears any
+  prior spec/optimizer up front so a reused instance is safe) →
+  `minimize(coords, step, sigma)` → `finalize(coords, step)`. `get_instance()` /
+  `reset()` remain only as back-compat shims — do not build new code on them. Picks
+  the backend from config; torch/jax imported lazily. JAX tools inside `lax.scan` grab
+  the pure minimizer via `get_minimizer()` instead of calling `minimize` per step.
+- **Framework adapters** (`{boltz,protenix,chai,openfold3}/adapter.py`; AF3's lives
+  in-tool because it needs CCD machinery): implement `iter_atoms()` (→
+  `AtomRecord(chain, resid, index)` for distance selection) and optionally
+  `num_atoms()`, `get_elements()`, `iter_ligand_confs()` (→
+  `LigandConf(mol, conf_coords, global_indices)` for conformer + VdW).
+- **`_mol_build.py`**: `build_ligand_mol(elements, coords, bonds_local,
+  perceive_bonds=False)` — the shared RDKit builder. protenix/openfold pass real
+  `bonds_local`. chai exposes NO intra-ligand bonds, so its adapter passes
+  `perceive_bonds=True`: connectivity is derived from the reference conformer via
+  `DetermineConnectivity`, which leaves atoms `noImplicit=True` — so the branch then
+  runs `SetNoImplicit(False)` + `UpdatePropertyCache` **before**
+  `AssignStereochemistryFrom3D`, else stereocentres read as 3-coordinate and every
+  chiral restraint silently vanishes.
 - **Atom selection DSL** (`selection.py`): `AtomSelector` parses
   `"(chain A or chain B) and resid 1 to 10"`; used by `DistanceData`
   (`distance_restr_data.py`) to resolve COM-based distance groups.
 
-### VdW (ligand-protein)
+### VdW (two flavours)
 
-The static `vdw_energy` (idx pairs) lives in the energy layer for parity. The
-*dynamic* ligand-protein clash term lives in `optim/torch_optim.py`: the ligand
-moves (it is in `active_sites`), the protein is a **fixed background** read from
-the full coordinate tensor (`VdwConfig.protein_global`), so only the ligand is
-pushed out of contacts. Penalty `weight * clamp(d - scale*(r_i+r_j), max=0)**2`,
-all-pairs (zero gradient beyond contact) — same maths as boltz's radius search.
+- **Intramolecular** (`conformer vdw: {mode: intramolecular}`): static non-bonded
+  ligand-internal pairs (topo distance > 2, within `dmax`), built in `featurizer.py`
+  and carried in `spec.vdw` (`VdwArrays`). Works in **all backends** — prefer this.
+- **Dynamic ligand-protein** (torch only): lives in `optim/torch_optim.py`. The
+  ligand moves (it is in `active_sites`); the protein is a **fixed background** read
+  from the full coordinate tensor (`VdwConfig.protein_global`), so only the ligand is
+  pushed out of contacts. Penalty `weight * clamp(d - scale*(r_i+r_j), max=0)**2`,
+  all-pairs (zero gradient beyond contact) — same maths as boltz's radius search.
+
+The static `vdw_energy` (idx pairs) lives in the energy layer for parity across backends.
 
 ### Key design points
 
-- `CombinedRestraints` is a singleton; call `reset()` between uses in tests.
-- `AtomRecord.index` is a **padded** index (raw tensor position); `resid` is
-  1-based residue id.
+- `CombinedRestraints` is **instance-scoped — a fresh `CombinedRestraints()` per
+  structure** (this is what makes batch runs / retries correct without leaking the
+  previous structure's config). `get_instance()`/`reset()` are back-compat shims only.
+- `AtomRecord.index` is the atom's **row in the coordinate tensor handed to
+  `minimize`** (global flat index, after any reshape); `resid` is the **per-chain
+  1-based residue/token ordinal** (resets at each chain) — not the author residue
+  number, not a cumulative token index. These two conventions must match across tools.
+- `minimize` is gated on `sigma <= start_sigma`; `start_sigma` is **per-distance**
+  (each `distance_restraints_config` entry) plus **one shared value for all conformer
+  terms** (`RestraintSpec.conf_start_sigma`). When `sigma` exceeds every restraint's
+  `start_sigma` the whole step is skipped (cheap at high noise).
 - Distance restraints: `harmonic`, `flat-bottomed`, `flat-bottomed1`,
   `flat-bottomed2`; only `calc_method=unfixed-absolute` (COM-based).
 - Top-level `import rgi_utils` must work with numpy only (no torch/jax) — keep

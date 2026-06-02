@@ -1,46 +1,62 @@
 # rgi-utils
 
-Restraint-Guided Inference utilities for PyTorch-based protein structure prediction models.
+Restraint-Guided Inference (RGI) utilities for diffusion-based structure predictors
+(PyTorch and JAX). Integrated into boltz, protenix, chai-lab, openfold-3 (torch) and
+alphafold3 (jax).
 
-Provides bond, angle, chiral volume, and distance restraints that can be applied during inference to guide coordinate optimization — on CPU (scipy) or GPU (torchmin).
+Provides distance restraints (center-of-mass between atom groups) and ligand conformer
+restraints (bond / angle / chiral volume / intramolecular VdW toward an ideal RDKit
+geometry), minimized during the denoising loop to guide coordinate optimization — on GPU
+(PyTorch LBFGS / JAX jaxopt, autodiff) or CPU (scipy).
 
 ## Installation
 
 ```bash
-uv sync
+uv sync                                  # this checkout (dev)
+uv pip install -e <path>/rgi_utils[torch]   # into a PyTorch tool's env
+uv pip install -e <path>/rgi_utils[jax]     # into a JAX tool's env
 ```
 
 ## Usage
 
 ```python
-from rgi_utils import CombinedRestraints, FrameworkAdapter
+from rgi_utils.combined import CombinedRestraints
 
-restr = CombinedRestraints.get_instance()
-
-# Configure restraints
-restr.set_config({
-    "gpu": True,
+restraints_config = {
+    "gpu": True,                 # -> torch backend; or "backend": "jax" / "numpy"
     "method": "CG",
-    "max_iter": 100,
-    "start_sigma": 1.0,
-    "distance_restraints_config": {
-        "restraints": [
-            {
-                "atom_selection1": "chain A and resid 10",
-                "atom_selection2": "chain B and resid 20",
-                "calc_method": "unfixed-absolute",
-                "harmonic": {"target_distance": 5.0},
-            }
-        ]
+    "max_iter": 200,
+    "start_sigma": 99999999,     # a restraint is active when sigma <= start_sigma
+    "verbose": True,
+    "distance_restraints_config": [          # a LIST of entries
+        {
+            "atom_selection1": "chain A and resid 10",
+            "atom_selection2": "chain B and resid 20",
+            "harmonic": {"target_distance": 5.0},
+        }
+    ],
+    "conformer_restraints_config": {
+        "bond": {"weight": 1.0},
+        "angle": {"weight": 1.0},
+        "chiral": {"weight": 1.0},
+        "vdw": {"weight": 1.0, "mode": "intramolecular"},
     },
-})
+}
 
-# Set up with a framework adapter and coordinate tensors
-restr.setup(adapter, conformer_restraint, atom_pad_mask, ref_element)
+# ONE instance per structure (not a singleton). setup() takes the config dict.
+restr = CombinedRestraints()
+restr.setup(adapter, nbatch=multiplicity, config=restraints_config)
 
-# Optimize coordinates
-coords = restr.minimize(coords)
+# Inside the denoising loop, right after the network's denoised x0 prediction:
+coords = restr.minimize(coords, step, sigma)   # torch/numpy: mutates in place + returns
+# After sampling (optional per-term energy log when verbose):
+restr.finalize(coords, step)
 ```
+
+For a **JAX** tool whose loop runs inside `lax.scan` (no Python callbacks), build the
+spec outside the scan and grab the pure closure with `restr.get_minimizer()`
+(`(flat_coords, sigma) -> flat_coords`), then call it inside the compiled loop instead
+of `minimize`.
 
 ### Atom selection syntax
 
@@ -72,19 +88,29 @@ Distance is calculated between the centers of mass (COM) of the two selected ato
 ### Implementing a framework adapter
 
 ```python
-from rgi_utils import AtomRecord, FrameworkAdapter
+from rgi_utils.atom_context import AtomRecord, LigandConf
 from typing import Iterator
 
 class MyAdapter:
+    # Required for distance restraints:
     def iter_atoms(self) -> Iterator[AtomRecord]:
-        for atom in self.atoms:
-            if not atom.is_padding:
-                yield AtomRecord(
-                    chain=atom.chain_id,
-                    resid=atom.residue_index,  # 1-based
-                    index=atom.padded_index,
-                )
+        for atom in self.real_atoms:                 # skip padding
+            yield AtomRecord(
+                chain=atom.chain_id,
+                resid=atom.per_chain_ordinal,        # 1-based, resets at each chain
+                index=atom.row_in_coord_tensor,      # global flat index into the coord tensor
+            )
+
+    # Optional — add these for conformer / VdW restraints:
+    def num_atoms(self) -> int: ...                  # padded coord-tensor length
+    def get_elements(self): ...                      # (num_atoms,) atomic numbers, 0 = padding
+    def iter_ligand_confs(self) -> Iterator[LigandConf]:
+        for lig in self.ligands:                     # one LigandConf per ligand
+            yield LigandConf(mol, conf_coords, global_indices)
 ```
+
+Tool-side adapters are tiny — see `src/rgi_utils/{boltz,protenix,chai,openfold3}/adapter.py`
+for worked examples, and the `skills/implement-rgi/` guide for the full integration recipe.
 
 ## Development
 

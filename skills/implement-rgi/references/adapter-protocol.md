@@ -119,7 +119,12 @@ flat-index formula, and the per-chain resid counter. Everything downstream
 
 ## Full source
 
-The three complete adapters are the ground truth:
-- `rgi_utils/src/rgi_utils/boltz/adapter.py`
-- `rgi_utils/src/rgi_utils/protenix/adapter.py`
-- `<af3>/src/alphafold3/model/restraints/adapter.py`
+The five complete adapters are the ground truth:
+- `rgi_utils/src/rgi_utils/boltz/adapter.py` — feats dict + exposed `ligand_mols`
+- `rgi_utils/src/rgi_utils/protenix/adapter.py` — biotite AtomArray (real bonds + coords)
+- `rgi_utils/src/rgi_utils/chai/adapter.py` — reference conformer, NO bonds → `build_ligand_mol(perceive_bonds=True)`
+- `rgi_utils/src/rgi_utils/openfold3/adapter.py` — AtomArray with zeroed coords → geometry from `ref_pos`; ligand by `molecule_type_id`
+- `<af3>/src/alphafold3/model/restraints/adapter.py` — CCD-by-name, JAX, in-tool
+
+The chai and openfold3 adapters are worth reading specifically for the "tool exposes
+an incomplete ligand picture" cases (pitfalls 10–12).

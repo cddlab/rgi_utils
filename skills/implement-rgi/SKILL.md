@@ -134,11 +134,16 @@ reference for "how small this should be."
 
 ## Framework selection
 
-- **PyTorch (eager loop)** — adapter can live in `rgi_utils/<tool>/adapter.py`
-  (it receives a plain dict/array and never imports the framework). Call
-  `minimize` each step. Watch the autograd-under-inference_mode gotcha.
-- **JAX (JIT / lax.scan)** — adapter lives *in the tool* (it usually needs
-  framework-specific CCD/atom-name machinery). Build the spec outside the scan;
+- **PyTorch (eager loop)** — boltz, protenix, chai-lab, openfold-3. Adapter can
+  live in `rgi_utils/<tool>/adapter.py` (it receives a plain dict/array and never
+  imports the framework). Call `minimize` each step. Watch the
+  autograd-under-inference_mode gotcha. **What the tool exposes for the ligand
+  varies, and is the main integration risk**: real bonds but zeroed coords
+  (openfold-3 → take geometry from the reference-conformer feature), or real coords
+  but no bonds (chai → perceive connectivity), or an over-broad ligand flag (use the
+  entity type, not biotite `hetero`). See pitfalls 10–12.
+- **JAX (JIT / lax.scan)** — alphafold3. Adapter lives *in the tool* (it usually
+  needs framework-specific CCD/atom-name machinery). Build the spec outside the scan;
   inject the pure `get_minimizer()` closure inside.
 
 Details, code, and the non-obvious traps (torch `inference_mode`, jax line
@@ -152,16 +157,26 @@ integrations: per-structure instances (avoid a singleton — it cross-contaminat
 batches), leaving atoms (a CCD ligand may model fewer atoms than the mol, e.g.
 glucose O1 — subset the mol), the flat-index convention, the per-chain `resid`
 definition, the JAX optimizer's line-search choice, and batch/retry behaviour
-(instance-scoped lifecycle makes both safe with no extra flags).
+(instance-scoped lifecycle makes both safe with no extra flags). The chai/openfold
+integrations added: zeroed structure coords → use the reference conformer (10);
+no intra-ligand bonds → perceive connectivity, then re-enable implicit-H or chiral
+restraints silently vanish (11); identify ligands by entity type not `hetero` (12);
+a `finalize` energy of 0.0 can mean "0 restraints built", not "satisfied" — check
+the setup spec counts (13); undeclared deps / CPU torch builds (14).
 
 ## Verify
 
 - **CPU**: run rgi_utils' `tests/test_backend_parity.py` — confirms numpy/torch/
   jax agree on energy and gradient, so whichever backend the tool uses is sound.
 - **GPU (real device, usually via the tool's batch/sbatch harness)**:
+  - **first, read the `setup` spec counts** (`built spec: bonds=.. angles=..
+    chirals=.. distances=.. vdw=..`) and confirm the count is non-zero for every
+    restraint type you requested — a type that built 0 restraints reports a perfect
+    `finalize` energy of `0.00000`, so near-zero energy alone does NOT prove a
+    restraint is working (pitfall 13);
   - distance: the predicted structure's COM distance reaches the target;
-  - conformer: `finalize` reports near-zero bond/angle/chiral energy, or the
-    ligand RMSD differs between restraint-on and restraint-off runs;
+  - conformer: spec counts non-zero AND `finalize` bond/angle/chiral energies are
+    small, or the ligand RMSD differs between restraint-on and restraint-off runs;
   - batch: put two structures with *different* configs in one run and confirm
     each uses its own (the decisive test that there is no cross-contamination).
 
