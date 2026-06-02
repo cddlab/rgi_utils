@@ -19,51 +19,11 @@ from typing import Iterator
 
 import numpy as np
 
+from rgi_utils._mol_build import atomic_number as _atomic_number
+from rgi_utils._mol_build import build_ligand_mol as _build_ligand_mol
 from rgi_utils.atom_context import AtomRecord, LigandConf
 
 logger = logging.getLogger(__name__)
-
-
-def _atomic_number(symbol: str) -> int:
-    from rdkit.Chem import GetPeriodicTable
-
-    try:
-        return int(GetPeriodicTable().GetAtomicNumber(str(symbol).capitalize()))
-    except Exception:
-        return 0
-
-
-def _build_ligand_mol(elements, coords, bonds_local):
-    """Build an RDKit mol from a ligand's atoms (element symbols), 3D coords and
-    local bond tuples ``(i, j, order)``. Chirality is assigned from 3D."""
-    from rdkit import Chem
-
-    rw = Chem.RWMol()
-    conf = Chem.Conformer(len(elements))
-    for i, sym in enumerate(elements):
-        rw.AddAtom(Chem.Atom(str(sym).capitalize()))
-        conf.SetAtomPosition(
-            i, (float(coords[i, 0]), float(coords[i, 1]), float(coords[i, 2]))
-        )
-    order_map = {
-        1: Chem.BondType.SINGLE,
-        2: Chem.BondType.DOUBLE,
-        3: Chem.BondType.TRIPLE,
-        4: Chem.BondType.AROMATIC,
-    }
-    for li, lj, order in bonds_local:
-        rw.AddBond(int(li), int(lj), order_map.get(int(order), Chem.BondType.SINGLE))
-    mol = rw.GetMol()
-    mol.AddConformer(conf, assignId=True)
-    try:
-        Chem.SanitizeMol(mol)
-    except Exception:  # geometry-only restraints don't need a clean valence model
-        pass
-    try:
-        Chem.AssignStereochemistryFrom3D(mol)  # chiral tags for chiral restraints
-    except Exception:
-        pass
-    return mol
 
 
 class ProtenixAdapter:
