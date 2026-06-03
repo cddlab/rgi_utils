@@ -129,3 +129,15 @@ to the **CPU** wheel from PyPI by default; install from the CUDA index
 (`--index-url https://download.pytorch.org/whl/cu12x`) or RGI's GPU path is silently
 unavailable (`torch.cuda.is_available() == False`). These bite only at real-GPU run
 time, not at import — see pitfall 13's lesson about not trusting a clean-looking run.
+
+## 15. A bare `resid`/`index` range matches across ALL chains — chain-qualify it
+`resid 5 to 84` (no `chain` qualifier) matches that per-chain ordinal in EVERY chain,
+including a ligand chain whose atoms each carry an ordinal (1..N). A protein distance
+group written as a bare resid range silently sweeps in the ligand's atoms, shifting the
+group's COM. This is standard selection-DSL behaviour (like PyMOL `resi`), NOT a bug —
+but **qualify protein groups with `chain A and (...)`**. It is invisible in a
+distance-only or conformer-only run; it only surfaces when a distance restraint and a
+ligand coexist. The giveaway is an `n_active` / group size larger than expected — e.g.
+a 1628-atom protein group becoming 1659 when a 31-atom ligand leaks in. When writing a
+combined (distance + conformer) example, run it and check the group sizes, not just that
+it completes.
