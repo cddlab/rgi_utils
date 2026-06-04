@@ -44,15 +44,15 @@ class DistanceData:
         self.target_local_sites2 = None
         self.calc_method = None
         self.run_restr = None
-        self.start_sigma = None  # per-restraint; filled by config (default = global)
+        self.start_sigma = None  # per-restraint; optional (from_dict defaults None -> +inf)
 
     def set_config(self, config: dict):
         self.atom_selection1 = config.get("atom_selection1", None)
         self.atom_selection2 = config.get("atom_selection2", None)
         self.calc_method = config.get("calc_method", "unfixed-absolute")
-        # per-distance start_sigma (None / absent -> the global default is applied
-        # later by from_dict). Guard float() against an explicit null value so a
-        # `start_sigma:` / `"start_sigma": null` entry falls back instead of crashing.
+        # per-distance start_sigma (OPTIONAL; from_dict defaults None -> +inf = every
+        # step). Guard float() against an explicit null so a `start_sigma:` /
+        # `"start_sigma": null` entry is treated as omitted (-> the default) not a crash.
         _ss = config.get("start_sigma")
         if _ss is not None:
             self.start_sigma = float(_ss)

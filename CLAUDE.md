@@ -105,10 +105,13 @@ The static `vdw_energy` (idx pairs) lives in the energy layer for parity across 
   `minimize`** (global flat index, after any reshape); `resid` is the **per-chain
   1-based residue/token ordinal** (resets at each chain) — not the author residue
   number, not a cumulative token index. These two conventions must match across tools.
-- `minimize` is gated on `sigma <= start_sigma`; `start_sigma` is **per-distance**
-  (each `distance_restraints_config` entry) plus **one shared value for all conformer
-  terms** (`RestraintSpec.conf_start_sigma`). When `sigma` exceeds every restraint's
-  `start_sigma` the whole step is skipped (cheap at high noise).
+- `minimize` is gated on `sigma <= start_sigma`. `start_sigma` is set in exactly two
+  places — **per distance entry** (each `distance_restraints_config` entry) and **once
+  for all conformer terms** (`conformer_restraints_config.start_sigma` ->
+  `RestraintSpec.conf_start_sigma`). There is **no top-level/global `start_sigma`** (a
+  top-level one raises `ValueError`); per restraint it is **optional** and defaults to
+  `+inf` when omitted — i.e. active at **every** step (set it, e.g. `1.0`, to act only
+  late). When `sigma` exceeds every restraint's `start_sigma` the whole step is skipped.
 - Distance restraints: `harmonic`, `flat-bottomed`, `flat-bottomed1`,
   `flat-bottomed2`; only `calc_method=unfixed-absolute` (COM-based).
 - Top-level `import rgi_utils` must work with numpy only (no torch/jax) — keep

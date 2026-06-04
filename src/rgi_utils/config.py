@@ -22,7 +22,6 @@ class RestraintsConfig:
     backend: str | None = None  # "numpy" | "torch" | "jax"; None = auto
     method: str = "CG"
     max_iter: int = 100
-    start_sigma: float = -1.0  # global default for every restraint
     conf_start_sigma: float = -1.0  # one value for all conformer (ligand) restraints
     learning_rate: float = 0.01  # jax gradient-descent step size
     conformer_config: dict = field(default_factory=dict)
@@ -31,14 +30,21 @@ class RestraintsConfig:
     @classmethod
     def from_dict(cls, config: dict | None) -> "RestraintsConfig":
         config = config or {}
-        # Guard float() against an explicit null (YAML `start_sigma:` / JSON null,
-        # both -> None): treat present-but-null like "unset" and fall back instead
-        # of crashing with float(None).
-        _gss = config.get("start_sigma")
-        global_start_sigma = float(_gss) if _gss is not None else -1.0
+        # start_sigma is NOT a global key (the old global + per-entry override scheme was
+        # confusing): it is set per distance entry and once for all conformer terms. A
+        # top-level 'start_sigma' is rejected. It is OPTIONAL per restraint — when omitted
+        # it defaults to +inf, i.e. the restraint is active at EVERY diffusion step. Set it
+        # (e.g. 1.0) to apply a restraint only late (low-noise) in denoising.
+        if "start_sigma" in config:
+            raise ValueError(
+                "restraints_config: top-level 'start_sigma' is not supported — set it on "
+                "each distance_restraints_config entry and inside conformer_restraints_config "
+                "(or omit it: a restraint with no start_sigma is active at every step)."
+            )
+        _ALWAYS_ON = float("inf")  # omitted start_sigma -> active at every step
         conformer_config = config.get("conformer_restraints_config", {}) or {}
         _css = conformer_config.get("start_sigma")
-        conf_start_sigma = float(_css) if _css is not None else global_start_sigma
+        conf_start_sigma = float(_css) if _css is not None else _ALWAYS_ON
         # Coerce gpu to a real bool: a quoted/string value (e.g. "false"/"no"/"off"/
         # "0") is truthy in Python and would otherwise pick the torch (GPU) backend
         # for a CPU-intended run.
@@ -70,8 +76,7 @@ class RestraintsConfig:
             backend=backend,
             method=config.get("method", "CG"),
             max_iter=config.get("max_iter", 100),
-            start_sigma=global_start_sigma,
-            # one conformer start_sigma for all ligands (falls back to global)
+            # one start_sigma for all conformer terms (omitted -> +inf = every step)
             conf_start_sigma=conf_start_sigma,
             learning_rate=config.get("learning_rate", 0.01),
             conformer_config=conformer_config,
@@ -79,9 +84,9 @@ class RestraintsConfig:
         for entry in config.get("distance_restraints_config", []) or []:
             dd = DistanceData()
             dd.set_config(entry)
-            # each distance restraint may set its own start_sigma; else global
+            # start_sigma is optional; omitted -> active at every step (+inf gate).
             if dd.start_sigma is None:
-                dd.start_sigma = global_start_sigma
+                dd.start_sigma = _ALWAYS_ON
             cfg.distance_data.append(dd)
         return cfg
 

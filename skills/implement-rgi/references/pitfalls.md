@@ -57,8 +57,8 @@ The entire config (distance + conformer + start_sigma + gpu/method/max_iter) is 
 single dict parsed by `rgi_utils.config`. The tool only surfaces that dict from
 its input (YAML/JSON) and passes it to `setup(config=...)`. Per-feature CLI flags
 duplicate parsing and drift the tool out of parity — the dict is the single
-source of truth. (start_sigma is per-distance + one for all conformer terms,
-already handled in the dict.)
+source of truth. (start_sigma is optional per-distance + one for all conformer terms
+— no global key; omitted -> active every step — already handled in the dict.)
 
 ## 8. batch and retry come (almost) for free
 With per-structure instances, **batch** (many inputs in one run) just works.

@@ -82,23 +82,25 @@ glue; the minimizer itself is rgi_utils.
 restraints_config:
   gpu: true                 # -> torch backend; or set  backend: jax  /  backend: numpy
   verbose: true             # print setup + finalize stats
-  max_iter: 200             # optimizer iterations per step
+  max_iter: 100             # optimizer iterations per step
   method: "CG"              # jaxopt solver: CG (NonlinearCG) or LBFGS
-  start_sigma: 99999999     # global default; a restraint is active when sigma <= start_sigma
+  # NOTE: there is NO top-level/global start_sigma (a top-level one raises ValueError).
+  # Set it per distance entry and once in conformer_restraints_config; it is OPTIONAL —
+  # omit it for "active at every step", or set e.g. 1.0 to act only late in denoising.
   distance_restraints_config:
     - atom_selection1: "resid 5 to 84"
       atom_selection2: "chain B and resid 90 to 180"
+      # start_sigma:  optional; omitted -> active at every step (set e.g. 1.0 for late-only)
       harmonic: {target_distance: 25.0}
       # alternatives: flat-bottomed {target_distance1, target_distance2},
       #               flat-bottomed1 {target_distance1}, flat-bottomed2 {target_distance2}
-      # optional per-restraint:  start_sigma: <float>
   conformer_restraints_config:
+    # start_sigma:  optional; one value for ALL conformer terms (omitted -> every step)
     bond:     {weight: 1.0}
     angle:    {weight: 1.0}
     chiral:   {weight: 1.0}
     dihedral: {weight: 1.0}                          # cis/trans (E/Z): holds acyclic, non-aromatic double bonds at their reference dihedral. ON by default; weight<=0 disables. optional slack (radians).
     vdw:      {weight: 1.0, mode: "intramolecular"}  # intramolecular = static, works in all backends
-    # optional, one value for ALL conformer terms:  start_sigma: <float>
 ```
 
 The `dihedral` term needs the ligand mol to carry real bond ORDERS (it keys on

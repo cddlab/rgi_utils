@@ -165,7 +165,7 @@ class CombinedRestraints:
                 f"conformer restraints are configured but conf_start_sigma="
                 f"{float(spec.conf_start_sigma):g} < 0, so they will NEVER activate "
                 f"(gate is sigma <= start_sigma) — set "
-                f"conformer_restraints_config.start_sigma or a global start_sigma"
+                f"conformer_restraints_config.start_sigma to a positive value"
             )
         d = spec.distance
         if d is not None and d.mask.sum() > 0:

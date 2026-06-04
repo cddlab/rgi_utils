@@ -52,6 +52,38 @@ def test_config_defaults():
     assert cr.config.resolve_backend() == "numpy"
 
 
+def test_start_sigma_validation():
+    """Top-level start_sigma is rejected; omitting it per restraint defaults to +inf
+    (active at every step); explicit per-restraint values are honored."""
+    import math
+
+    cr = CombinedRestraints.get_instance()
+    dist = {
+        "atom_selection1": "chain A",
+        "atom_selection2": "chain B",
+        "start_sigma": 1e30,
+        "harmonic": {"target_distance": 5.0},
+    }
+    # (a) top-level start_sigma is rejected
+    with pytest.raises(ValueError, match="top-level"):
+        cr.set_config({"start_sigma": 1e30, "distance_restraints_config": [dist]})
+    # (b) a distance entry without start_sigma defaults to +inf (every step)
+    no_ss = {k: v for k, v in dist.items() if k != "start_sigma"}
+    cr.set_config({"distance_restraints_config": [no_ss]})
+    assert math.isinf(cr.config.distance_data[0].start_sigma)
+    # (c) conformer terms without start_sigma default to +inf (every step)
+    cr.set_config({"conformer_restraints_config": {"bond": {"weight": 1.0}}})
+    assert math.isinf(cr.config.conf_start_sigma)
+    # (d) explicit per-restraint values are honored
+    cr.set_config(
+        {
+            "distance_restraints_config": [dist],
+            "conformer_restraints_config": {"start_sigma": 1.0, "bond": {"weight": 1.0}},
+        }
+    )
+    assert cr.config.conf_start_sigma == 1.0
+
+
 def test_setup_empty_is_inactive():
     cr = CombinedRestraints.get_instance()
     cr.set_config({})
@@ -67,11 +99,11 @@ def test_distance_resolve_and_minimize():
     cr.set_config(
         {
             "backend": "numpy",
-            "start_sigma": 1e30,
             "distance_restraints_config": [
                 {
                     "atom_selection1": "chain A",
                     "atom_selection2": "chain B",
+                    "start_sigma": 1e30,
                     "harmonic": {"target_distance": 5.0},
                 }
             ],
@@ -102,11 +134,11 @@ def test_minimize_skipped_above_start_sigma():
     cr.set_config(
         {
             "backend": "numpy",
-            "start_sigma": 1.0,
             "distance_restraints_config": [
                 {
                     "atom_selection1": "chain A",
                     "atom_selection2": "chain B",
+                    "start_sigma": 1.0,
                     "harmonic": {"target_distance": 5.0},
                 }
             ],
@@ -125,8 +157,7 @@ def test_multiligand_conformer_setup():
     cr.set_config(
         {
             "backend": "numpy",
-            "start_sigma": 1e30,
-            "conformer_restraints_config": {"bond": {"weight": 0.1}},
+            "conformer_restraints_config": {"start_sigma": 1e30, "bond": {"weight": 0.1}},
         }
     )
     m = Chem.AddHs(Chem.MolFromSmiles("CC"))
