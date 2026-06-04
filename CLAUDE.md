@@ -24,8 +24,8 @@ GPU paths (real CUDA torch / jax devices) are exercised by the host tools via
 
 **rgi_utils** — Restraint-Guided Inference (RGI): inject distance + ligand
 conformer restraints into a structure-prediction diffusion loop via gradient
-optimization. Shared by boltz / protenix / chai-lab / openfold-3 (torch) and
-alphafold3 (jax). The end-to-end guide for integrating a new tool is the skill at
+optimization. Shared by boltz / protenix / chai-lab / openfold-3 / esmfold2 (torch)
+and alphafold3 (jax). The end-to-end guide for integrating a new tool is the skill at
 `skills/implement-rgi/` (SKILL.md + references/).
 
 Design = **3 layers + autodiff + static shapes + GPU-complete optimization**:
@@ -66,7 +66,7 @@ Supporting modules:
   `reset()` remain only as back-compat shims — do not build new code on them. Picks
   the backend from config; torch/jax imported lazily. JAX tools inside `lax.scan` grab
   the pure minimizer via `get_minimizer()` instead of calling `minimize` per step.
-- **Framework adapters** (`{boltz,protenix,chai,openfold3}/adapter.py`; AF3's lives
+- **Framework adapters** (`{boltz,protenix,chai,openfold3,esmfold2}/adapter.py`; AF3's lives
   in-tool because it needs CCD machinery): implement `iter_atoms()` (→
   `AtomRecord(chain, resid, index)` for distance selection) and optionally
   `num_atoms()`, `get_elements()`, `iter_ligand_confs()` (→

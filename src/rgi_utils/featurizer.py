@@ -334,7 +334,17 @@ def build_spec(
     vdw_weight = float((cfg.get("vdw", {}) or {}).get("weight", 0.0) or 0.0)
 
     bonds, angles, chirals, dihedrals = _extract_conformer(ligand_confs)
-    if dw <= 0:  # disabled -> drop so it never enters active_sites / the spec
+    # weight<=0 means "disable": drop the term BEFORE the active_sites union so its
+    # atoms do not become optimisable and it is never iterated — uniform across all
+    # conformer terms (bond/angle/chiral/dihedral). Defaults are >0, so this only
+    # fires when a weight is explicitly set to 0.
+    if bw <= 0:
+        bonds = []
+    if aw <= 0:
+        angles = []
+    if cw <= 0:
+        chirals = []
+    if dw <= 0:
         dihedrals = []
 
     # ---- collect every referenced global atom -> active_sites -----------------

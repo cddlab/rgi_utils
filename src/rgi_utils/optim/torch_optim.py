@@ -1,9 +1,12 @@
 """GPU restraint optimizer for PyTorch tools (boltz, protenix).
 
-Minimizes the restraint energy on active-site coordinates with
-``torch.optim.LBFGS`` (strong-Wolfe line search), using autograd for gradients.
-Operates in-place on the coordinate tensor and stays on whatever device the
-coordinates live on, so ``gpu: true`` runs entirely on GPU.
+Minimizes the restraint energy on active-site coordinates using autograd for
+gradients. ``method`` selects the solver: ``"CG"`` (default) -> a nonlinear
+conjugate-gradient solver (Polak-Ribiere+ with a backtracking Armijo line search),
+matching the numpy (scipy CG) and jax (NonlinearCG) backends; ``"l-bfgs"`` ->
+``torch.optim.LBFGS`` (strong-Wolfe). Operates in-place on the coordinate tensor
+and stays on whatever device the coordinates live on, so ``gpu: true`` runs
+entirely on GPU.
 
 The ligand-protein VdW term (``spec.vdw_config``) is handled here rather than in
 the static energy layer: the ligand atoms come from the optimised ``active`` set
@@ -26,7 +29,7 @@ _EPS = 1e-12
 
 
 class TorchRestraintOptimizer:
-    def __init__(self, spec, max_iter: int = 100, method: str = "l-bfgs"):
+    def __init__(self, spec, max_iter: int = 100, method: str = "CG"):
         self.spec = spec
         self.max_iter = max_iter
         self.method = method
@@ -113,20 +116,28 @@ class TorchRestraintOptimizer:
             if vdw_active:
                 prot_pos = torch.empty_like(coords[..., self._vdw["prot_global"], :])
                 prot_pos.copy_(coords[..., self._vdw["prot_global"], :])
-            opt = torch.optim.LBFGS(
-                [active], max_iter=mi, line_search_fn="strong_wolfe"
-            )
             prepared = self._prepared
 
-            def closure():
-                opt.zero_grad()
+            def energy_fn():
                 e = torch_energy.total_energy(active, prepared, sigma)
                 if prot_pos is not None:
                     e = e + self._vdw_energy(active, prot_pos)
-                e.backward()
                 return e
 
-            opt.step(closure)
+            if self._is_cg():
+                self._minimize_cg(active, energy_fn, mi)
+            else:
+                opt = torch.optim.LBFGS(
+                    [active], max_iter=mi, line_search_fn="strong_wolfe"
+                )
+
+                def closure():
+                    opt.zero_grad()
+                    e = energy_fn()
+                    e.backward()
+                    return e
+
+                opt.step(closure)
             new_active = active.detach().clone()
 
         # Robustness (mirror the jax backend's guard in jax_optim.py): a degenerate
@@ -138,6 +149,73 @@ class TorchRestraintOptimizer:
         # back in the ambient (inference) context: in-place write is allowed
         coords[..., self._active_idx, :] = new_active
         return coords
+
+    def _is_cg(self) -> bool:
+        return (self.method or "cg").lower() in (
+            "cg",
+            "ncg",
+            "nonlinear-cg",
+            "nonlinearcg",
+        )
+
+    def _minimize_cg(
+        self,
+        active,
+        energy_fn,
+        max_iter,
+        max_ls: int = 20,
+        gtol: float = 1e-7,
+        ftol: float = 1e-9,
+    ) -> None:
+        """In-place nonlinear conjugate gradient (Polak-Ribiere+, backtracking
+        Armijo line search). Matches the CG used by the numpy (scipy) and jax
+        (NonlinearCG) backends, so ``method='CG'`` is CG on every backend. ``active``
+        is a leaf tensor (requires_grad=True); ``energy_fn()`` returns the scalar
+        energy with ``active`` in its graph. Stops early on convergence
+        (``max|grad| < gtol`` or ``|df| < ftol``, mirroring torch LBFGS's
+        tolerance_grad / tolerance_change) or when the line search stalls, so simple
+        restraints finish well under ``max_iter``."""
+
+        def value_grad():
+            if active.grad is not None:
+                active.grad = None
+            e = energy_fn()
+            e.backward()
+            return float(e.detach()), active.grad.detach().clone()
+
+        f, g = value_grad()
+        if float(g.abs().max()) < gtol:
+            return
+        d = g.neg()
+        gg = torch.sum(g * g)
+        for _ in range(max_iter):
+            if not torch.isfinite(gg) or float(gg) <= 1e-20:
+                break
+            if float(torch.sum(d * g)) >= 0.0:  # not a descent direction -> restart
+                d = g.neg()
+            slope = float(torch.sum(d * g))
+            x0 = active.detach().clone()
+            step, accepted = 1.0, False
+            for _ in range(max_ls):
+                with torch.no_grad():
+                    active.copy_(x0 + step * d)
+                f_new, g_new = value_grad()
+                if f_new <= f + 1e-4 * step * slope:  # Armijo sufficient decrease
+                    accepted = True
+                    break
+                step *= 0.5
+            if not accepted:  # line search exhausted -> converged / stuck
+                with torch.no_grad():
+                    active.copy_(x0)
+                break
+            converged = float(g_new.abs().max()) < gtol or abs(f_new - f) < ftol * (
+                1.0 + abs(f)
+            )
+            beta = max(0.0, float(torch.sum(g_new * (g_new - g)) / (gg + _EPS)))
+            d = g_new.neg() + beta * d  # Polak-Ribiere+ (auto-restart when beta<0)
+            f, g, gg = f_new, g_new, torch.sum(g_new * g_new)
+            if converged:
+                break
 
     def energy(self, coords) -> float:
         """Current restraint energy (for verbose stats / finalize)."""
@@ -158,9 +236,14 @@ class TorchRestraintOptimizer:
         Computed directly (not as energy - static_total) so the reported value is
         exact and non-negative, with no float32/float64 cancellation error.
         """
-        if self._vdw is None or not self.spec.is_active():
+        if not self.spec.is_active():
             return 0.0
+        # _ensure builds self._vdw (via _setup_vdw); call it BEFORE the _vdw guard so a
+        # fresh optimizer reports the true VdW (matches energy()) instead of 0.0, which
+        # would read as a false "VdW satisfied" in the verbose finalize log.
         self._ensure(coords.device, coords.dtype)
+        if self._vdw is None:
+            return 0.0
         with torch.no_grad():
             active = coords[..., self._active_idx, :]
             prot_pos = coords[..., self._vdw["prot_global"], :]

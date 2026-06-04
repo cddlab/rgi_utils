@@ -39,10 +39,32 @@ class RestraintsConfig:
         conformer_config = config.get("conformer_restraints_config", {}) or {}
         _css = conformer_config.get("start_sigma")
         conf_start_sigma = float(_css) if _css is not None else global_start_sigma
+        # Coerce gpu to a real bool: a quoted/string value (e.g. "false"/"no"/"off"/
+        # "0") is truthy in Python and would otherwise pick the torch (GPU) backend
+        # for a CPU-intended run.
+        gpu_raw = config.get("gpu", False)
+        gpu = (
+            gpu_raw
+            if isinstance(gpu_raw, bool)
+            else str(gpu_raw).strip().lower() in ("1", "true", "yes", "on")
+        )
+        # Normalize/validate the explicit backend, and surface a gpu/backend conflict.
+        backend = config.get("backend", None)
+        if backend is not None:
+            backend = str(backend).strip().lower()
+            if backend not in ("numpy", "torch", "jax"):
+                logger.warning(
+                    "unknown restraints backend %r (expected numpy/torch/jax)", backend
+                )
+            elif gpu and backend == "numpy":
+                logger.warning(
+                    "gpu:true but backend='numpy' is set explicitly; restraints will "
+                    "run on the CPU (explicit backend overrides gpu)"
+                )
         cfg = cls(
             verbose=config.get("verbose", False),
-            gpu=config.get("gpu", False),
-            backend=config.get("backend", None),
+            gpu=gpu,
+            backend=backend,
             method=config.get("method", "CG"),
             max_iter=config.get("max_iter", 100),
             start_sigma=global_start_sigma,

@@ -25,7 +25,7 @@ def make_minimizer(
     spec,
     max_iter: int = 200,
     learning_rate: float = 0.01,
-    method: str = "lbfgs",
+    method: str = "cg",
 ):
     """Return ``minimize(coords, sigma) -> coords``.
 

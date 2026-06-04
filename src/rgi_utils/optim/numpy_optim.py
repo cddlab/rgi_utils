@@ -24,6 +24,10 @@ class NumpyRestraintOptimizer:
         self.active_sites = np.asarray(spec.active_sites)
         self.max_iter = max_iter
         self.method = method
+        # Lazy (torch, torch_energy, cpu_prepared_spec) for the analytic jacobian;
+        # None = not yet probed, False = torch unavailable (use scipy finite-diff).
+        self._torch = None
+        self._prepared_t = None
 
     def minimize(self, coords, sigma=None, start_sigma=None, max_iter=None):
         """Optimize ``coords`` (..., n_atom, 3) numpy array in-place. Restraints
@@ -39,12 +43,62 @@ class NumpyRestraintOptimizer:
         def f(x):
             return float(numpy_energy.total_energy(x.reshape(shape), prepared, sigma))
 
+        jac = self._make_jac(shape, sigma)
         x0 = np.asarray(active, dtype=np.float64).reshape(-1)
         res = optimize.minimize(
-            f, x0, method=self.method, options={"maxiter": max_iter or self.max_iter}
+            f,
+            x0,
+            jac=jac,
+            method=self.method,
+            options={"maxiter": max_iter or self.max_iter},
         )
         coords[..., self.active_sites, :] = res.x.reshape(shape)
         return coords
+
+    def _make_jac(self, shape, sigma):
+        """Analytic gradient for scipy via torch autodiff over the (parity-identical)
+        torch energy. Without it scipy CG finite-differences the gradient — O(DOF)
+        energy evals per gradient, each O(DOF) -> ~O(DOF^2), unusably slow at protein
+        scale. Returns None (scipy falls back to finite differences) when torch is
+        unavailable, preserving the pure-numpy fallback."""
+        tg = self._torch_energy()
+        if tg is None:
+            return None
+        torch, torch_energy, prepared_t = tg
+
+        def jac(x):
+            # Re-enable autograd: callers (boltz/openfold) run under inference_mode.
+            with torch.inference_mode(False), torch.enable_grad():
+                xt = torch.tensor(
+                    x.reshape(shape), dtype=torch.float64, requires_grad=True
+                )
+                torch_energy.total_energy(xt, prepared_t, sigma).backward()
+                g = xt.grad.detach().cpu().numpy()
+            return np.asarray(g, dtype=np.float64).reshape(-1)
+
+        return jac
+
+    def _torch_energy(self):
+        """Cached ``(torch, torch_energy, cpu_prepared_spec)`` or None if torch is
+        unavailable. Built once per optimizer (instance-scoped per structure)."""
+        if self._torch is False:
+            return None
+        if self._torch is None:
+            try:
+                import torch
+
+                from rgi_utils.energy import torch_energy
+
+                with torch.inference_mode(False):
+                    self._prepared_t = torch_energy.prepare_spec(
+                        self.spec, dtype=torch.float64, device="cpu"
+                    )
+                self._torch = (torch, torch_energy)
+            except Exception:
+                self._torch = False
+                return None
+        torch, torch_energy = self._torch
+        return torch, torch_energy, self._prepared_t
 
     def energy(self, coords) -> float:
         if not self.spec.is_active():
