@@ -58,30 +58,26 @@ class ChaiStructureAdapter:
             return
         atom_token = np.asarray(sc.atom_token_index)
         exists = np.asarray(sc.atom_exists_mask, dtype=bool)
-        token_entity = np.asarray(sc.token_entity_type)
-        token_resid = np.asarray(sc.token_residue_index)
         token_chain = self._token_chains()
-        # per-chain 1-based residue/token ordinal (cross-tool convention): count
-        # polymer residues by token_residue_index group, give each ligand atom its
-        # own ordinal -> 1..N (matching boltz/protenix/AF3).
-        chain_resmap: dict[str, dict[int, int]] = {}
+        # per-chain 1-based PER-TOKEN ordinal (the cross-tool convention shared by
+        # boltz/protenix/esmfold2): a standard polymer residue is one token, so all
+        # its atoms share an ordinal (= residue ordinal); a ligand atom and each atom
+        # of a NON-standard residue is its own token, so it gets its own ordinal.
+        # (Previously chai grouped non-standard residues by token_residue_index, which
+        # gave them ONE ordinal and diverged from the other tools for that edge case;
+        # standard residues + ligands are unaffected by this change.)
+        chain_seen: dict[str, dict[int, int]] = {}
         chain_counter: dict[str, int] = {}
         for i in range(len(atom_token)):
             if not bool(exists[i]):
                 continue
             tok = int(atom_token[i])
             ch = token_chain[tok]
-            if int(token_entity[tok]) == _LIGAND_ENTITY:
+            seen = chain_seen.setdefault(ch, {})
+            if tok not in seen:
                 chain_counter[ch] = chain_counter.get(ch, 0) + 1
-                ordinal = chain_counter[ch]
-            else:
-                rid = int(token_resid[tok])
-                seen = chain_resmap.setdefault(ch, {})
-                if rid not in seen:
-                    chain_counter[ch] = chain_counter.get(ch, 0) + 1
-                    seen[rid] = chain_counter[ch]
-                ordinal = seen[rid]
-            yield AtomRecord(chain=ch, resid=ordinal, index=int(i))
+                seen[tok] = chain_counter[ch]
+            yield AtomRecord(chain=ch, resid=seen[tok], index=int(i))
 
     # --- ConformerAdapter -----------------------------------------------------
     def num_atoms(self) -> int:

@@ -78,14 +78,21 @@ class Openfold3Adapter:
         chains = np.asarray(aa.chain_id)
         resids = np.asarray(aa.res_id)
         is_lig = self._ligand_mask()
-        # Per-chain 1-based residue/token ordinal (cross-tool selection
-        # convention): count polymer residues by res_id group, but give each
-        # ligand atom its own ordinal -> 1..N, matching boltz/protenix/AF3/chai.
+        # Non-standard residues are biotite hetero=True; a standard polymer residue
+        # is not. (molecule_type_id is used only for ligand-CONFORMER detection — see
+        # _ligand_mask — because it does not flag modified polymer residues.)
+        hetero = np.asarray(aa.hetero, dtype=bool)
+        # Per-chain 1-based PER-TOKEN ordinal (the cross-tool convention shared by
+        # boltz/protenix/esmfold2): a standard polymer residue gets one ordinal for
+        # all its atoms (= residue ordinal); a ligand atom and each atom of a
+        # NON-standard residue gets its own ordinal. (Previously a modified polymer
+        # residue was grouped by res_id -> ONE ordinal, diverging from the other
+        # tools for that edge case; standard residues + ligands are unaffected.)
         chain_resmap: dict[str, dict[int, int]] = {}
         chain_counter: dict[str, int] = {}
         for i in range(len(aa)):
             ch = str(chains[i])
-            if bool(is_lig[i]):
+            if bool(is_lig[i]) or bool(hetero[i]):
                 chain_counter[ch] = chain_counter.get(ch, 0) + 1
                 ordinal = chain_counter[ch]
             else:

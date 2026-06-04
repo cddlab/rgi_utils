@@ -165,12 +165,26 @@ class SelectionParser:
             raise ParseError(f"Invalid unsigned integer: {s}")
 
     def _parse_identifier(self) -> str:
+        start = self.pos
         identifier = self._parse_alphanumeric1()
         if identifier in RESERVED_KEYWORDS - {"resid", "index"}:
             if identifier in {"and", "or", "not", "to"}:
                 raise ParseError(
                     f"Identifier cannot be a reserved keyword:"
-                    f" '{identifier}' at position {self.pos - len(identifier)}"
+                    f" '{identifier}' at position {start}"
+                )
+        # Reject an identifier whose prefix is an operator glued to a longer token
+        # (a missing space, e.g. "andresid", "orchain"): without this it is silently
+        # swallowed as a chain name and the operator/clause is dropped, yielding a
+        # WRONG selection with no error. Mirrors the glued-token guard in
+        # _consume_tag so the parser backtracks and the operator is parsed correctly
+        # (or the whole selection is rejected loudly). Chain ids are short tokens, so
+        # this never rejects a real name in practice.
+        for op in ("and", "or", "not", "to"):
+            if identifier.startswith(op) and len(identifier) > len(op):
+                raise ParseError(
+                    f"'{op}' is glued to a longer token '{identifier}' at position"
+                    f" {start} (add a space, e.g. '{op} {identifier[len(op):]}')"
                 )
         return identifier
 

@@ -43,11 +43,14 @@ class RestraintsConfig:
         # "0") is truthy in Python and would otherwise pick the torch (GPU) backend
         # for a CPU-intended run.
         gpu_raw = config.get("gpu", False)
-        gpu = (
-            gpu_raw
-            if isinstance(gpu_raw, bool)
-            else str(gpu_raw).strip().lower() in ("1", "true", "yes", "on")
-        )
+        if isinstance(gpu_raw, bool):
+            gpu = gpu_raw
+        elif isinstance(gpu_raw, (int, float)):
+            # numeric flag: 1 / 1.0 / 2 -> True, 0 / 0.0 -> False (str("1.0") would
+            # otherwise miss the literal set and wrongly pick the CPU backend).
+            gpu = bool(gpu_raw)
+        else:
+            gpu = str(gpu_raw).strip().lower() in ("1", "true", "yes", "on")
         # Normalize/validate the explicit backend, and surface a gpu/backend conflict.
         backend = config.get("backend", None)
         if backend is not None:

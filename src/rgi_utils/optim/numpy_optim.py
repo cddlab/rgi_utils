@@ -49,11 +49,23 @@ class NumpyRestraintOptimizer:
             f,
             x0,
             jac=jac,
-            method=self.method,
+            method=self._scipy_method(),
             options={"maxiter": max_iter or self.max_iter},
         )
         coords[..., self.active_sites, :] = res.x.reshape(shape)
         return coords
+
+    def _scipy_method(self) -> str:
+        """Map the shared ``method`` aliases to a scipy solver name so one
+        ``restraints_config`` behaves the same on every backend. torch/jax accept
+        ``{cg,ncg,nonlinear-cg,nonlinearcg}`` as CG and anything else as LBFGS, both
+        case-insensitively; scipy needs exact names. Without this, a config that runs
+        on the GPU tools (e.g. ``method: "LBFGS"`` or ``"ncg"``) would crash the numpy
+        (default CPU) backend with ValueError('Unknown solver ...')."""
+        m = (self.method or "cg").lower()
+        if m in ("cg", "ncg", "nonlinear-cg", "nonlinearcg"):
+            return "CG"
+        return "L-BFGS-B"
 
     def _make_jac(self, shape, sigma):
         """Analytic gradient for scipy via torch autodiff over the (parity-identical)
