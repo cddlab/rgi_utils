@@ -62,6 +62,15 @@ def build_ligand_mol(elements, coords, bonds_local, perceive_bonds=False):
     mol.AddConformer(conf, assignId=True)
     if perceive_bonds and not bonds_local and len(elements) > 1:
         # Derive connectivity from the reference-conformer geometry (chai path).
+        # NOTE: only CONNECTIVITY is perceived, not bond ORDERS — chai exposes
+        # heavy atoms only (no H) and no bonds, so RDKit DetermineBonds cannot
+        # solve valences (it reads the H-less skeleton as highly charged and
+        # throws). Consequently every perceived bond is SINGLE, so the dihedral
+        # (cis/trans) restraint — which keys on BondType.DOUBLE — finds nothing on
+        # chai ligands (dihedrals=0, graceful). The proper fix is to thread chai's
+        # source SMILES/ConformerData mol (which carries real bond orders + E/Z)
+        # into the adapter; until then bond/angle/chiral (order-agnostic) work but
+        # cis/trans does not. The other four tools supply real bond orders.
         try:
             from rdkit.Chem import rdDetermineBonds
 

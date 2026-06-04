@@ -118,6 +118,7 @@ class CombinedRestraints:
                 # print() (not just logging) so it survives host logging configs
                 print("[rgi_utils] setup: NO ACTIVE RESTRAINTS", flush=True)
             return
+        self._warn_never_active()
         self._build_optimizer()
         if cfg.verbose:
             d = self.spec.distance
@@ -149,6 +150,36 @@ class CombinedRestraints:
             logger.info(msg)
             print(msg, flush=True)
 
+    def _warn_never_active(self) -> None:
+        """Warn when restraints are built (non-zero weights/counts) but their
+        ``start_sigma`` is < 0, so the gate ``sigma <= start_sigma`` never fires —
+        a silent no-op the verbose count/energy logs do NOT reveal (counts and the
+        ungated finalize energy both read non-zero). ``-1`` is the documented
+        never-fires sentinel, so this catches "forgot to set start_sigma"."""
+        import numpy as np
+
+        spec = self.spec
+        msgs = []
+        if spec.has_conformer() and float(spec.conf_start_sigma) < 0:
+            msgs.append(
+                f"conformer restraints are configured but conf_start_sigma="
+                f"{float(spec.conf_start_sigma):g} < 0, so they will NEVER activate "
+                f"(gate is sigma <= start_sigma) — set "
+                f"conformer_restraints_config.start_sigma or a global start_sigma"
+            )
+        d = spec.distance
+        if d is not None and d.mask.sum() > 0:
+            ss = np.asarray(d.start_sigma)[np.asarray(d.mask) > 0]
+            if ss.size and float(ss.min()) < 0:
+                msgs.append(
+                    "one or more distance restraints have start_sigma < 0, so they "
+                    "will NEVER activate (gate is sigma <= start_sigma)"
+                )
+        for m in msgs:
+            logger.warning(m)
+            if self.config.verbose:
+                print(f"[rgi_utils] WARNING: {m}", flush=True)
+
     def _build_optimizer(self) -> None:
         b = self._backend
         # Dynamic ligand-protein VdW (vdw_config) is implemented in the torch
@@ -174,7 +205,6 @@ class CombinedRestraints:
                 self.spec,
                 max_iter=self.config.max_iter,
                 learning_rate=self.config.learning_rate,
-                start_sigma=self.config.start_sigma,
                 method=self.config.method,
             )
         elif b == "numpy":
@@ -238,24 +268,33 @@ class CombinedRestraints:
             return
         try:
             bd = self._restraint_breakdown(coords)
-            total = bd["bond"] + bd["angle"] + bd["chiral"] + bd["vdw"] + bd["distance"]
-            # The dynamic ligand-protein VdW (spec.vdw_config) is applied only
-            # inside the torch optimizer and is absent from the static per-term
-            # breakdown above (energy_breakdown reads only spec.vdw). Recover it
-            # as (optimizer.energy - static total) so the logged vdw/total match
-            # what minimize actually applied.
+            total = (
+                bd["bond"]
+                + bd["angle"]
+                + bd["chiral"]
+                + bd["dihedral"]
+                + bd["vdw"]
+                + bd["distance"]
+            )
+            # The dynamic ligand-protein VdW (spec.vdw_config) is applied only inside
+            # the torch optimizer and is absent from the static per-term breakdown
+            # above (energy_breakdown reads only spec.vdw). Add it directly (it is
+            # >= 0 by construction) — NOT as (optimizer.energy - static total), which
+            # would mix the float64 static breakdown with the float32 optimizer energy
+            # and leave the static terms' rounding error in the result (even negative).
             if (
                 self._backend == "torch"
                 and getattr(self.spec, "vdw_config", None) is not None
                 and self._optimizer is not None
             ):
-                dyn_vdw = float(self._optimizer.energy(coords)) - total
+                dyn_vdw = float(self._optimizer.dynamic_vdw_energy(coords))
                 bd["vdw"] += dyn_vdw
                 total += dyn_vdw
             msg = (
                 f"[rgi_utils] finalize (step {istep}): "
                 f"bond={bd['bond']:.5f} angle={bd['angle']:.5f} "
-                f"chiral={bd['chiral']:.5f} vdw={bd['vdw']:.5f} "
+                f"chiral={bd['chiral']:.5f} dihedral={bd['dihedral']:.5f} "
+                f"vdw={bd['vdw']:.5f} "
                 f"distance={bd['distance']:.5f} total={total:.5f}"
             )
             logger.info(msg)

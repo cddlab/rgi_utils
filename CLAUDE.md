@@ -38,7 +38,8 @@ Design = **3 layers + autodiff + static shapes + GPU-complete optimization**:
 
 2. **Energy layer** (`energy/{numpy,torch,jax}_energy.py`, differentiable pure
    functions): identical flat-bottomed maths in all three backends —
-   `bond/angle/chiral/vdw/distance`. `prepare_spec(spec)` → backend arrays;
+   `bond/angle/chiral/dihedral/vdw/distance` (dihedral = periodicity-safe torsion
+   for cis/trans). `prepare_spec(spec)` → backend arrays;
    `total_energy(positions, prepared)` → scalar. Gradients come from autodiff
    (no hand-written grad). `numpy_energy` is the reference;
    `tests/test_backend_parity.py` checks energy+grad agreement across backends.
@@ -51,8 +52,10 @@ Design = **3 layers + autodiff + static shapes + GPU-complete optimization**:
 Supporting modules:
 - **`featurizer.py`**: `build_spec(ligand_confs, distance_restraints,
   conformer_config, elements)` — the single place RDKit mols become bond/angle/
-  chiral restraints (global indices, multi-ligand) and the dynamic ligand-protein
-  `VdwConfig` is assembled.
+  chiral/dihedral restraints (global indices, multi-ligand) and the dynamic
+  ligand-protein `VdwConfig` is assembled. Dihedral (cis/trans) detection keys on
+  acyclic, non-aromatic `BondType.DOUBLE` bonds and targets the reference-conformer
+  torsion; it needs real bond orders (all tools but chai supply them).
 - **`config.py`**: `RestraintsConfig.from_dict()` parses the shared
   `restraints_config` (one source of truth for boltz YAML / protenix JSON / AF3).
 - **`combined.py`**: `CombinedRestraints` entry point — **instance-scoped, one per

@@ -63,6 +63,43 @@ def chiral_energy(positions, idx, vol0, slack, weight, mask):
     return np.sum(weight * delta**2 * mask)
 
 
+def dihedral_energy(positions, idx, phi0, slack, weight, mask):
+    """Flat-bottomed dihedral (torsion) energy; bond axis is columns 1-2.
+
+    Periodicity-safe: the deviation ``phi - phi0`` is wrapped to [-pi, pi] before
+    the flat-bottomed square penalty, so e.g. +179 deg and -179 deg read as a 2 deg
+    difference (not 358). Used to hold acyclic double bonds at their reference
+    (input-conformer) cis/trans geometry.
+    """
+    p0 = positions[..., idx[:, 0], :]
+    p1 = positions[..., idx[:, 1], :]
+    p2 = positions[..., idx[:, 2], :]
+    p3 = positions[..., idx[:, 3], :]
+    b1 = p1 - p0
+    b2 = p2 - p1
+    b3 = p3 - p2
+    n1 = np.cross(b1, b2)
+    n2 = np.cross(b2, b3)
+    b2n = b2 / np.sqrt(
+        np.sum(b2**2, axis=-1, keepdims=True) + _EPS
+    )  # _EPS inside: finite grad at b2=0
+    m1 = np.cross(n1, b2n)
+    x = np.sum(n1 * n2, axis=-1)
+    y = np.sum(m1 * n2, axis=-1)
+    # Avoid atan2(0, 0) at exactly-degenerate geometry (collinear i-j-k / j-k-l, or
+    # coincident j==k): a bare atan2(0,0) has a NaN gradient in jax and 0 in torch, so
+    # the backends diverge (and 0*NaN=NaN survives even a masked row). Nudging x makes
+    # the gradient finite AND identical across all three backends. Near-collinear
+    # sensitivity is inherent to the dihedral and is handled by the optimizers' line
+    # search + non-finite guards, not here.
+    x = np.where((x == 0.0) & (y == 0.0), x + _EPS, x)
+    phi = np.arctan2(y, x)
+    d = phi - phi0
+    d = np.arctan2(np.sin(d), np.cos(d))  # wrap to [-pi, pi]
+    delta = np.where(d > slack, d - slack, np.where(d < -slack, d + slack, 0.0))
+    return np.sum(weight * delta**2 * mask)
+
+
 def vdw_energy(positions, idx, r_min, weight, mask):
     """VdW repulsion (lower-bound only): penalize d < r_min."""
     ai, aj = idx[:, 0], idx[:, 1]
@@ -145,6 +182,11 @@ def total_energy(positions, prepared, sigma=None):
         ene = ene + chiral_energy(
             positions, c["idx"], c["vol0"], c["slack"], c["weight"], c["mask"] * cg
         )
+    if "dihedral" in prepared:
+        dh = prepared["dihedral"]
+        ene = ene + dihedral_energy(
+            positions, dh["idx"], dh["phi0"], dh["slack"], dh["weight"], dh["mask"] * cg
+        )
     if "vdw" in prepared:
         v = prepared["vdw"]
         ene = ene + vdw_energy(
@@ -177,7 +219,14 @@ def energy_breakdown(positions, prepared, sigma=None):
     absent from ``prepared`` stay 0.0.
     """
     cg = 1.0 if sigma is None else (sigma <= prepared.get("conf_start_sigma", 1e30))
-    out = {"bond": 0.0, "angle": 0.0, "chiral": 0.0, "vdw": 0.0, "distance": 0.0}
+    out = {
+        "bond": 0.0,
+        "angle": 0.0,
+        "chiral": 0.0,
+        "dihedral": 0.0,
+        "vdw": 0.0,
+        "distance": 0.0,
+    }
     if "bond" in prepared:
         b = prepared["bond"]
         out["bond"] = float(
@@ -203,6 +252,18 @@ def energy_breakdown(positions, prepared, sigma=None):
         out["chiral"] = float(
             chiral_energy(
                 positions, c["idx"], c["vol0"], c["slack"], c["weight"], c["mask"] * cg
+            )
+        )
+    if "dihedral" in prepared:
+        dh = prepared["dihedral"]
+        out["dihedral"] = float(
+            dihedral_energy(
+                positions,
+                dh["idx"],
+                dh["phi0"],
+                dh["slack"],
+                dh["weight"],
+                dh["mask"] * cg,
             )
         )
     if "vdw" in prepared:
@@ -261,6 +322,15 @@ def prepare_spec(spec):
             "slack": np.asarray(c.slack, dtype=np.float64),
             "weight": np.asarray(c.weight, dtype=np.float64),
             "mask": np.asarray(c.mask, dtype=np.float64),
+        }
+    if spec.dihedral is not None and spec.dihedral.mask.sum() > 0:
+        dh = spec.dihedral
+        prepared["dihedral"] = {
+            "idx": np.asarray(dh.idx, dtype=np.int64),
+            "phi0": np.asarray(dh.phi0, dtype=np.float64),
+            "slack": np.asarray(dh.slack, dtype=np.float64),
+            "weight": np.asarray(dh.weight, dtype=np.float64),
+            "mask": np.asarray(dh.mask, dtype=np.float64),
         }
     if spec.vdw is not None and spec.vdw.mask.sum() > 0:
         v = spec.vdw

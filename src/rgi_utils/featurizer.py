@@ -26,6 +26,7 @@ from rgi_utils.spec import (
     AngleArrays,
     BondArrays,
     ChiralArrays,
+    DihedralArrays,
     DistanceArrays,
     RestraintSpec,
     VdwArrays,
@@ -59,11 +60,35 @@ def _chiral_vol(crds: np.ndarray, c: int, n1: int, n2: int, n3: int) -> float:
     return float(np.dot(v1, np.cross(v2, v3)))
 
 
+def _dihedral_rad(crds: np.ndarray, i: int, j: int, k: int, ll: int) -> float:
+    """Signed dihedral angle (radians) for atoms i-j-k-ll about the j-k axis.
+
+    Identical formula to the energy backends' ``dihedral_energy`` so the target
+    computed here equals the value the energy sees at the reference conformer
+    (residual starts at zero before any perturbation).
+    """
+    b1 = crds[j] - crds[i]
+    b2 = crds[k] - crds[j]
+    b3 = crds[ll] - crds[k]
+    n1 = np.cross(b1, b2)
+    n2 = np.cross(b2, b3)
+    b2n = b2 / np.sqrt(np.dot(b2, b2) + 1e-12)
+    m1 = np.cross(n1, b2n)
+    # Mirror the energy backends' dihedral exactly (incl. the atan2(0,0) guard) so
+    # phi0 == the value the energy sees at the reference geometry.
+    x = float(np.dot(n1, n2))
+    y = float(np.dot(m1, n2))
+    if x == 0.0 and y == 0.0:
+        x = 1e-12
+    return float(np.arctan2(y, x))
+
+
 def _extract_conformer(ligand_confs: list[LigandConf]):
-    """Return bond/angle/chiral restraint tuples in GLOBAL atom indices."""
+    """Return bond/angle/chiral/dihedral restraint tuples in GLOBAL atom indices."""
     bonds = []  # (g0, g1, r0)
     angles = []  # (g0, g1, g2, th0)
     chirals = []  # (g0, g1, g2, g3, vol0)
+    dihedrals = []  # (g0, g1, g2, g3, phi0)
 
     for lc in ligand_confs:
         mol = lc.mol
@@ -103,7 +128,41 @@ def _extract_conformer(ligand_confs: list[LigandConf]):
                     )
                 )
 
-    return bonds, angles, chirals
+        # cis/trans (E/Z): hold each acyclic, non-aromatic double bond at its
+        # reference-conformer dihedral. Detection uses only bond ORDER (DOUBLE)
+        # + connectivity, both consistent across tools; `not IsInRing()` excludes
+        # aromatic/ring double bonds (incl. Kekule rings) which cannot isomerise.
+        try:
+            Chem.FastFindRings(mol)  # ensure IsInRing() has ring info
+        except Exception:
+            pass
+        for b in mol.GetBonds():
+            if b.GetBondType() != Chem.BondType.DOUBLE:
+                continue
+            if b.GetIsAromatic() or b.IsInRing():
+                continue
+            aj, ak = b.GetBeginAtom(), b.GetEndAtom()
+            j, k = aj.GetIdx(), ak.GetIdx()
+            nbr_j = [n.GetIdx() for n in aj.GetNeighbors() if n.GetIdx() != k]
+            nbr_k = [n.GetIdx() for n in ak.GetNeighbors() if n.GetIdx() != j]
+            if not nbr_j or not nbr_k:
+                continue  # terminal double bond (e.g. C=O) — no dihedral
+            # Enumerate every (i, l) substituent pair across the bond, like the
+            # chiral combination enumeration: an order-independent restraint set.
+            for i in nbr_j:
+                for ll in nbr_k:
+                    phi0 = _dihedral_rad(crds, i, j, k, ll)
+                    dihedrals.append(
+                        (
+                            int(gidx[i]),
+                            int(gidx[j]),
+                            int(gidx[k]),
+                            int(gidx[ll]),
+                            phi0,
+                        )
+                    )
+
+    return bonds, angles, chirals, dihedrals
 
 
 def _dist_params(dr) -> tuple[int, float, float]:
@@ -268,9 +327,15 @@ def build_spec(
     asl = cfg.get("angle", {}).get("slack", 0.0)
     cw = cfg.get("chiral", {}).get("weight", 0.1)
     csl = cfg.get("chiral", {}).get("slack", 0.05)
+    # Dihedral (cis/trans) is ON by default like bond/angle/chiral; set weight<=0
+    # to disable. slack is in radians (0 = pure harmonic toward the reference).
+    dw = float((cfg.get("dihedral", {}) or {}).get("weight", 0.1) or 0.0)
+    dsl = float((cfg.get("dihedral", {}) or {}).get("slack", 0.0) or 0.0)
     vdw_weight = float((cfg.get("vdw", {}) or {}).get("weight", 0.0) or 0.0)
 
-    bonds, angles, chirals = _extract_conformer(ligand_confs)
+    bonds, angles, chirals, dihedrals = _extract_conformer(ligand_confs)
+    if dw <= 0:  # disabled -> drop so it never enters active_sites / the spec
+        dihedrals = []
 
     # ---- collect every referenced global atom -> active_sites -----------------
     active: set[int] = set()
@@ -279,6 +344,8 @@ def build_spec(
     for g0, g1, g2, _ in angles:
         active.update((g0, g1, g2))
     for g0, g1, g2, g3, _ in chirals:
+        active.update((g0, g1, g2, g3))
+    for g0, g1, g2, g3, _ in dihedrals:
         active.update((g0, g1, g2, g3))
     for dr in distance_restraints:
         active.update(int(s) for s in dr.target_sites1)
@@ -339,6 +406,19 @@ def build_spec(
             weight=np.full(len(chirals), cw),
             mask=np.ones(len(chirals)),
         )
+    dihedral = None
+    if dihedrals:
+        idx = np.array(
+            [[g2l[g0], g2l[g1], g2l[g2], g2l[g3]] for g0, g1, g2, g3, _ in dihedrals],
+            dtype=np.int64,
+        )
+        dihedral = DihedralArrays(
+            idx=idx,
+            phi0=np.array([p for _, _, _, _, p in dihedrals]),
+            slack=np.full(len(dihedrals), dsl),
+            weight=np.full(len(dihedrals), dw),
+            mask=np.ones(len(dihedrals)),
+        )
 
     # ---- distance arrays (padded, local indices) ------------------------------
     distance = None
@@ -387,6 +467,7 @@ def build_spec(
         bond=bond,
         angle=angle,
         chiral=chiral,
+        dihedral=dihedral,
         distance=distance,
         vdw=vdw_arrays,
         vdw_config=vdw_config,
@@ -401,11 +482,13 @@ def build_spec(
     else:
         vdw_desc = "off"
     logger.info(
-        "built spec: n_active=%d bonds=%d angles=%d chirals=%d distances=%d vdw=%s",
+        "built spec: n_active=%d bonds=%d angles=%d chirals=%d dihedrals=%d "
+        "distances=%d vdw=%s",
         spec.n_active,
         len(bonds),
         len(angles),
         len(chirals),
+        len(dihedrals),
         len(distance_restraints),
         vdw_desc,
     )

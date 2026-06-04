@@ -73,6 +73,24 @@ class ChiralArrays:
 
 
 @dataclass
+class DihedralArrays:
+    """Flat-bottomed dihedral (torsion) restraints (padded). Atom order i-j-k-l;
+    the rotatable bond axis is the j-k pair (columns 1-2).
+
+    Used for cis/trans (E/Z) preservation of acyclic double bonds: the target
+    ``phi0`` is the reference-conformer dihedral, so the bond is held at its
+    input E/Z geometry. The energy is periodicity-safe (the deviation from
+    ``phi0`` is wrapped to [-pi, pi] before the flat-bottomed square penalty).
+    """
+
+    idx: np.ndarray  # (n_dihedral, 4) int
+    phi0: np.ndarray  # (n_dihedral,) target dihedral in radians
+    slack: np.ndarray  # (n_dihedral,) radians
+    weight: np.ndarray  # (n_dihedral,)
+    mask: np.ndarray  # (n_dihedral,)
+
+
+@dataclass
 class VdwArrays:
     """VdW repulsion for non-bonded pairs (lower-bound only).
 
@@ -138,6 +156,7 @@ class RestraintSpec:
     bond: BondArrays | None = None
     angle: AngleArrays | None = None
     chiral: ChiralArrays | None = None
+    dihedral: DihedralArrays | None = None
     vdw: VdwArrays | None = None
     vdw_config: VdwConfig | None = None
     distance: DistanceArrays | None = None
@@ -146,12 +165,12 @@ class RestraintSpec:
     conf_start_sigma: float = -1.0
 
     def has_conformer(self) -> bool:
-        """True if any conformer (bond/angle/chiral/vdw) restraint exists."""
+        """True if any conformer (bond/angle/chiral/dihedral/vdw) restraint exists."""
         if self.vdw_config is not None and self.vdw_config.weight > 0:
             return True
         return any(
             arr is not None and arr.mask.sum() > 0
-            for arr in (self.bond, self.angle, self.chiral, self.vdw)
+            for arr in (self.bond, self.angle, self.chiral, self.dihedral, self.vdw)
         )
 
     def has_distance(self) -> bool:

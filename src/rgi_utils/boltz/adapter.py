@@ -27,9 +27,11 @@ class BoltzFeatsAdapter:
         self.feats = feats
         self._asym_id_atom = None
         self._atom_to_token = None
+        self._pad0 = None  # per-atom real-atom mask (True=real), batch 0
 
     def _per_atom(self):
-        """Cache per-atom asym_id (chain) and the atom->token map for batch 0."""
+        """Cache per-atom asym_id (chain), the atom->token map and the real-atom
+        pad mask for batch 0."""
         if self._asym_id_atom is None:
             feats = self.feats
             asym_id_token = feats["asym_id"]
@@ -41,6 +43,11 @@ class BoltzFeatsAdapter:
             )
             self._asym_id_atom = asym_id_atom[0]
             self._atom_to_token = atom_to_token[0]
+            # boltz pads the atom dim to a multiple of the window size; padding atoms
+            # get asym_id=0 and an all-zero atom_to_token row, so without this mask
+            # they would be emitted as chain-0 / residue-ordinal-1 and corrupt any
+            # selection touching them (and inflate a chain-0 ligand's atom count).
+            self._pad0 = self.feats["atom_pad_mask"][0].bool()
         return self._asym_id_atom, self._atom_to_token
 
     # --- FrameworkAdapter -----------------------------------------------------
@@ -56,7 +63,10 @@ class BoltzFeatsAdapter:
         record = self.feats["record"]
         for chain in record[0].chains:
             chain_id = chain.chain_id
-            chain_sites = torch.where(asym_id_atom_b0 == chain_id)[0].tolist()
+            # exclude padding atoms (else they surface as chain-0 / resid 1)
+            chain_sites = torch.where((asym_id_atom_b0 == chain_id) & self._pad0)[
+                0
+            ].tolist()
             toks = [
                 int(torch.argmax(atom_to_token_b0[gidx, :]).item())
                 for gidx in chain_sites
@@ -125,7 +135,9 @@ class BoltzFeatsAdapter:
                 )
                 continue
 
-            chain_sites = torch.where(asym_id_atom_b0 == chain.chain_id)[0]
+            chain_sites = torch.where((asym_id_atom_b0 == chain.chain_id) & self._pad0)[
+                0
+            ]
             global_indices = chain_sites.detach().cpu().numpy()
             n_mol = mol.GetNumAtoms()
             if n_mol != len(global_indices):

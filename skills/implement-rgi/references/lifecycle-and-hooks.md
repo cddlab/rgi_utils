@@ -93,12 +93,19 @@ restraints_config:
       #               flat-bottomed1 {target_distance1}, flat-bottomed2 {target_distance2}
       # optional per-restraint:  start_sigma: <float>
   conformer_restraints_config:
-    bond:   {weight: 1.0}
-    angle:  {weight: 1.0}
-    chiral: {weight: 1.0}
-    vdw:    {weight: 1.0, mode: "intramolecular"}   # intramolecular = static, works in all backends
+    bond:     {weight: 1.0}
+    angle:    {weight: 1.0}
+    chiral:   {weight: 1.0}
+    dihedral: {weight: 1.0}                          # cis/trans (E/Z): holds acyclic, non-aromatic double bonds at their reference dihedral. ON by default; weight<=0 disables. optional slack (radians).
+    vdw:      {weight: 1.0, mode: "intramolecular"}  # intramolecular = static, works in all backends
     # optional, one value for ALL conformer terms:  start_sigma: <float>
 ```
+
+The `dihedral` term needs the ligand mol to carry real bond ORDERS (it keys on
+`BondType.DOUBLE`). boltz (CCD mol), protenix/openfold (biotite BondList) and AF3
+(SMILES/CCD) all supply them. chai's tokenized context exposes only heavy atoms
+with no bonds, so its perceived topology is all-single and `dihedral` finds
+nothing there (graceful: `dihedrals=0`).
 
 The selection DSL (`selection.py`) supports `chain`, `resid N`, `resid A to B`,
 `index`, and `and`/`or`/`not`/`( )`. `resid` is the per-chain 1-based ordinal the

@@ -25,7 +25,6 @@ def make_minimizer(
     spec,
     max_iter: int = 200,
     learning_rate: float = 0.01,
-    start_sigma: float = -1.0,
     method: str = "lbfgs",
 ):
     """Return ``minimize(coords, sigma) -> coords``.
@@ -34,7 +33,8 @@ def make_minimizer(
     JIT/vmap-able, so it runs inside the diffusion loop's ``hk.scan``/``hk.vmap``.
     ``method`` selects the jaxopt solver: ``"cg"`` -> NonlinearCG, else LBFGS.
     ``learning_rate`` is accepted for API compatibility but unused (the solver
-    runs its own line search).
+    runs its own line search). Per-restraint gating uses ``spec.max_start_sigma()``
+    and the per-term masks baked into the spec, so there is no ``start_sigma`` arg.
     """
     import jaxopt
 

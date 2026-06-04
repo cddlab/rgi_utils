@@ -65,6 +65,38 @@ def chiral_energy(positions, idx, vol0, slack, weight, mask):
     return torch.sum(weight * delta**2 * mask)
 
 
+def dihedral_energy(positions, idx, phi0, slack, weight, mask):
+    """Flat-bottomed dihedral (torsion) energy; bond axis is columns 1-2.
+
+    Periodicity-safe: the deviation ``phi - phi0`` is wrapped to [-pi, pi] before
+    the flat-bottomed square penalty. Mirrors ``numpy_energy.dihedral_energy``.
+    """
+    p0 = positions[..., idx[:, 0], :]
+    p1 = positions[..., idx[:, 1], :]
+    p2 = positions[..., idx[:, 2], :]
+    p3 = positions[..., idx[:, 3], :]
+    b1 = p1 - p0
+    b2 = p2 - p1
+    b3 = p3 - p2
+    n1 = torch.linalg.cross(b1, b2, dim=-1)
+    n2 = torch.linalg.cross(b2, b3, dim=-1)
+    b2n = b2 / torch.sqrt(
+        torch.sum(b2**2, dim=-1, keepdim=True) + _EPS
+    )  # _EPS inside: finite grad at b2=0
+    m1 = torch.linalg.cross(n1, b2n, dim=-1)
+    x = torch.sum(n1 * n2, dim=-1)
+    y = torch.sum(m1 * n2, dim=-1)
+    # Avoid atan2(0, 0) at exactly-degenerate geometry so the gradient stays finite
+    # and matches numpy/jax (jax's bare atan2(0,0) gradient is NaN). See numpy ref.
+    x = torch.where((x == 0.0) & (y == 0.0), x + _EPS, x)
+    phi = torch.atan2(y, x)
+    d = phi - phi0
+    d = torch.atan2(torch.sin(d), torch.cos(d))  # wrap to [-pi, pi]
+    zero = torch.zeros_like(d)
+    delta = torch.where(d > slack, d - slack, torch.where(d < -slack, d + slack, zero))
+    return torch.sum(weight * delta**2 * mask)
+
+
 def vdw_energy(positions, idx, r_min, weight, mask):
     """VdW repulsion (lower-bound only): penalize d < r_min."""
     ai, aj = idx[:, 0], idx[:, 1]
@@ -147,6 +179,11 @@ def total_energy(positions, prepared, sigma=None):
         ene = ene + chiral_energy(
             positions, c["idx"], c["vol0"], c["slack"], c["weight"], c["mask"] * cg
         )
+    if "dihedral" in prepared:
+        dh = prepared["dihedral"]
+        ene = ene + dihedral_energy(
+            positions, dh["idx"], dh["phi0"], dh["slack"], dh["weight"], dh["mask"] * cg
+        )
     if "vdw" in prepared:
         v = prepared["vdw"]
         ene = ene + vdw_energy(
@@ -177,7 +214,14 @@ def energy_breakdown(positions, prepared, sigma=None):
     Returns ``{bond, angle, chiral, vdw, distance}`` python floats (host-side).
     """
     cg = 1.0 if sigma is None else (sigma <= prepared.get("conf_start_sigma", 1e30))
-    out = {"bond": 0.0, "angle": 0.0, "chiral": 0.0, "vdw": 0.0, "distance": 0.0}
+    out = {
+        "bond": 0.0,
+        "angle": 0.0,
+        "chiral": 0.0,
+        "dihedral": 0.0,
+        "vdw": 0.0,
+        "distance": 0.0,
+    }
     if "bond" in prepared:
         b = prepared["bond"]
         out["bond"] = float(
@@ -203,6 +247,18 @@ def energy_breakdown(positions, prepared, sigma=None):
         out["chiral"] = float(
             chiral_energy(
                 positions, c["idx"], c["vol0"], c["slack"], c["weight"], c["mask"] * cg
+            )
+        )
+    if "dihedral" in prepared:
+        dh = prepared["dihedral"]
+        out["dihedral"] = float(
+            dihedral_energy(
+                positions,
+                dh["idx"],
+                dh["phi0"],
+                dh["slack"],
+                dh["weight"],
+                dh["mask"] * cg,
             )
         )
     if "vdw" in prepared:
@@ -268,6 +324,15 @@ def prepare_spec(spec, device="cpu", dtype=torch.float32):
             "slack": _f(c.slack),
             "weight": _f(c.weight),
             "mask": _f(c.mask),
+        }
+    if spec.dihedral is not None and spec.dihedral.mask.sum() > 0:
+        dh = spec.dihedral
+        prepared["dihedral"] = {
+            "idx": _i(dh.idx),
+            "phi0": _f(dh.phi0),
+            "slack": _f(dh.slack),
+            "weight": _f(dh.weight),
+            "mask": _f(dh.mask),
         }
     if spec.vdw is not None and spec.vdw.mask.sum() > 0:
         v = spec.vdw

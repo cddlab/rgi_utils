@@ -15,6 +15,7 @@ from rgi_utils.spec import (
     AngleArrays,
     BondArrays,
     ChiralArrays,
+    DihedralArrays,
     DistanceArrays,
     RestraintSpec,
     VdwArrays,
@@ -47,6 +48,15 @@ def _make_spec() -> RestraintSpec:
         weight=np.array([0.1, 0.1]),
         mask=np.array([1.0, 1.0]),
     )
+    # non-trivial phi0 so the random positions violate the torsion (energy > 0);
+    # second entry is masked-out padding (mask=0) to exercise the padding path.
+    dihedral = DihedralArrays(
+        idx=np.array([[0, 1, 2, 3], [4, 5, 6, 7]], dtype=np.int64),
+        phi0=np.array([0.7, -2.5]),
+        slack=np.array([0.0, 0.2]),
+        weight=np.array([0.15, 0.15]),
+        mask=np.array([1.0, 0.0]),
+    )
     distance = DistanceArrays(
         grp1_idx=np.array([[0, 1], [8, 9]], dtype=np.int64),
         grp2_idx=np.array([[5, 6], [10, 11]], dtype=np.int64),
@@ -72,6 +82,7 @@ def _make_spec() -> RestraintSpec:
         bond=bond,
         angle=angle,
         chiral=chiral,
+        dihedral=dihedral,
         vdw=vdw,
         distance=distance,
         conf_start_sigma=10.0,  # conformer terms active when sigma <= 10
@@ -186,3 +197,63 @@ def test_sigma_gating_parity():
     # sigma=50 (conf off, dist start_sigma=5 off, only dist start_sigma=100 on)
     # has strictly fewer active terms than sigma=3
     assert e_all(50.0)[0] <= e_all(3.0)[0]
+
+
+def test_dihedral_degenerate_gradient_parity():
+    """Degenerate dihedral geometry must give FINITE, mutually-equal gradients in
+    all three backends. Regression for the atan2(0,0) divergence (jax=NaN vs
+    torch=0) at exact collinearity / coincident atoms in dihedral_energy."""
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.energy import jax_energy, torch_energy
+
+    # one dihedral, nonzero target so a degenerate phi still yields a nonzero delta
+    spec = RestraintSpec(
+        n_active=4,
+        active_sites=np.arange(4),
+        dihedral=DihedralArrays(
+            idx=np.array([[0, 1, 2, 3]], dtype=np.int64),
+            phi0=np.array([1.0]),
+            slack=np.array([0.0]),
+            weight=np.array([1.0]),
+            mask=np.array([1.0]),
+        ),
+        conf_start_sigma=10.0,
+    )
+    cases = {
+        "collinear_ijk": [[0, 0, 0], [1, 0, 0], [2, 0, 0], [2, 1, 0]],
+        "collinear_jkl": [[0, 1, 0], [0, 0, 0], [1, 0, 0], [2, 0, 0]],
+        "coincident_jk": [[0, 0, 0], [1, 0, 0], [1, 0, 0], [1, 1, 0]],
+        "near_collinear": [[0, 0, 0], [1, 0, 0], [2, 1e-7, 0], [2, 1, 0]],
+    }
+    prep_np = numpy_energy.prepare_spec(spec)
+    prep_t = torch_energy.prepare_spec(spec, dtype=torch.float64)
+    prep_j = jax_energy.prepare_spec(spec)
+    for name, p in cases.items():
+        pos = np.array(p, dtype=np.float64)
+        # energy: finite and equal across backends
+        e_np = float(numpy_energy.total_energy(pos, prep_np))
+        e_t = float(
+            torch_energy.total_energy(torch.tensor(pos, dtype=torch.float64), prep_t)
+        )
+        e_j = float(jax_energy.total_energy(jnp.asarray(pos), prep_j))
+        assert np.isfinite([e_np, e_t, e_j]).all(), f"{name}: non-finite energy"
+        assert abs(e_np - e_t) < 1e-6 and abs(e_np - e_j) < 1e-6, (
+            f"{name}: energy mismatch"
+        )
+        # gradient: finite in both autodiff backends and equal to each other (the
+        # cross-backend parity invariant; FD is unreliable exactly at the singularity)
+        pt = torch.tensor(pos, dtype=torch.float64, requires_grad=True)
+        torch_energy.total_energy(pt, prep_t).backward()
+        g_t = pt.grad.numpy()
+        g_j = np.asarray(
+            jax.grad(lambda x: jax_energy.total_energy(x, prep_j))(jnp.asarray(pos))
+        )
+        assert np.isfinite(g_t).all(), f"{name}: torch grad non-finite"
+        assert np.isfinite(g_j).all(), f"{name}: jax grad non-finite"
+        assert np.allclose(g_t, g_j, rtol=1e-5, atol=1e-6), (
+            f"{name}: torch/jax grad mismatch, max|d|={np.abs(g_t - g_j).max()}"
+        )

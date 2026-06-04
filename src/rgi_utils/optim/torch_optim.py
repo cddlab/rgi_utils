@@ -129,6 +129,12 @@ class TorchRestraintOptimizer:
             opt.step(closure)
             new_active = active.detach().clone()
 
+        # Robustness (mirror the jax backend's guard in jax_optim.py): a degenerate
+        # geometry can make the solver step diverge to non-finite values; keep the
+        # input coordinates rather than writing NaN/Inf into the structure.
+        if not torch.isfinite(new_active).all():
+            logger.warning("restraint step produced non-finite coords; skipping update")
+            return coords
         # back in the ambient (inference) context: in-place write is allowed
         coords[..., self._active_idx, :] = new_active
         return coords
@@ -145,3 +151,17 @@ class TorchRestraintOptimizer:
                 prot_pos = coords[..., self._vdw["prot_global"], :]
                 e = e + self._vdw_energy(active, prot_pos)
             return float(e)
+
+    def dynamic_vdw_energy(self, coords) -> float:
+        """The dynamic ligand-protein VdW term alone (>= 0); for finalize stats.
+
+        Computed directly (not as energy - static_total) so the reported value is
+        exact and non-negative, with no float32/float64 cancellation error.
+        """
+        if self._vdw is None or not self.spec.is_active():
+            return 0.0
+        self._ensure(coords.device, coords.dtype)
+        with torch.no_grad():
+            active = coords[..., self._active_idx, :]
+            prot_pos = coords[..., self._vdw["prot_global"], :]
+            return float(self._vdw_energy(active, prot_pos))

@@ -31,8 +31,14 @@ class RestraintsConfig:
     @classmethod
     def from_dict(cls, config: dict | None) -> "RestraintsConfig":
         config = config or {}
-        global_start_sigma = float(config.get("start_sigma", -1.0))
+        # Guard float() against an explicit null (YAML `start_sigma:` / JSON null,
+        # both -> None): treat present-but-null like "unset" and fall back instead
+        # of crashing with float(None).
+        _gss = config.get("start_sigma")
+        global_start_sigma = float(_gss) if _gss is not None else -1.0
         conformer_config = config.get("conformer_restraints_config", {}) or {}
+        _css = conformer_config.get("start_sigma")
+        conf_start_sigma = float(_css) if _css is not None else global_start_sigma
         cfg = cls(
             verbose=config.get("verbose", False),
             gpu=config.get("gpu", False),
@@ -41,9 +47,7 @@ class RestraintsConfig:
             max_iter=config.get("max_iter", 100),
             start_sigma=global_start_sigma,
             # one conformer start_sigma for all ligands (falls back to global)
-            conf_start_sigma=float(
-                conformer_config.get("start_sigma", global_start_sigma)
-            ),
+            conf_start_sigma=conf_start_sigma,
             learning_rate=config.get("learning_rate", 0.01),
             conformer_config=conformer_config,
         )

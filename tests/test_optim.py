@@ -68,8 +68,9 @@ def test_jax_minimize_reduces_energy():
     spec, coords_np = _distorted_ethane()
     coords = jnp.asarray(coords_np)
     e0 = energy_of(spec, coords)
-    minimize = make_minimizer(spec, max_iter=2000, learning_rate=0.02, start_sigma=1e30)
-    coords = minimize(coords, 0.0)  # sigma=0 <= start_sigma -> runs
+    # gating uses spec.max_start_sigma() (here conf_start_sigma=1e30), so sigma=0 runs
+    minimize = make_minimizer(spec, max_iter=2000, learning_rate=0.02)
+    coords = minimize(coords, 0.0)
     e1 = energy_of(spec, coords)
     assert e1 < 0.5 * e0, f"{e0} -> {e1}"
 

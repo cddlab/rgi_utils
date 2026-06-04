@@ -1,6 +1,8 @@
 import logging
 from typing import Dict, List, Protocol, Union, runtime_checkable
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
 
@@ -33,7 +35,9 @@ class ResId(SelectionNode):
 
     def eval(self, mol: Dict[str, Union[str, int]]) -> bool:
         resid = mol.get("resid")
-        return isinstance(resid, int) and resid in self.ids
+        # accept numpy ints too: isinstance(np.int64(5), int) is False, which would
+        # otherwise make every atom fail to match if an adapter yields a numpy scalar
+        return isinstance(resid, (int, np.integer)) and resid in self.ids
 
 
 class Index(SelectionNode):
@@ -42,7 +46,7 @@ class Index(SelectionNode):
 
     def eval(self, mol: Dict[str, Union[str, int]]) -> bool:
         index = mol.get("index")
-        return isinstance(index, int) and index in self.indices
+        return isinstance(index, (int, np.integer)) and index in self.indices
 
 
 class Not(SelectionNode):
@@ -108,11 +112,19 @@ class SelectionParser:
 
     def _consume_tag(self, tag: str):
         if self.text.startswith(tag, self.pos):
+            # Refuse to match an operator/keyword that is merely the prefix of a
+            # longer glued token (e.g. "not" in "notchain", "and" in "andresid"):
+            # in a valid selection a tag is always followed by space / "(" / ")" /
+            # end-of-string, never another alnum char. Without this the tag was
+            # silently stripped, yielding a wrong selection (e.g. "notchain A" ->
+            # Not(Chain(A))). The parser's backtracking recovers from this error.
             if tag.isalpha() and (
                 self.pos + len(tag) < len(self.text)
                 and self.text[self.pos + len(tag)].isalnum()
             ):
-                pass
+                raise ParseError(
+                    f"'{tag}' is a prefix of a longer token at position {self.pos}"
+                )
             self.pos += len(tag)
             return tag
         raise ParseError(f"Expected '{tag}' at position {self.pos}")

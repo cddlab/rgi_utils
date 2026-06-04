@@ -50,9 +50,12 @@ class DistanceData:
         self.atom_selection1 = config.get("atom_selection1", None)
         self.atom_selection2 = config.get("atom_selection2", None)
         self.calc_method = config.get("calc_method", "unfixed-absolute")
-        # per-distance start_sigma (None -> the global default is applied later)
-        if "start_sigma" in config:
-            self.start_sigma = float(config["start_sigma"])
+        # per-distance start_sigma (None / absent -> the global default is applied
+        # later by from_dict). Guard float() against an explicit null value so a
+        # `start_sigma:` / `"start_sigma": null` entry falls back instead of crashing.
+        _ss = config.get("start_sigma")
+        if _ss is not None:
+            self.start_sigma = float(_ss)
         if "harmonic" in config:
             self.target_distance = config["harmonic"].get("target_distance", None)
             if self.target_distance is not None:

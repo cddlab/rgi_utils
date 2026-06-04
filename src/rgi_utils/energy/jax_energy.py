@@ -62,6 +62,39 @@ def chiral_energy(positions, idx, vol0, slack, weight, mask):
     return jnp.sum(weight * delta**2 * mask)
 
 
+def dihedral_energy(positions, idx, phi0, slack, weight, mask):
+    """Flat-bottomed dihedral (torsion) energy; bond axis is columns 1-2.
+
+    Periodicity-safe: the deviation ``phi - phi0`` is wrapped to [-pi, pi] before
+    the flat-bottomed square penalty. Mirrors ``numpy_energy.dihedral_energy``.
+    Pure jnp so it stays JIT/vmap-able inside the AF3 scan.
+    """
+    p0 = positions[..., idx[:, 0], :]
+    p1 = positions[..., idx[:, 1], :]
+    p2 = positions[..., idx[:, 2], :]
+    p3 = positions[..., idx[:, 3], :]
+    b1 = p1 - p0
+    b2 = p2 - p1
+    b3 = p3 - p2
+    n1 = jnp.cross(b1, b2)
+    n2 = jnp.cross(b2, b3)
+    b2n = b2 / jnp.sqrt(
+        jnp.sum(b2**2, axis=-1, keepdims=True) + _EPS
+    )  # _EPS inside: finite grad at b2=0
+    m1 = jnp.cross(n1, b2n)
+    x = jnp.sum(n1 * n2, axis=-1)
+    y = jnp.sum(m1 * n2, axis=-1)
+    # Avoid atan2(0, 0) at exactly-degenerate geometry: jax's bare arctan2(0,0) has a
+    # NaN gradient (0*NaN=NaN survives even a masked row) where torch gives 0, so the
+    # backends diverged. Nudging x makes it finite and equal to numpy/torch.
+    x = jnp.where((x == 0.0) & (y == 0.0), x + _EPS, x)
+    phi = jnp.arctan2(y, x)
+    d = phi - phi0
+    d = jnp.arctan2(jnp.sin(d), jnp.cos(d))  # wrap to [-pi, pi]
+    delta = jnp.where(d > slack, d - slack, jnp.where(d < -slack, d + slack, 0.0))
+    return jnp.sum(weight * delta**2 * mask)
+
+
 def vdw_energy(positions, idx, r_min, weight, mask):
     """VdW repulsion (lower-bound only): penalize d < r_min."""
     ai, aj = idx[:, 0], idx[:, 1]
@@ -147,6 +180,11 @@ def total_energy(positions, prepared, sigma=None):
         ene = ene + chiral_energy(
             positions, c["idx"], c["vol0"], c["slack"], c["weight"], c["mask"] * cg
         )
+    if "dihedral" in prepared:
+        dh = prepared["dihedral"]
+        ene = ene + dihedral_energy(
+            positions, dh["idx"], dh["phi0"], dh["slack"], dh["weight"], dh["mask"] * cg
+        )
     if "vdw" in prepared:
         v = prepared["vdw"]
         ene = ene + vdw_energy(
@@ -183,7 +221,14 @@ def energy_breakdown(positions, prepared, sigma=None):
         cg = (jnp.asarray(sigma) <= prepared.get("conf_start_sigma", 1e30)).astype(
             positions.dtype
         )
-    out = {"bond": 0.0, "angle": 0.0, "chiral": 0.0, "vdw": 0.0, "distance": 0.0}
+    out = {
+        "bond": 0.0,
+        "angle": 0.0,
+        "chiral": 0.0,
+        "dihedral": 0.0,
+        "vdw": 0.0,
+        "distance": 0.0,
+    }
     if "bond" in prepared:
         b = prepared["bond"]
         out["bond"] = float(
@@ -209,6 +254,18 @@ def energy_breakdown(positions, prepared, sigma=None):
         out["chiral"] = float(
             chiral_energy(
                 positions, c["idx"], c["vol0"], c["slack"], c["weight"], c["mask"] * cg
+            )
+        )
+    if "dihedral" in prepared:
+        dh = prepared["dihedral"]
+        out["dihedral"] = float(
+            dihedral_energy(
+                positions,
+                dh["idx"],
+                dh["phi0"],
+                dh["slack"],
+                dh["weight"],
+                dh["mask"] * cg,
             )
         )
     if "vdw" in prepared:
@@ -267,6 +324,15 @@ def prepare_spec(spec):
             "slack": jnp.asarray(c.slack),
             "weight": jnp.asarray(c.weight),
             "mask": jnp.asarray(c.mask),
+        }
+    if spec.dihedral is not None and spec.dihedral.mask.sum() > 0:
+        dh = spec.dihedral
+        prepared["dihedral"] = {
+            "idx": jnp.asarray(dh.idx, dtype=jnp.int32),
+            "phi0": jnp.asarray(dh.phi0),
+            "slack": jnp.asarray(dh.slack),
+            "weight": jnp.asarray(dh.weight),
+            "mask": jnp.asarray(dh.mask),
         }
     if spec.vdw is not None and spec.vdw.mask.sum() > 0:
         v = spec.vdw
