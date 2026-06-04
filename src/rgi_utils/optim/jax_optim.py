@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 def make_minimizer(
     spec,
-    max_iter: int = 200,
+    max_iter: int = 100,
     learning_rate: float = 0.01,
     method: str = "cg",
 ):
