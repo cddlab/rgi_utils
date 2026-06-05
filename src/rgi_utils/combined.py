@@ -254,11 +254,33 @@ class CombinedRestraints:
             s = sigma if sigma is not None else float("-inf")
             return self._minimize_fn(coords, s)
         if b == "torch":
-            self._optimizer.minimize(coords, sigma=sigma)
+            self._minimize_torch(coords, sigma)
             return coords
         if b == "numpy":
             return self._minimize_numpy(coords, sigma)
         return coords
+
+    def _minimize_torch(self, coords, sigma=None):
+        """Run the torch optimizer. With ``gpu:false`` compute on CPU even when the
+        model's coords live on the accelerator: move them to CPU, optimize, and write
+        the result back to the original device. This is the same CPU round-trip the
+        numpy backend used, but it runs the *torch* optimizer — so the optimization
+        is identical to the GPU path (and the dynamic ligand-protein VdW still
+        applies, unlike the scipy path). With ``gpu:true`` (or coords already on CPU,
+        i.e. a no-GPU run) optimize in place on the coords' own device."""
+        import torch
+
+        if (
+            not self.config.gpu
+            and isinstance(coords, torch.Tensor)
+            and coords.device.type != "cpu"
+        ):
+            cpu_coords = coords.detach().to("cpu")
+            self._optimizer.minimize(cpu_coords, sigma=sigma)
+            with torch.no_grad():
+                coords.copy_(cpu_coords.to(device=coords.device, dtype=coords.dtype))
+        else:
+            self._optimizer.minimize(coords, sigma=sigma)
 
     def _minimize_numpy(self, coords, sigma=None):
         import numpy as np

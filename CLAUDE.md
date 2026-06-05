@@ -45,9 +45,10 @@ Design = **3 layers + autodiff + static shapes + GPU-complete optimization**:
    `tests/test_backend_parity.py` checks energy+grad agreement across backends.
 
 3. **Optim layer** (`optim/{numpy,torch,jax}_optim.py`, GPU-complete): optimize
-   only `active_sites` coords, scatter back. torch = `LBFGS` autograd on GPU
-   tensors; jax = `fori_loop`+`value_and_grad` JIT-able inside `lax.scan` (no
-   `pure_callback`, no scipy); numpy = `scipy.optimize.minimize` (CPU fallback).
+   only `active_sites` coords, scatter back. torch = `LBFGS` autograd (runs on the
+   coords' device); jax = `fori_loop`+`value_and_grad` JIT-able inside `lax.scan` (no
+   `pure_callback`, no scipy); numpy = `scipy.optimize.minimize` (opt-in reference
+   path via `backend: numpy`, not the default).
 
 Supporting modules:
 - **`featurizer.py`**: `build_spec(ligand_confs, distance_restraints,
@@ -64,8 +65,13 @@ Supporting modules:
   prior spec/optimizer up front so a reused instance is safe) →
   `minimize(coords, step, sigma)` → `finalize(coords, step)`. `get_instance()` /
   `reset()` remain only as back-compat shims — do not build new code on them. Picks
-  the backend from config; torch/jax imported lazily. JAX tools inside `lax.scan` grab
-  the pure minimizer via `get_minimizer()` instead of calling `minimize` per step.
+  the backend from config — **default torch**; `gpu` selects the *device* (CPU when
+  `gpu:false`, the accelerator when `gpu:true`), NOT the backend, so `gpu:false` runs
+  the torch optimizer on CPU (moving GPU coords to CPU and back) instead of scipy;
+  `backend: numpy` opts into the scipy reference path. torch/jax imported lazily. JAX
+  tools inside `lax.scan` grab the pure minimizer via `get_minimizer()` instead of
+  calling `minimize` per step (AF3 forces `backend: jax`, so for AF3 the `gpu` flag is
+  inert — to run AF3 restraints on CPU, run the whole process on the JAX CPU platform).
 - **Framework adapters** (`{boltz,protenix,chai,openfold3,esmfold2}/adapter.py`; AF3's lives
   in-tool because it needs CCD machinery): implement `iter_atoms()` (→
   `AtomRecord(chain, resid, index)` for distance selection) and optionally

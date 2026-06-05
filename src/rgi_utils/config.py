@@ -100,7 +100,10 @@ class RestraintsConfig:
         return cfg
 
     def resolve_backend(self) -> str:
-        """Auto-select backend: torch if gpu else numpy; explicit wins."""
+        """Default to torch; ``gpu`` selects the DEVICE (CPU when false, the
+        accelerator when true), not the backend — so ``gpu:false`` runs the same
+        torch optimizer on CPU instead of the numpy (scipy) reference path. An
+        explicit ``backend:`` wins, so numpy stays reachable via ``backend: numpy``."""
         if self.backend:
             return self.backend
-        return "torch" if self.gpu else "numpy"
+        return "torch"

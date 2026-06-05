@@ -81,6 +81,12 @@ def test_config_defaults():
     assert cr.config.verbose is False
     assert cr.config.gpu is False
     assert cr.config.method == "CG"
+    # gpu:false now defaults to torch (run on CPU), not the numpy/scipy fallback;
+    # gpu:true also torch (on the accelerator); numpy is opt-in via backend:numpy.
+    assert cr.config.resolve_backend() == "torch"
+    cr.set_config({"gpu": True})
+    assert cr.config.resolve_backend() == "torch"
+    cr.set_config({"backend": "numpy"})
     assert cr.config.resolve_backend() == "numpy"
 
 
@@ -353,3 +359,62 @@ def test_rmsd_missing_pdb_raises(tmp_path):
     atoms = [AtomRecord("A", i + 1, i) for i in range(3)]
     with pytest.raises(ValueError, match="could not be read"):
         cr.setup(MockAdapter(atoms))
+
+
+def _dist_atoms():
+    return [
+        AtomRecord("A", 1, 0),
+        AtomRecord("A", 2, 1),
+        AtomRecord("B", 1, 2),
+        AtomRecord("B", 2, 3),
+    ]
+
+
+def _dist_config(**extra):
+    return {
+        **extra,
+        "distance_restraints_config": [
+            {
+                "atom_selection1": "chain A",
+                "atom_selection2": "chain B",
+                "start_sigma": 1e30,
+                "harmonic": {"target_distance": 5.0},
+            }
+        ],
+    }
+
+
+def test_gpu_false_uses_torch_on_cpu():
+    """gpu:false (no explicit backend) resolves to the torch backend and runs on a
+    CPU tensor (replacing the old numpy/scipy fallback)."""
+    torch = pytest.importorskip("torch")
+    cr = CombinedRestraints.get_instance()
+    cr.set_config(_dist_config())  # gpu omitted -> False; no explicit backend
+    assert cr.config.resolve_backend() == "torch"
+    cr.setup(MockAdapter(_dist_atoms()))
+    assert cr._backend == "torch"
+    coords = torch.zeros((1, 4, 3))  # CPU tensor
+    coords[0, 2:, 0] = 20.0
+    cr.minimize(coords, 0, sigma=0.0)
+    assert coords.device.type == "cpu"
+    d = float(torch.norm(coords[0, 2:].mean(0) - coords[0, :2].mean(0)))
+    assert abs(d - 5.0) < 1e-4  # closed-form COM-distance shift hits target on CPU
+
+
+@pytest.mark.gpu
+def test_gpu_false_cuda_coords_compute_on_cpu():
+    """gpu:false with CUDA coords: the restraint is computed on CPU but the result is
+    written back to the original CUDA device (the model stays on GPU)."""
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("no CUDA device")
+    cr = CombinedRestraints.get_instance()
+    cr.set_config(_dist_config(gpu=False))
+    cr.setup(MockAdapter(_dist_atoms()))
+    assert cr._backend == "torch"
+    coords = torch.zeros((1, 4, 3), device="cuda")
+    coords[0, 2:, 0] = 20.0
+    cr.minimize(coords, 0, sigma=0.0)
+    assert coords.device.type == "cuda"  # written back to the original device
+    d = float(torch.norm(coords[0, 2:].mean(0) - coords[0, :2].mean(0)))
+    assert abs(d - 5.0) < 1e-4
