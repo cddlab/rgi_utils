@@ -512,7 +512,11 @@ def build_spec(
             calc_mask[ri, :kc] = 1.0
             calc_ref[ri, :kc] = np.asarray(rr.calc_ref_coords, dtype=np.float64)
             target_rmsd[ri] = float(rr.target_rmsd)
-            rmsd_weight[ri] = float(rr.weight) if rr.weight else 1.0
+            # rr.weight is already normalized in set_config (None -> 1.0); pass it
+            # through verbatim so an explicit weight: 0 yields a zero-energy term
+            # (do NOT coerce a falsy 0 to 1.0 like the conformer terms, which instead
+            # drop weight<=0 entries before the active_sites union).
+            rmsd_weight[ri] = float(rr.weight)
             ss = getattr(rr, "start_sigma", None)
             rmsd_start_sigma[ri] = float(ss) if ss is not None else conf_start_sigma
         rmsd = RmsdArrays(

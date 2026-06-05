@@ -5,9 +5,12 @@ restraint parses ``ATOM``/``HETATM`` records directly. We expose just what the
 atom-selection DSL (``selection.py``) needs:
 
 - ``chain``  — chain id (column 22)
-- ``resid``  — **per-chain 1-based residue ORDINAL** (resets at each chain), matching
-  ``AtomRecord.resid`` (NOT the author ``resSeq``), so one ``atom_selection`` string
-  selects the same residues in the reference PDB and in the diffusion structure.
+- ``resid``  — **per-chain 1-based ordinal** (resets at each chain), matching
+  ``AtomRecord.resid`` (NOT the author ``resSeq``): a polymer (ATOM) residue's atoms
+  share one ordinal, while a ligand (HETATM) atom gets its own ordinal (the adapters
+  tokenise a ligand one atom per token). So one ``atom_selection`` string selects the
+  same atoms in the reference PDB and in the diffusion structure, for polymers and
+  ligands alike (a ligand reference must list atoms in the tool's ligand-atom order).
 - ``index``  — 0-based row in the parsed atom list (for ``index ...`` selections).
 - ``element`` + ``x/y/z`` coordinates.
 
@@ -69,12 +72,16 @@ def read_pdb_atoms(path: str) -> list[PdbAtom]:
         except ValueError:
             continue  # malformed coordinate columns -> skip the record
         element = ln[76:78].strip() if len(ln) >= 78 else ""
-        # per-chain 1-based residue ordinal: bump on a new (resSeq, iCode) group
+        # per-chain 1-based ordinal, matching the AtomRecord.resid convention used by
+        # every adapter: a polymer (ATOM) residue groups by (resSeq, iCode) so all its
+        # atoms share one ordinal, while a ligand/non-polymer (HETATM) atom gets its
+        # OWN ordinal (the adapters tokenise a ligand one atom per token). Aligning the
+        # two readers' conventions is what lets RMSD identity-pair ligand atoms.
         key = (res_seq, icode)
         if chain not in chain_ord:
             chain_ord[chain] = 0
             last_key[chain] = None
-        if last_key[chain] != key:
+        if rec == "HETATM" or last_key[chain] != key:
             chain_ord[chain] += 1
             last_key[chain] = key
         atoms.append(

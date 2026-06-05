@@ -61,6 +61,10 @@ def _cg_minimize(energy_fn, x0, max_iter, max_ls=20, gtol=1e-7, ftol=1e-9):
         x, f, g, d, gg, it, _stop = st
         bad = jnp.logical_or(jnp.logical_not(jnp.isfinite(gg)), gg <= 1e-20)
         d = jnp.where(jnp.sum(d * g) >= 0.0, -g, d)  # restart if not a descent dir
+        # On a degenerate iteration (non-finite / underflowed gg) zero the search
+        # direction so the line search accepts step 0 in ONE eval (no wasted
+        # backtracking) — matching torch's pre-line-search break; `use` discards it.
+        d = jnp.where(bad, jnp.zeros_like(d), d)
         slope = jnp.sum(d * g)
         xt, ft, gt, accepted = line_search(x, d, f, g, slope)
         conv = jnp.logical_or(
@@ -85,17 +89,16 @@ def _cg_minimize(energy_fn, x0, max_iter, max_ls=20, gtol=1e-7, ftol=1e-9):
 def make_minimizer(
     spec,
     max_iter: int = 100,
-    learning_rate: float = 0.01,
     method: str = "cg",
 ):
     """Return ``minimize(coords, sigma) -> coords``.
 
     ``coords`` has shape (..., n_atom, 3). The returned function is pure and
     JIT/vmap-able, so it runs inside the diffusion loop's ``hk.scan``/``hk.vmap``.
-    ``method`` selects the jaxopt solver: ``"cg"`` -> NonlinearCG, else LBFGS.
-    ``learning_rate`` is accepted for API compatibility but unused (the solver
-    runs its own line search). Per-restraint gating uses ``spec.max_start_sigma()``
-    and the per-term masks baked into the spec, so there is no ``start_sigma`` arg.
+    ``method='cg'`` (the default) runs the pure-jax ``_cg_minimize``; any other value
+    uses ``jaxopt.LBFGS`` (lazily imported). Per-restraint gating uses
+    ``spec.max_start_sigma()`` and the per-term masks baked into the spec, so there is
+    no ``start_sigma`` arg.
     """
     active_idx = jnp.asarray(spec.active_sites, dtype=jnp.int32)
     prepared = jax_energy.prepare_spec(spec)

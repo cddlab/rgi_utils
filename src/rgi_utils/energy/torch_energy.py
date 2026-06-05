@@ -51,7 +51,9 @@ def angle_energy(positions, idx, th0, slack, weight, mask):
 
 
 def chiral_energy(positions, idx, vol0, slack, weight, mask):
-    """Chiral volume (scalar triple product) energy; center is column 0."""
+    """Flat-bottomed chiral volume energy; center is column 0. Zero within ``±slack``
+    of ``vol0`` (reference geometry has zero energy), quadratic outside. Mirrors
+    ``numpy_energy.chiral_energy``."""
     a0 = positions[..., idx[:, 0], :]
     a1 = positions[..., idx[:, 1], :]
     a2 = positions[..., idx[:, 2], :]
@@ -60,8 +62,9 @@ def chiral_energy(positions, idx, vol0, slack, weight, mask):
     v2 = a2 - a0
     v3 = a3 - a0
     vol = torch.sum(v1 * torch.linalg.cross(v2, v3, dim=-1), dim=-1)
-    thr = torch.where(vol0 > 0, vol0 - slack, vol0 + slack)
-    delta = vol - thr
+    d = vol - vol0
+    zero = torch.zeros_like(d)
+    delta = torch.where(d > slack, d - slack, torch.where(d < -slack, d + slack, zero))
     return torch.sum(weight * delta**2 * mask)
 
 

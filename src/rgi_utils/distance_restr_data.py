@@ -22,8 +22,6 @@ class DistanceData:
     # flat-bottomed1 / flat-bottomed2 (assigned by set_config)
     target_sites1: list
     target_sites2: list
-    target_local_sites1: list
-    target_local_sites2: list
     calc_method: str  # ["unfixed-absolute"]
     run_restr: bool
     start_sigma: float  # apply this restraint only when noise level <= start_sigma
@@ -34,14 +32,12 @@ class DistanceData:
         self.target_distance = None
         self.target_distance1 = None
         self.target_distance2 = None
-        # the attribute actually read by set_config/calc/grad/featurizer; init to
-        # None so a config missing all type keys falls through to the clear
+        # the attribute actually read by set_config/featurizer; init to None so a
+        # config missing all type keys falls through to the clear
         # ValueError("distance restraints not run") instead of an AttributeError.
         self.distance_restraint_type = None
         self.target_sites1 = None
         self.target_sites2 = None
-        self.target_local_sites1 = None
-        self.target_local_sites2 = None
         self.calc_method = None
         self.run_restr = None
         self.start_sigma = None  # per-restraint; optional (from_dict defaults None -> +inf)
@@ -120,8 +116,6 @@ class DistanceData:
 
         self.target_sites1 = []
         self.target_sites2 = []
-        self.target_local_sites1 = []
-        self.target_local_sites2 = []
 
         atom_selector1 = AtomSelector(self.atom_selection1)
         atom_selector2 = AtomSelector(self.atom_selection2)
@@ -146,92 +140,5 @@ class DistanceData:
             len(self.target_sites2),
         )
 
-    def _calculate_com_vector(self, crds: np.ndarray) -> np.ndarray:
-        com1 = np.mean(crds[self.target_local_sites1, :], axis=0)
-        com2 = np.mean(crds[self.target_local_sites2, :], axis=0)
-        return com2 - com1
-
-    def calc(self, crds_in: np.ndarray) -> float:
-        if self.calc_method == "unfixed-absolute":
-            com_vector = self._calculate_com_vector(crds_in)
-            dist = np.linalg.norm(com_vector)
-            delta = 0.0
-            restraint_type = self.distance_restraint_type
-            if restraint_type == "harmonic":
-                delta = dist - self.target_distance
-            elif (
-                restraint_type in ("flat-bottomed", "flat-bottomed1")
-                and dist < self.target_distance1
-            ):
-                delta = dist - self.target_distance1
-            elif (
-                restraint_type in ("flat-bottomed", "flat-bottomed2")
-                and dist > self.target_distance2
-            ):
-                delta = dist - self.target_distance2
-        else:
-            raise NotImplementedError
-        return delta**2
-
-    def grad(self, crds: np.ndarray, grad: np.ndarray) -> None:
-        if self.calc_method == "unfixed-absolute":
-            com_vector = self._calculate_com_vector(crds)
-            dist = np.linalg.norm(com_vector)
-            if dist < 1e-8:
-                return
-            delta = 0.0
-            restraint_type = self.distance_restraint_type
-            if restraint_type == "harmonic":
-                delta = dist - self.target_distance
-            elif (
-                restraint_type in ("flat-bottomed", "flat-bottomed1")
-                and dist < self.target_distance1
-            ):
-                delta = dist - self.target_distance1
-            elif (
-                restraint_type in ("flat-bottomed", "flat-bottomed2")
-                and dist > self.target_distance2
-            ):
-                delta = dist - self.target_distance2
-            if abs(delta) < 1e-9:
-                return
-            coeff = 2 * delta
-            grad_com = coeff * com_vector / dist
-            grad_atom1 = -grad_com / len(self.target_local_sites1)
-            grad_atom2 = grad_com / len(self.target_local_sites2)
-            grad[self.target_local_sites1, :] += grad_atom1
-            grad[self.target_local_sites2, :] += grad_atom2
-        else:
-            raise NotImplementedError
-
     def is_valid(self) -> bool:
         return self.run_restr
-
-    def distance(self, crds: np.ndarray) -> float:
-        return np.linalg.norm(self._calculate_com_vector(crds))
-
-    def print(self, crds: np.ndarray) -> None:
-        logger.info(
-            f"COM distance of '{self.atom_selection1}'"
-            f" - '{self.atom_selection2}': {self.distance(crds)}"
-        )
-
-    def calc_sd(self, crds: np.ndarray) -> float:
-        dist = self.distance(crds)
-        delta = 0.0
-        restraint_type = self.distance_restraint_type
-
-        if restraint_type == "harmonic":
-            delta = dist - self.target_distance
-        elif (
-            restraint_type in ("flat-bottomed", "flat-bottomed1")
-            and dist < self.target_distance1
-        ):
-            delta = dist - self.target_distance1
-        elif (
-            restraint_type in ("flat-bottomed", "flat-bottomed2")
-            and dist > self.target_distance2
-        ):
-            delta = dist - self.target_distance2
-
-        return delta**2

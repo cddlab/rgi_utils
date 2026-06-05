@@ -56,7 +56,10 @@ class RmsdData:
         self.ref_pdb = config.get("ref_pdb", None)
         _tr = config.get("target_rmsd", None)
         self.target_rmsd = float(_tr) if _tr is not None else None
-        self.weight = float(config.get("weight", 1.0) or 1.0)
+        # None -> default 1.0; an explicit 0 stays 0 (a zero-weight, no-op restraint),
+        # so `or 1.0` truthiness must NOT be used here.
+        _w = config.get("weight")
+        self.weight = 1.0 if _w is None else float(_w)
         _ss = config.get("start_sigma")
         if _ss is not None:
             self.start_sigma = float(_ss)
@@ -127,7 +130,7 @@ class RmsdData:
             )
         tgt_named = all(a.name for a in tgt)
         ref_named = all(r.name for r in ref)
-        logger.info(
+        logger.debug(
             "rmsd %s pairing=%s target=%d ref=%d; target names[:4]=%s ref names[:4]=%s",
             tag,
             "identity" if (tgt_named and ref_named) else "order",
@@ -137,7 +140,18 @@ class RmsdData:
             [r.name for r in ref[:4]],
         )
         if tgt_named and ref_named:
-            refmap = {(r.chain, r.resid, r.name): (r.x, r.y, r.z) for r in ref}
+            # duplicate (chain, resid, name) keys would silently collapse last-wins
+            # and mispair atoms, so reject an ambiguous reference loudly instead.
+            refmap = {}
+            for r in ref:
+                k = (r.chain, r.resid, r.name)
+                if k in refmap:
+                    raise ValueError(
+                        f"rmsd {tag}: duplicate reference atom {k} in "
+                        f"{self.ref_pdb!r} — ambiguous identity pairing; "
+                        f"disambiguate the ref selection"
+                    )
+                refmap[k] = (r.x, r.y, r.z)
             sites, coords = [], []
             for a in tgt:
                 key = (a.chain, a.resid, a.name)

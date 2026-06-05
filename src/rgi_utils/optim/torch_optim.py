@@ -3,7 +3,7 @@
 Minimizes the restraint energy on active-site coordinates using autograd for
 gradients. ``method`` selects the solver: ``"CG"`` (default) -> a nonlinear
 conjugate-gradient solver (Polak-Ribiere+ with a backtracking Armijo line search),
-matching the jax (NonlinearCG) backend; ``"l-bfgs"`` ->
+matching the jax backend's pure-jax CG (a port of this solver); ``"l-bfgs"`` ->
 ``torch.optim.LBFGS`` (strong-Wolfe). Operates in-place on the coordinate tensor
 and stays on whatever device the coordinates live on, so ``gpu: true`` runs
 entirely on GPU.
@@ -191,8 +191,8 @@ class TorchRestraintOptimizer:
         ftol: float = 1e-9,
     ) -> None:
         """In-place nonlinear conjugate gradient (Polak-Ribiere+, backtracking
-        Armijo line search). Matches the CG used by the jax (NonlinearCG) backend,
-        so ``method='CG'`` is CG on both backends. ``active``
+        Armijo line search). Matches the jax backend's pure-jax CG (a port of this
+        solver), so ``method='CG'`` is the same algorithm on both backends. ``active``
         is a leaf tensor (requires_grad=True); ``energy_fn()`` returns the scalar
         energy with ``active`` in its graph. Stops early on convergence
         (``max|grad| < gtol`` or ``|df| < ftol``, mirroring torch LBFGS's

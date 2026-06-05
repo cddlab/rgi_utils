@@ -539,3 +539,129 @@ def test_rmsd_identity_missing_atom_raises(tmp_path):
     )
     with pytest.raises(ValueError, match="no matching"):
         cr.setup(MockAdapter(atoms))
+
+
+def _pdb_atom_line(rec, chain, resseq, name, x=0.0, y=0.0, z=0.0):
+    """One ATOM/HETATM line in the fixed columns read_pdb_atoms parses."""
+    return (
+        f"{rec:<6}"
+        f"{1:>5} "
+        f"{name:<4}"
+        " "
+        f"{'LIG':>3} "
+        f"{chain}"
+        f"{resseq:>4}    "
+        f"{x:>8.3f}{y:>8.3f}{z:>8.3f}"
+        "  1.00  0.00          "
+        f"{(name[0] if name else 'C'):>2}\n"
+    )
+
+
+def test_pdb_ref_hetatm_per_atom_ordinal(tmp_path):
+    """HETATM atoms get a per-atom ordinal (matching the adapters' one-token-per-atom
+    ligand convention); ATOM atoms in one residue still share a single ordinal."""
+    from rgi_utils.pdb_ref import read_pdb_atoms
+
+    pdb = tmp_path / "mix.pdb"
+    pdb.write_text(
+        _pdb_atom_line("ATOM  ", "A", 5, "N")
+        + _pdb_atom_line("ATOM  ", "A", 5, "CA")  # same residue -> same ordinal
+        + _pdb_atom_line("HETATM", "B", 900, "C1", 0.0)
+        + _pdb_atom_line("HETATM", "B", 900, "C2", 1.0)  # same resSeq, own ordinal
+        + _pdb_atom_line("HETATM", "B", 900, "C3", 2.0)
+        + "END\n"
+    )
+    by = {(a.chain, a.name): a.resid for a in read_pdb_atoms(str(pdb))}
+    assert by[("A", "N")] == 1 and by[("A", "CA")] == 1
+    assert by[("B", "C1")] == 1 and by[("B", "C2")] == 2 and by[("B", "C3")] == 3
+
+
+def test_rmsd_ligand_identity_pairing(tmp_path):
+    """A ligand reference (HETATM, single resSeq) identity-pairs with an adapter that
+    gives each ligand atom its own per-atom ordinal. Regression: pdb_ref used to give
+    every ligand atom one ordinal -> the (chain, resid, name) key never matched."""
+    from rgi_utils.rmsd_restr_data import RmsdData
+
+    pdb = tmp_path / "lig.pdb"
+    pdb.write_text(
+        _pdb_atom_line("HETATM", "B", 900, "C1", 0.0)
+        + _pdb_atom_line("HETATM", "B", 900, "C2", 1.0)
+        + _pdb_atom_line("HETATM", "B", 900, "C3", 2.0)
+        + "END\n"
+    )
+    atoms = [
+        AtomRecord("B", 1, 10, name="C1"),
+        AtomRecord("B", 2, 11, name="C2"),
+        AtomRecord("B", 3, 12, name="C3"),
+    ]
+    rr = RmsdData()
+    rr.set_config(
+        {
+            "ref_pdb": str(pdb),
+            "target_rmsd": 0.0,
+            "atom_selection_ref": "chain B",
+            "atom_selection_target": "chain B",
+        }
+    )
+    rr.resolve_sites(MockAdapter(atoms))
+    assert rr.calc_target_sites == [10, 11, 12]
+    assert np.allclose(
+        rr.calc_ref_coords, [[0, 0, 0], [1, 0, 0], [2, 0, 0]], atol=1e-3
+    )
+
+
+def test_rmsd_duplicate_ref_key_raises():
+    """Duplicate (chain, resid, name) reference atoms must raise rather than silently
+    collapse last-wins (e.g. an altloc collision within one polymer residue)."""
+    from rgi_utils.pdb_ref import PdbAtom
+    from rgi_utils.rmsd_restr_data import RmsdData
+
+    rr = RmsdData()
+    rr.ref_pdb = "dup.pdb"
+    tgt = [AtomRecord("A", 1, 0, name="CA")]
+    ref = [
+        PdbAtom("A", 1, 0, "CA", "C", 0.0, 0.0, 0.0),
+        PdbAtom("A", 1, 1, "CA", "C", 9.0, 9.0, 9.0),  # same (chain, resid, name)
+    ]
+    with pytest.raises(ValueError, match="duplicate reference atom"):
+        rr._pair(tgt, ref, "chain A", "chain A", "calc")
+
+
+def test_rmsd_weight_zero_preserved_and_default():
+    """weight: 0 stays 0 (a no-op restraint); an omitted weight defaults to 1.0.
+    The old `or 1.0` truthiness coerced an explicit 0 to full weight."""
+    from rgi_utils.rmsd_restr_data import RmsdData
+
+    base = {
+        "ref_pdb": "x.pdb",
+        "target_rmsd": 1.0,
+        "atom_selection_ref": "chain A",
+        "atom_selection_target": "chain A",
+    }
+    rr0 = RmsdData()
+    rr0.set_config({**base, "weight": 0})
+    assert rr0.weight == 0.0
+    rr1 = RmsdData()
+    rr1.set_config(base)  # omitted -> default 1.0
+    assert rr1.weight == 1.0
+
+
+def test_boltz_adapter_decodes_atom_names_from_ref_chars():
+    """boltz adapter must source atom names from ref_atom_name_chars (one-hot,
+    ord(c)-32 codes), not the nonexistent record[0].atoms. Regression for the silent
+    name=None that degraded RMSD identity pairing to selection-order pairing."""
+    torch = pytest.importorskip("torch")
+    from rgi_utils.boltz.adapter import BoltzFeatsAdapter
+
+    names = ["N", "CA", "C", "O", "CB"]
+    n_pad = 3
+    arr = torch.zeros((1, len(names) + n_pad, 4, 64))  # (batch, n_atom, 4, vocab)
+    for i, nm in enumerate(names):
+        for c, ch in enumerate(nm):
+            arr[0, i, c, ord(ch) - 32] = 1.0
+    name_of = BoltzFeatsAdapter({"ref_atom_name_chars": arr})._atom_name_lookup()
+    assert [name_of(i) for i in range(len(names))] == names
+    assert name_of(len(names)) is None  # all-zero padding row -> None
+    assert name_of(10_000) is None  # out of range -> None
+    # missing field -> all None (graceful fall back to order pairing), no crash
+    assert BoltzFeatsAdapter({})._atom_name_lookup()(0) is None

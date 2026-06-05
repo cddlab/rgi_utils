@@ -446,6 +446,51 @@ def test_rmsd_known_value_and_target():
     assert abs(e - 1.5 * 2.0**2) < 1e-5
 
 
+def test_chiral_flat_bottom_zero_at_reference():
+    """chiral_energy is flat-bottomed around vol0: ZERO within ±slack (so the
+    reference geometry has zero energy), quadratic outside, equal across backends.
+    Regression for the old vol0∓slack shifted harmonic (nonzero floor at the
+    reference + a minimum biased toward chiral inversion)."""
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.energy import jax_energy, torch_energy
+
+    # atom 0 is the chiral center; vol0 = the reference scalar triple product
+    pos = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float64)
+    v1, v2, v3 = pos[1] - pos[0], pos[2] - pos[0], pos[3] - pos[0]
+    vol0 = float(np.dot(v1, np.cross(v2, v3)))  # = 1.0
+    spec = RestraintSpec(
+        n_active=4,
+        active_sites=np.arange(4),
+        chiral=ChiralArrays(
+            idx=np.array([[0, 1, 2, 3]], dtype=np.int64),
+            vol0=np.array([vol0]),
+            slack=np.array([0.05]),
+            weight=np.array([0.1]),
+            mask=np.array([1.0]),
+        ),
+        conf_start_sigma=10.0,
+    )
+    prep_np = numpy_energy.prepare_spec(spec)
+    # at the reference geometry vol == vol0 -> inside the band -> ZERO (old code
+    # returned weight*slack**2 = 2.5e-4 here)
+    assert float(numpy_energy.total_energy(pos, prep_np)) == pytest.approx(0.0, abs=1e-12)
+
+    # outside the band the penalty is non-zero and identical across backends
+    pos2 = pos.copy()
+    pos2[1, 0] = 3.0  # stretches the volume well past vol0 + slack
+    prep_t = torch_energy.prepare_spec(spec, dtype=torch.float64)
+    prep_j = jax_energy.prepare_spec(spec)
+    e_np = float(numpy_energy.total_energy(pos2, prep_np))
+    e_t = float(torch_energy.total_energy(torch.tensor(pos2, dtype=torch.float64), prep_t))
+    e_j = float(jax_energy.total_energy(jnp.asarray(pos2), prep_j))
+    assert e_np > 0.0
+    assert abs(e_np - e_t) < 1e-6 and abs(e_np - e_j) < 1e-6
+
+
 def test_rmsd_fit_calc_separation():
     """Superpose on the FIT atoms, measure RMSD on the CALC atoms. For a target that
     is a RIGID transform of the reference, fitting on the fit subset aligns the calc

@@ -61,7 +61,7 @@ class BoltzFeatsAdapter:
         """
         asym_id_atom_b0, atom_to_token_b0 = self._per_atom()
         record = self.feats["record"]
-        name_of = self._atom_name_lookup(record)
+        name_of = self._atom_name_lookup()
         for chain in record[0].chains:
             chain_id = chain.chain_id
             # exclude padding atoms (else they surface as chain-0 / resid 1)
@@ -72,7 +72,9 @@ class BoltzFeatsAdapter:
                 int(torch.argmax(atom_to_token_b0[gidx, :]).item())
                 for gidx in chain_sites
             ]
-            # rank this chain's tokens -> per-chain 1-based ordinal
+            # rank this chain's tokens -> per-chain 1-based ordinal. boltz emits a
+            # chain's atoms in ascending token order, so sorted-token-index equals
+            # first-appearance order, matching the other adapters' resid convention.
             tok2resid = {t: i + 1 for i, t in enumerate(sorted(set(toks)))}
             for gidx, t in zip(chain_sites, toks):
                 yield AtomRecord(
@@ -82,37 +84,43 @@ class BoltzFeatsAdapter:
                     name=name_of(int(gidx)),
                 )
 
-    def _atom_name_lookup(self, record):
-        """Return ``gidx -> atom name`` (or None). The feats atom dim is padded
-        per window, so map a feats atom index to its rank among real atoms (= its
-        row in ``record[0].atoms``, which is in structure order). Best-effort: any
-        shape/dtype surprise -> None (RMSD falls back to selection-order pairing)."""
-        try:
-            names_col = record[0].atoms["name"]
-            real_idx = torch.where(self._pad0)[0].tolist()
-            g2rank = {int(g): k for k, g in enumerate(real_idx)}
-            n = len(names_col)
+    def _atom_name_lookup(self):
+        """Return ``gidx -> atom name`` (or all-None if unavailable).
 
-            def f(gidx):
-                k = g2rank.get(gidx)
-                if k is None or k >= n:
-                    return None
-                v = names_col[k]
-                if isinstance(v, bytes):
-                    return v.decode("ascii", "ignore").strip() or None
-                arr = np.asarray(v)
-                if arr.dtype.kind in ("i", "u"):  # old Atom dtype: 4 int8 chars
-                    return (
-                        bytes(int(c) & 0xFF for c in arr.ravel() if int(c) != 0)
-                        .decode("ascii", "ignore")
-                        .strip()
-                        or None
-                    )
-                return str(v).strip() or None
-
-            return f
-        except Exception:
+        Names come from ``feats['ref_atom_name_chars']``, which boltz builds in the
+        same token-driven loop as ``ref_pos`` — so it is index-aligned with the
+        coordinate tensor handed to ``minimize`` (no structure-order remap). It holds
+        ord(c)-32 char codes, one-hot encoded to ``(n_atom, 4, 64)``; decode each
+        atom's 4 codes via ``argmax(-1)`` then ``chr(code+32)`` for non-zero codes
+        (the same encoding the esm/AF3 adapters decode). RMSD identity pairing keys on
+        these names; without them it falls back to selection-order pairing."""
+        ranc = self.feats.get("ref_atom_name_chars")
+        if ranc is None:
+            logger.warning(
+                "boltz feats has no 'ref_atom_name_chars'; RMSD identity pairing "
+                "will fall back to selection-order pairing"
+            )
             return lambda gidx: None
+        try:
+            arr = ranc[0]  # drop the batch dim
+            if arr.dim() == 3:  # one-hot (n_atom, 4, 64) -> codes (n_atom, 4)
+                arr = arr.argmax(dim=-1)
+            codes = arr.detach().cpu().numpy().astype(np.int64)  # (n_atom, 4)
+        except Exception as exc:  # unexpected shape/dtype: surface it, don't hide it
+            logger.warning(
+                "boltz 'ref_atom_name_chars' decode failed (%s); RMSD identity "
+                "pairing falls back to selection-order pairing",
+                exc,
+            )
+            return lambda gidx: None
+
+        def f(gidx):
+            if gidx < 0 or gidx >= codes.shape[0]:
+                return None
+            nm = "".join(chr(int(c) + 32) for c in codes[gidx] if int(c) != 0).strip()
+            return nm or None
+
+        return f
 
     # --- ConformerAdapter -----------------------------------------------------
     def num_atoms(self) -> int:

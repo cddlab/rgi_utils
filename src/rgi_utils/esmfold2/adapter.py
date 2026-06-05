@@ -102,6 +102,12 @@ class ESMFold2Adapter:
         ESMFold2 tokenises a protein residue as one token and a ligand atom as one
         token, so this is the residue ordinal for polymers and a per-atom ordinal
         for ligands — matching the cross-tool ``AtomRecord.resid`` convention.
+
+        Precondition: ``prepare_esmfold2_input`` emits NO token-level padding (every
+        token is real; ``token_attention_mask`` is all-ones), so counting all tokens
+        is correct. A token-padded features dict would let pad tokens consume ordinals
+        and shift the real residue/ligand ordinals — guard on the token mask first if
+        that precondition ever changes.
         """
         counter: dict[int, int] = {}
         ordinal: dict[int, int] = {}

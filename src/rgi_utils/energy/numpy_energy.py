@@ -1,9 +1,10 @@
 """NumPy restraint energies — the reference implementation.
 
-Mirrors ``jax_energy.py`` / ``torch_energy.py`` exactly. Used as the ground-truth
-for ``tests/test_backend_parity.py`` and for the CPU fallback optimizer. Gradients
-for the CPU path are obtained from this energy via the optim layer.
-``positions`` has shape ``(..., n_active, 3)``; the result is a scalar.
+Mirrors ``jax_energy.py`` / ``torch_energy.py`` exactly. Kept solely as the pure-
+numpy reference that ``tests/test_backend_parity.py`` checks the torch/jax energies
+and autodiff gradients against — there is no numpy optimizer (the old scipy/numpy
+optimization backend was removed). ``positions`` has shape ``(..., n_active, 3)``;
+the result is a scalar.
 """
 
 from __future__ import annotations
@@ -49,7 +50,10 @@ def angle_energy(positions, idx, th0, slack, weight, mask):
 
 
 def chiral_energy(positions, idx, vol0, slack, weight, mask):
-    """Chiral volume (scalar triple product) energy; center is column 0."""
+    """Flat-bottomed chiral volume (scalar triple product) energy; center is column
+    0. Zero within ``±slack`` of the reference volume ``vol0`` (so the reference
+    geometry itself has zero energy), quadratic outside — same flat-bottom shape as
+    bond/angle. ``slack=0`` reduces to a pure harmonic toward ``vol0``."""
     a0 = positions[..., idx[:, 0], :]
     a1 = positions[..., idx[:, 1], :]
     a2 = positions[..., idx[:, 2], :]
@@ -58,8 +62,8 @@ def chiral_energy(positions, idx, vol0, slack, weight, mask):
     v2 = a2 - a0
     v3 = a3 - a0
     vol = np.sum(v1 * np.cross(v2, v3), axis=-1)
-    thr = np.where(vol0 > 0, vol0 - slack, vol0 + slack)
-    delta = vol - thr
+    d = vol - vol0
+    delta = np.where(d > slack, d - slack, np.where(d < -slack, d + slack, 0.0))
     return np.sum(weight * delta**2 * mask)
 
 

@@ -218,7 +218,6 @@ class CombinedRestraints:
             self._minimize_fn = make_minimizer(
                 self.spec,
                 max_iter=self.config.max_iter,
-                learning_rate=self.config.learning_rate,
                 method=self.config.method,
             )
         else:

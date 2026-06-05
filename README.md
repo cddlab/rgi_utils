@@ -5,9 +5,11 @@ Restraint-Guided Inference (RGI) utilities for diffusion-based structure predict
 alphafold3 (jax).
 
 Provides distance restraints (center-of-mass between atom groups) and ligand conformer
-restraints (bond / angle / chiral volume / intramolecular VdW toward an ideal RDKit
-geometry), minimized during the denoising loop to guide coordinate optimization — on GPU
-(PyTorch LBFGS / JAX jaxopt, autodiff) or CPU (scipy).
+restraints (bond / angle / chiral volume / dihedral / intramolecular VdW toward an ideal
+RDKit geometry) plus a Kabsch-superposed RMSD restraint, minimized during the denoising
+loop to guide coordinate optimization. The default `method='CG'` solver (a nonlinear
+conjugate gradient with autodiff gradients) runs on GPU or CPU via the same torch/jax
+backend (`gpu: false` runs it on CPU); distance restraints are applied closed-form.
 
 ## Installation
 
@@ -23,16 +25,19 @@ uv pip install -e <path>/rgi_utils[jax]     # into a JAX tool's env
 from rgi_utils.combined import CombinedRestraints
 
 restraints_config = {
-    "gpu": True,                 # -> torch backend; or "backend": "jax" / "numpy"
+    "gpu": True,                 # device: True=GPU, False=CPU. backend: torch (default) / jax
     "method": "CG",
     "max_iter": 200,
-    "start_sigma": 99999999,     # a restraint is active when sigma <= start_sigma
     "verbose": True,
+    # NOTE: start_sigma is NOT a top-level key (a top-level one raises). It is set
+    # per distance entry and once inside conformer_restraints_config; omitted -> the
+    # restraint is active at every step (set it, e.g. 1.0, to act only late).
     "distance_restraints_config": [          # a LIST of entries
         {
             "atom_selection1": "chain A and resid 10",
             "atom_selection2": "chain B and resid 20",
             "harmonic": {"target_distance": 5.0},
+            "start_sigma": 1.0,              # optional; active when sigma <= start_sigma
         }
     ],
     "conformer_restraints_config": {

@@ -24,7 +24,6 @@ class RestraintsConfig:
     method: str = "CG"
     max_iter: int = 100
     conf_start_sigma: float = -1.0  # one value for all conformer (ligand) restraints
-    learning_rate: float = 0.01  # jax gradient-descent step size
     conformer_config: dict = field(default_factory=dict)
     distance_data: list = field(default_factory=list)
     rmsd_data: list = field(default_factory=list)
@@ -83,7 +82,6 @@ class RestraintsConfig:
             max_iter=config.get("max_iter", 100),
             # one start_sigma for all conformer terms (omitted -> +inf = every step)
             conf_start_sigma=conf_start_sigma,
-            learning_rate=config.get("learning_rate", 0.01),
             conformer_config=conformer_config,
         )
         for entry in config.get("distance_restraints_config", []) or []:

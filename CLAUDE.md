@@ -44,12 +44,16 @@ Design = **3 layers + autodiff + static shapes + GPU-complete optimization**:
    (no hand-written grad). `numpy_energy` is the reference;
    `tests/test_backend_parity.py` checks energy+grad agreement across backends.
 
-3. **Optim layer** (`optim/{numpy,torch,jax}_optim.py`, GPU-complete): optimize
-   only `active_sites` coords, scatter back. torch = `LBFGS` autograd (runs on the
-   coords' device); jax = `fori_loop`+`value_and_grad` JIT-able inside `lax.scan` (no
-   `pure_callback`, no scipy). There is **no numpy optimizer backend** (the old
-   scipy path was removed); `numpy_energy` remains only as the pure-numpy energy
-   reference for `tests/test_backend_parity.py`. Optimization requires torch or jax.
+3. **Optim layer** (`optim/{torch,jax}_optim.py` + `optim/distance_shift.py`,
+   GPU-complete): optimize only `active_sites` coords, scatter back. Default
+   `method='CG'`: torch = a hand-rolled nonlinear CG (Polak-Ribiere+, backtracking
+   Armijo); jax = a pure-jax port of it (`lax.while_loop`, JIT-able inside `lax.scan`).
+   `method='l-bfgs'` is opt-in (torch `LBFGS` strong-Wolfe / `jaxopt.LBFGS`, lazily
+   imported). Distance restraints skip the solver — a COM-distance is 1-DOF and applied
+   closed-form in `distance_shift.py`. No `pure_callback`, no scipy. There is **no numpy
+   optimizer backend** (the old scipy path was removed); `numpy_energy` remains only as
+   the pure-numpy energy reference for `tests/test_backend_parity.py`. Optimization
+   requires torch or jax.
 
 Supporting modules:
 - **`featurizer.py`**: `build_spec(ligand_confs, distance_restraints,
