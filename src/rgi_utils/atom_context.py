@@ -33,11 +33,12 @@ class LigandConf:
     global_indices: "np.ndarray"  # (n_lig_atoms,) global padded atom index per mol atom
     invert_chirality: bool = False
     atom_names: list[str] | None = None  # optional filter (e.g. CCD atom names)
-    # per-ligand opt-in: when False this ligand is skipped entirely (no bond/
-    # angle/chiral/VdW restraints). Adapters set it from the tool's per-ligand
-    # ``conformer_restraints`` input flag; default True keeps existing callers
-    # (which already pass only restrained ligands) unchanged.
-    conformer_restraints: bool = True
+    # per-ligand opt-in: conformer restraints (bond/angle/chiral/VdW) are built for
+    # this ligand ONLY when this is True. Adapters with a per-ligand input flag
+    # (boltz/protenix/openfold-3/af3) set it from ``conformer_restraints`` and default
+    # it to False (opt-in); tools without such a flag (chai/esm) pass True and rely on
+    # ``conformer_restraints_config`` being present as the gate.
+    conformer_restraints: bool = False
 
 
 @runtime_checkable

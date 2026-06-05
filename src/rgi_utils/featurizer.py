@@ -311,16 +311,21 @@ def build_spec(
     """Build a RestraintSpec. ``distance_restraints`` are DistanceData with
     ``target_sites1``/``target_sites2`` already resolved to global indices."""
     ligand_confs = ligand_confs or []
-    # Honor the per-ligand opt-out: a ligand flagged conformer_restraints=False
-    # gets no bond/angle/chiral/VdW restraints (skipped entirely, as if it had
-    # not been passed). This is the single enforcement point for every tool.
+    cfg = conformer_config or {}
+    # Conformer restraints are OPT-IN -- this is the single enforcement point for every
+    # tool: (1) with no conformer_restraints_config (e.g. a distance-only run) build no
+    # conformer at all; (2) otherwise restrain only ligands flagged
+    # conformer_restraints=True. Adapters with a per-ligand flag default it to False;
+    # chai/esm (no per-ligand flag) pass True, so for them (1) is the gate.
+    # A config holding only documentation keys ("_comment") counts as absent.
+    if not any(not str(k).startswith("_") for k in cfg):
+        ligand_confs = []
     ligand_confs = [
-        lc for lc in ligand_confs if getattr(lc, "conformer_restraints", True)
+        lc for lc in ligand_confs if getattr(lc, "conformer_restraints", False)
     ]
     distance_restraints = [
         dr for dr in (distance_restraints or []) if getattr(dr, "run_restr", False)
     ]
-    cfg = conformer_config or {}
     bw = cfg.get("bond", {}).get("weight", 0.05)
     bsl = cfg.get("bond", {}).get("slack", 0.0)
     aw = cfg.get("angle", {}).get("weight", 0.05)

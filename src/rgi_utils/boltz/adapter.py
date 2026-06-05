@@ -163,8 +163,8 @@ class BoltzFeatsAdapter:
                 continue
 
             conf_coords = np.asarray(mol.GetConformer().GetPositions())
-            # honor the per-ligand opt-out (ch_rest); any flagged atom -> on
-            conf_restr = True
+            # per-ligand opt-in (ch_rest input flag); absent -> off (no conformer)
+            conf_restr = False
             if rcr0 is not None and len(chain_sites) > 0:
                 conf_restr = bool(rcr0[chain_sites].any().item())
             yield LigandConf(

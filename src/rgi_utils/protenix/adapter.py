@@ -112,7 +112,7 @@ class ProtenixAdapter:
             ]
             coords = coords_all[idxs]
             mol = _build_ligand_mol(elements_all[idxs], coords, bonds_local)
-            conf_rest = True
+            conf_rest = False  # per-ligand opt-in; absent annotation -> off
             if conf_rest_annot is not None:
                 conf_rest = bool(conf_rest_annot[idxs].any())
             yield LigandConf(

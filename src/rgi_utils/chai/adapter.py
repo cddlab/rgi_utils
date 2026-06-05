@@ -130,4 +130,7 @@ class ChaiStructureAdapter:
                 mol=mol,
                 conf_coords=coords,
                 global_indices=idxs.astype(np.int64),
+                # chai has no per-ligand conformer_restraints input flag, so opt-in is
+                # governed by conformer_restraints_config presence (the build_spec gate).
+                conformer_restraints=True,
             )

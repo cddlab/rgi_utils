@@ -160,6 +160,8 @@ class Openfold3Adapter:
             ]
             coords = coords_all[idxs]
             mol = _build_ligand_mol(elements_all[idxs], coords, bonds_local)
+            # openfold-3 has no per-ligand conformer_restraints input flag, so opt-in is
+            # governed by conformer_restraints_config presence (the build_spec gate).
             conf_rest = True
             if conf_rest_annot is not None:
                 conf_rest = bool(conf_rest_annot[idxs].any())

@@ -187,6 +187,34 @@ def test_minimize_skipped_above_start_sigma():
     assert np.allclose(coords, original)
 
 
+def test_conformer_opt_in():
+    """Conformer restraints are opt-in: built only when conformer_restraints_config is
+    present AND the ligand is flagged conformer_restraints=True."""
+    m = Chem.AddHs(Chem.MolFromSmiles("CC"))
+    AllChem.EmbedMolecule(m, randomSeed=1)
+    c = np.asarray(m.GetConformer().GetPositions())
+    n = m.GetNumAtoms()
+    atoms = [AtomRecord("A", i + 1, i) for i in range(n)]
+    conf_cfg = {
+        "backend": "numpy",
+        "conformer_restraints_config": {"start_sigma": 1e30, "bond": {"weight": 0.1}},
+    }
+    cr = CombinedRestraints.get_instance()
+
+    # (a) conformer_restraints_config present + ligand flagged -> conformer active
+    cr.set_config(conf_cfg)
+    cr.setup(MockAdapter(atoms, [LigandConf(m, c, np.arange(n), conformer_restraints=True)]))
+    assert cr.spec.has_conformer()
+    # (b) config present + ligand NOT flagged -> opt-in: no conformer
+    cr.set_config(conf_cfg)
+    cr.setup(MockAdapter(atoms, [LigandConf(m, c, np.arange(n))]))
+    assert not cr.spec.has_conformer()
+    # (c) ligand flagged but NO conformer_restraints_config -> config gate: no conformer
+    cr.set_config({"backend": "numpy"})
+    cr.setup(MockAdapter(atoms, [LigandConf(m, c, np.arange(n), conformer_restraints=True)]))
+    assert not cr.spec.has_conformer()
+
+
 def test_multiligand_conformer_setup():
     cr = CombinedRestraints.get_instance()
     cr.set_config(
@@ -199,7 +227,10 @@ def test_multiligand_conformer_setup():
     AllChem.EmbedMolecule(m, randomSeed=1)
     c = np.asarray(m.GetConformer().GetPositions())
     n = m.GetNumAtoms()
-    lcs = [LigandConf(m, c, np.arange(n)), LigandConf(m, c, np.arange(n) + n)]
+    lcs = [
+        LigandConf(m, c, np.arange(n), conformer_restraints=True),
+        LigandConf(m, c, np.arange(n) + n, conformer_restraints=True),
+    ]
     atoms = [AtomRecord("A", i + 1, i) for i in range(2 * n)]
     cr.setup(MockAdapter(atoms, ligand_confs=lcs))
     assert cr.is_active()

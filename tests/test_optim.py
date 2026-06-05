@@ -18,9 +18,14 @@ def _distorted_ethane():
     AllChem.EmbedMolecule(m, randomSeed=1)
     c = np.asarray(m.GetConformer().GetPositions())
     n = m.GetNumAtoms()
-    lc = LigandConf(mol=m, conf_coords=c, global_indices=np.arange(n))
-    # conf_start_sigma large so the conformer restraint is active at any sigma
-    spec = build_spec([lc], [], {}, conf_start_sigma=1e30)
+    lc = LigandConf(
+        mol=m, conf_coords=c, global_indices=np.arange(n), conformer_restraints=True
+    )
+    # non-empty conformer_config so the opt-in gate builds conformer terms;
+    # conf_start_sigma large so they are active at any sigma
+    spec = build_spec(
+        [lc], [], {"bond": {"weight": 1.0}, "angle": {"weight": 1.0}}, conf_start_sigma=1e30
+    )
 
     n_atom = n + 5  # padding atoms beyond the ligand
     coords = np.zeros((1, n_atom, 3))
@@ -86,7 +91,9 @@ def test_torch_vdw_pushes_ligand_off_fixed_protein():
     AllChem.EmbedMolecule(m, randomSeed=1)
     c = np.asarray(m.GetConformer().GetPositions())
     n = m.GetNumAtoms()
-    lc = LigandConf(mol=m, conf_coords=c, global_indices=np.arange(n))
+    lc = LigandConf(
+        mol=m, conf_coords=c, global_indices=np.arange(n), conformer_restraints=True
+    )
 
     n_atom = n + 1  # one extra "protein" atom right after the ligand
     elements = np.zeros(n_atom, dtype=np.int64)
