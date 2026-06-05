@@ -58,6 +58,7 @@ class ChaiStructureAdapter:
             return
         atom_token = np.asarray(sc.atom_token_index)
         exists = np.asarray(sc.atom_exists_mask, dtype=bool)
+        names = getattr(sc, "atom_ref_name", None)  # list[str], per-atom
         token_chain = self._token_chains()
         # per-chain 1-based PER-TOKEN ordinal (the cross-tool convention shared by
         # boltz/protenix/esmfold2): a standard polymer residue is one token, so all
@@ -77,7 +78,8 @@ class ChaiStructureAdapter:
             if tok not in seen:
                 chain_counter[ch] = chain_counter.get(ch, 0) + 1
                 seen[tok] = chain_counter[ch]
-            yield AtomRecord(chain=ch, resid=seen[tok], index=int(i))
+            nm = str(names[i]).strip() if names is not None else None
+            yield AtomRecord(chain=ch, resid=seen[tok], index=int(i), name=nm)
 
     # --- ConformerAdapter -----------------------------------------------------
     def num_atoms(self) -> int:

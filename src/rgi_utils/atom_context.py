@@ -15,6 +15,9 @@ class AtomRecord:
     chain: str  # chain name (e.g. "A")
     resid: int  # 1-based residue/token ordinal WITHIN the chain (resets per chain)
     index: int  # global padded atom index
+    name: str | None = None  # atom name (e.g. "CA"); enables identity-based RMSD
+    # pairing (chain, resid, name) instead of selection-order. None = unavailable
+    # (RMSD then falls back to selection-order pairing).
 
 
 @dataclass

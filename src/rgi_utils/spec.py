@@ -147,18 +147,22 @@ class DistanceArrays:
 class RmsdArrays:
     """Kabsch-superposed RMSD restraints to a fixed reference (padded).
 
-    Each restraint pulls a group of moving atoms (``target_local_idx``, local
-    indices into active_sites) so that its optimally-superposed RMSD to a fixed
-    reference (``ref_coords``, paired atom-for-atom by selection order) approaches
-    ``target_rmsd``. Energy ``weight * (rmsd - target_rmsd)**2``, active when
+    The optimal rotation is computed from the FIT atoms (``fit_*``) and the RMSD is
+    measured over the CALC atoms (``calc_*``); both reference groups are paired
+    atom-for-atom to the moving target. When fit==calc this is the plain superposed
+    RMSD. Energy ``weight * (rmsd - target_rmsd)**2``, active when
     ``sigma <= start_sigma``. Optimised by the CG solver (NOT closed-form), so the
-    target atoms join active_sites. The optimal rotation is recomputed (and treated
-    as constant) each energy evaluation — see ``energy.*_energy.rmsd_energy``.
+    fit+calc target atoms join active_sites. The rotation is recomputed (and treated
+    as constant) each evaluation — see ``energy.*_energy.rmsd_energy``. All ``*_idx``
+    are local indices into active_sites.
     """
 
-    target_local_idx: np.ndarray  # (n_rmsd, max_atoms) int local indices into active
-    target_mask: np.ndarray  # (n_rmsd, max_atoms) float {0,1}: 1 = real atom, 0 = pad
-    ref_coords: np.ndarray  # (n_rmsd, max_atoms, 3) reference coords (padded, constant)
+    fit_idx: np.ndarray  # (n_rmsd, max_fit) int local indices (superposition atoms)
+    fit_mask: np.ndarray  # (n_rmsd, max_fit) float {0,1}
+    fit_ref: np.ndarray  # (n_rmsd, max_fit, 3) reference fit coords (padded, constant)
+    calc_idx: np.ndarray  # (n_rmsd, max_calc) int local indices (measured atoms)
+    calc_mask: np.ndarray  # (n_rmsd, max_calc) float {0,1}
+    calc_ref: np.ndarray  # (n_rmsd, max_calc, 3) reference calc coords (padded, const)
     target_rmsd: np.ndarray  # (n_rmsd,) target RMSD value
     weight: np.ndarray  # (n_rmsd,)
     start_sigma: np.ndarray  # (n_rmsd,) per-restraint; active when sigma<=start_sigma

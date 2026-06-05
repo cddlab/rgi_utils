@@ -77,6 +77,7 @@ class Openfold3Adapter:
             return
         chains = np.asarray(aa.chain_id)
         resids = np.asarray(aa.res_id)
+        names = np.asarray(aa.atom_name) if hasattr(aa, "atom_name") else None
         is_lig = self._ligand_mask()
         # Non-standard residues are biotite hetero=True; a standard polymer residue
         # is not. (molecule_type_id is used only for ligand-CONFORMER detection — see
@@ -102,7 +103,8 @@ class Openfold3Adapter:
                     chain_counter[ch] = chain_counter.get(ch, 0) + 1
                     seen[rid] = chain_counter[ch]
                 ordinal = seen[rid]
-            yield AtomRecord(chain=ch, resid=ordinal, index=int(i))
+            nm = str(names[i]).strip() if names is not None else None
+            yield AtomRecord(chain=ch, resid=ordinal, index=int(i), name=nm)
 
     # --- ConformerAdapter -----------------------------------------------------
     def num_atoms(self) -> int:

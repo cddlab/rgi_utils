@@ -372,7 +372,8 @@ def build_spec(
         active.update(int(s) for s in dr.target_sites1)
         active.update(int(s) for s in dr.target_sites2)
     for rr in rmsd_restraints:
-        active.update(int(s) for s in rr.target_sites)
+        active.update(int(s) for s in rr.fit_target_sites)
+        active.update(int(s) for s in rr.calc_target_sites)
     # VdW pushes the whole ligand, so every ligand atom must be optimisable even
     # if it carries no bond/angle/chiral term (e.g. a monatomic ion).
     if vdw_weight > 0:
@@ -484,32 +485,43 @@ def build_spec(
             start_sigma=dist_start_sigma,
         )
 
-    # ---- RMSD arrays (padded, local target indices + fixed reference coords) ----
+    # ---- RMSD arrays (padded; fit = superposition atoms, calc = measured atoms) --
     rmsd = None
     if rmsd_restraints:
         n = len(rmsd_restraints)
-        max_atoms = max(len(rr.target_sites) for rr in rmsd_restraints)
-        target_local_idx = np.zeros((n, max_atoms), dtype=np.int64)
-        target_mask = np.zeros((n, max_atoms))
-        ref_coords = np.zeros((n, max_atoms, 3))
+        max_fit = max(len(rr.fit_target_sites) for rr in rmsd_restraints)
+        max_calc = max(len(rr.calc_target_sites) for rr in rmsd_restraints)
+        fit_idx = np.zeros((n, max_fit), dtype=np.int64)
+        fit_mask = np.zeros((n, max_fit))
+        fit_ref = np.zeros((n, max_fit, 3))
+        calc_idx = np.zeros((n, max_calc), dtype=np.int64)
+        calc_mask = np.zeros((n, max_calc))
+        calc_ref = np.zeros((n, max_calc, 3))
         target_rmsd = np.zeros(n)
         rmsd_weight = np.zeros(n)
         rmsd_start_sigma = np.full(n, -1.0)
         for ri, rr in enumerate(rmsd_restraints):
-            local = [g2l[int(s)] for s in rr.target_sites]
-            k = len(local)
-            target_local_idx[ri, :k] = local
-            target_mask[ri, :k] = 1.0
-            # resolve_sites already enforced len(target_sites) == len(ref_coords)
-            ref_coords[ri, :k] = np.asarray(rr.ref_coords, dtype=np.float64)
+            f_local = [g2l[int(s)] for s in rr.fit_target_sites]
+            kf = len(f_local)
+            fit_idx[ri, :kf] = f_local
+            fit_mask[ri, :kf] = 1.0
+            fit_ref[ri, :kf] = np.asarray(rr.fit_ref_coords, dtype=np.float64)
+            c_local = [g2l[int(s)] for s in rr.calc_target_sites]
+            kc = len(c_local)
+            calc_idx[ri, :kc] = c_local
+            calc_mask[ri, :kc] = 1.0
+            calc_ref[ri, :kc] = np.asarray(rr.calc_ref_coords, dtype=np.float64)
             target_rmsd[ri] = float(rr.target_rmsd)
             rmsd_weight[ri] = float(rr.weight) if rr.weight else 1.0
             ss = getattr(rr, "start_sigma", None)
             rmsd_start_sigma[ri] = float(ss) if ss is not None else conf_start_sigma
         rmsd = RmsdArrays(
-            target_local_idx=target_local_idx,
-            target_mask=target_mask,
-            ref_coords=ref_coords,
+            fit_idx=fit_idx,
+            fit_mask=fit_mask,
+            fit_ref=fit_ref,
+            calc_idx=calc_idx,
+            calc_mask=calc_mask,
+            calc_ref=calc_ref,
             target_rmsd=target_rmsd,
             weight=rmsd_weight,
             start_sigma=rmsd_start_sigma,

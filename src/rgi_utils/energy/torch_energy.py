@@ -151,11 +151,11 @@ def distance_energy(
     return torch.sum(delta**2 * mask)
 
 
-def _kabsch_aligned_ref(Q0, P0):
-    """Optimal-rotation-aligned reference ``Y0_a = R Q0_a`` (Kabsch). The rotation is
-    computed under ``no_grad`` and the result detached, so the gradient flows only
-    through ``P0`` in the caller — no SVD backward (which is unstable at degenerate /
-    planar geometry). Mirrors ``numpy_energy._kabsch_aligned_ref``."""
+def _kabsch_R(Q0, P0):
+    """Optimal proper rotation R (det +1) s.t. R Q0 ~ P0 (Kabsch). Computed under
+    ``no_grad`` and detached, so the gradient flows only through the moving atoms in
+    the caller — no SVD backward (unstable at degenerate geometry). Mirrors
+    ``numpy_energy._kabsch_R``."""
     with torch.no_grad():
         H = torch.swapaxes(Q0, -1, -2) @ P0  # (..., 3, 3)
         U, _S, Vt = torch.linalg.svd(H)
@@ -165,23 +165,32 @@ def _kabsch_aligned_ref(Q0, P0):
         Vd = V.clone()
         Vd[..., :, 2] = Vd[..., :, 2] * d[..., None]  # V @ diag(1,1,d)
         R = Vd @ torch.swapaxes(U, -1, -2)
-        Y0 = Q0 @ torch.swapaxes(R, -1, -2)
-    return Y0.detach()
+    return R.detach()
 
 
-def rmsd_energy(positions, target_idx, target_mask, ref_coords, target_rmsd, weight, mask):
-    """Kabsch-superposed RMSD restraint (mirrors ``numpy_energy.rmsd_energy``); the
-    optimal rotation is detached so autograd differentiates only the moving atoms."""
-    P = positions[..., target_idx, :]  # (..., n_rmsd, max_atoms, 3)
-    m = target_mask[..., None]
-    n = torch.sum(target_mask, dim=-1)
-    Pc = torch.sum(P * m, dim=-2) / (n[..., None] + _EPS)
-    Qc = torch.sum(ref_coords * m, dim=-2) / (n[..., None] + _EPS)
-    P0 = (P - Pc[..., None, :]) * m
-    Q0 = (ref_coords - Qc[..., None, :]) * m
-    Y0 = _kabsch_aligned_ref(Q0, P0)
-    resid = (P0 - Y0) * m
-    msd = torch.sum(resid**2, dim=(-2, -1)) / (n + _EPS)
+def rmsd_energy(
+    positions, fit_idx, fit_mask, fit_ref, calc_idx, calc_mask, calc_ref,
+    target_rmsd, weight, mask,
+):
+    """Fit/calc Kabsch RMSD restraint (mirrors ``numpy_energy.rmsd_energy``). R +
+    centroids from the FIT atoms; RMSD measured over the CALC atoms. R is detached so
+    autograd differentiates only the moving atoms."""
+    Pf = positions[..., fit_idx, :]
+    mf = fit_mask[..., None]
+    nf = torch.sum(fit_mask, dim=-1)
+    Pfc = torch.sum(Pf * mf, dim=-2) / (nf[..., None] + _EPS)
+    Qfc = torch.sum(fit_ref * mf, dim=-2) / (nf[..., None] + _EPS)
+    Pf0 = (Pf - Pfc[..., None, :]) * mf
+    Qf0 = (fit_ref - Qfc[..., None, :]) * mf
+    R = _kabsch_R(Qf0, Pf0)
+    Pc = positions[..., calc_idx, :]
+    mc = calc_mask[..., None]
+    nc = torch.sum(calc_mask, dim=-1)
+    Pc0 = (Pc - Pfc[..., None, :]) * mc
+    Qc0 = (calc_ref - Qfc[..., None, :]) * mc
+    Yc = Qc0 @ torch.swapaxes(R, -1, -2)
+    resid = (Pc0 - Yc) * mc
+    msd = torch.sum(resid**2, dim=(-2, -1)) / (nc + _EPS)
     rmsd = torch.sqrt(msd + _EPS)
     return torch.sum(weight * (rmsd - target_rmsd) ** 2 * mask)
 
@@ -248,12 +257,9 @@ def total_energy(positions, prepared, sigma=None, include_distance=True):
             rmask = rmask * (sigma <= r["start_sigma"]).to(rmask.dtype)
         ene = ene + rmsd_energy(
             positions,
-            r["target_idx"],
-            r["target_mask"],
-            r["ref_coords"],
-            r["target_rmsd"],
-            r["weight"],
-            rmask,
+            r["fit_idx"], r["fit_mask"], r["fit_ref"],
+            r["calc_idx"], r["calc_mask"], r["calc_ref"],
+            r["target_rmsd"], r["weight"], rmask,
         )
     return ene
 
@@ -343,12 +349,9 @@ def energy_breakdown(positions, prepared, sigma=None):
         out["rmsd"] = float(
             rmsd_energy(
                 positions,
-                r["target_idx"],
-                r["target_mask"],
-                r["ref_coords"],
-                r["target_rmsd"],
-                r["weight"],
-                rmask,
+                r["fit_idx"], r["fit_mask"], r["fit_ref"],
+                r["calc_idx"], r["calc_mask"], r["calc_ref"],
+                r["target_rmsd"], r["weight"], rmask,
             )
         )
     return out
@@ -425,9 +428,12 @@ def prepare_spec(spec, device="cpu", dtype=torch.float32):
     if spec.rmsd is not None and spec.rmsd.mask.sum() > 0:
         r = spec.rmsd
         prepared["rmsd"] = {
-            "target_idx": _i(r.target_local_idx),
-            "target_mask": _f(r.target_mask),
-            "ref_coords": _f(r.ref_coords),
+            "fit_idx": _i(r.fit_idx),
+            "fit_mask": _f(r.fit_mask),
+            "fit_ref": _f(r.fit_ref),
+            "calc_idx": _i(r.calc_idx),
+            "calc_mask": _f(r.calc_mask),
+            "calc_ref": _f(r.calc_ref),
             "target_rmsd": _f(r.target_rmsd),
             "weight": _f(r.weight),
             "mask": _f(r.mask),

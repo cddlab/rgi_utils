@@ -151,44 +151,50 @@ def distance_energy(
     return np.sum(delta**2 * mask)
 
 
-def _kabsch_aligned_ref(Q0, P0):
-    """Optimal-rotation-aligned reference: return ``Y0`` with ``Y0_a = R Q0_a`` where
-    ``R`` minimises ``sum_a ||R Q0_a - P0_a||^2`` (Kabsch). ``Q0``/``P0`` are
-    centred, padding-zeroed ``(..., A, 3)`` arrays. ``R`` is a function of the data,
-    but the torch/jax mirrors STOP its gradient (the numpy reference has no autodiff,
-    so it is constant here too) — see ``rmsd_energy``."""
+def _kabsch_R(Q0, P0):
+    """Optimal proper rotation ``R`` (det +1) minimising ``sum_a ||R Q0_a - P0_a||^2``
+    (Kabsch). ``Q0``/``P0`` are centred, padding-zeroed ``(..., A, 3)``. Returns
+    ``(..., 3, 3)``. The torch/jax mirrors STOP the gradient through ``R`` (numpy has
+    no autodiff), so the SVD is never differentiated — see ``rmsd_energy``."""
     H = np.swapaxes(Q0, -1, -2) @ P0  # (..., 3, 3) cross-covariance sum_a Q0_a x P0_a
     U, _S, Vt = np.linalg.svd(H)
     V = np.swapaxes(Vt, -1, -2)
-    # reflection fix so R is a proper rotation (det +1), not a roto-reflection
     d = np.sign(np.linalg.det(V @ np.swapaxes(U, -1, -2)))
-    d = np.where(d == 0.0, 1.0, d)  # degenerate H (det 0) -> no flip
+    d = np.where(d == 0.0, 1.0, d)  # degenerate H (det 0) -> no reflection flip
     Vd = V.copy()
     Vd[..., :, 2] = Vd[..., :, 2] * d[..., None]  # V @ diag(1,1,d)
-    R = Vd @ np.swapaxes(U, -1, -2)  # (..., 3, 3): R Q0 ~ P0
-    return Q0 @ np.swapaxes(R, -1, -2)  # (..., A, 3): rotate each Q0_a by R
+    return Vd @ np.swapaxes(U, -1, -2)
 
 
-def rmsd_energy(positions, target_idx, target_mask, ref_coords, target_rmsd, weight, mask):
-    """Kabsch-superposed RMSD restraint: ``sum_r weight_r (rmsd_r - target_rmsd_r)^2``.
+def rmsd_energy(
+    positions, fit_idx, fit_mask, fit_ref, calc_idx, calc_mask, calc_ref,
+    target_rmsd, weight, mask,
+):
+    """Fit/calc Kabsch RMSD restraint: ``sum_r weight_r (rmsd_r - target_rmsd_r)^2``.
 
-    ``target_idx`` (n_rmsd, max_atoms) are local indices into ``positions``; the moving
-    group ``P`` and the fixed reference ``ref_coords`` (same shape, padded) are paired
-    atom-for-atom. Both are centred, the reference is rotated onto ``P`` by the optimal
-    (Kabsch) rotation, and the residual RMSD is driven to ``target_rmsd``. The rotation
-    is treated as constant per evaluation (numpy: no autodiff; torch/jax: stop-gradient),
-    which avoids differentiating the SVD; centred residuals sum to zero so the gradient
-    is translation-invariant and the rotation is re-fit each solver iteration."""
-    P = positions[..., target_idx, :]  # (..., n_rmsd, max_atoms, 3)
-    m = target_mask[..., None]  # (n_rmsd, max_atoms, 1)
-    n = np.sum(target_mask, axis=-1)  # (n_rmsd,)
-    Pc = np.sum(P * m, axis=-2) / (n[..., None] + _EPS)  # (..., n_rmsd, 3)
-    Qc = np.sum(ref_coords * m, axis=-2) / (n[..., None] + _EPS)  # (n_rmsd, 3)
-    P0 = (P - Pc[..., None, :]) * m
-    Q0 = (ref_coords - Qc[..., None, :]) * m
-    Y0 = _kabsch_aligned_ref(Q0, P0)
-    resid = (P0 - Y0) * m
-    msd = np.sum(resid**2, axis=(-2, -1)) / (n + _EPS)  # (..., n_rmsd)
+    The optimal rotation R + centroids come from the FIT atoms (``fit_idx`` local
+    indices, ``fit_ref`` paired reference); that superposition is applied to the CALC
+    atoms and the residual RMSD is measured over them (fit==calc -> plain superposed
+    RMSD). R is treated as constant per evaluation (numpy: no autodiff; torch/jax:
+    stop-gradient), so the SVD is never differentiated and the gradient flows through
+    the moving fit+calc atoms."""
+    Pf = positions[..., fit_idx, :]
+    mf = fit_mask[..., None]
+    nf = np.sum(fit_mask, axis=-1)
+    Pfc = np.sum(Pf * mf, axis=-2) / (nf[..., None] + _EPS)  # target fit centroid
+    Qfc = np.sum(fit_ref * mf, axis=-2) / (nf[..., None] + _EPS)  # ref fit centroid
+    Pf0 = (Pf - Pfc[..., None, :]) * mf
+    Qf0 = (fit_ref - Qfc[..., None, :]) * mf
+    R = _kabsch_R(Qf0, Pf0)  # R Qf0 ~ Pf0
+    # measure on calc atoms, superposed by the FIT transform (centroids + R)
+    Pc = positions[..., calc_idx, :]
+    mc = calc_mask[..., None]
+    nc = np.sum(calc_mask, axis=-1)
+    Pc0 = (Pc - Pfc[..., None, :]) * mc
+    Qc0 = (calc_ref - Qfc[..., None, :]) * mc
+    Yc = Qc0 @ np.swapaxes(R, -1, -2)
+    resid = (Pc0 - Yc) * mc
+    msd = np.sum(resid**2, axis=(-2, -1)) / (nc + _EPS)  # (..., n_rmsd)
     rmsd = np.sqrt(msd + _EPS)
     return np.sum(weight * (rmsd - target_rmsd) ** 2 * mask)
 
@@ -260,12 +266,9 @@ def total_energy(positions, prepared, sigma=None, include_distance=True):
             rmask = rmask * (sigma <= r["start_sigma"])
         ene = ene + rmsd_energy(
             positions,
-            r["target_idx"],
-            r["target_mask"],
-            r["ref_coords"],
-            r["target_rmsd"],
-            r["weight"],
-            rmask,
+            r["fit_idx"], r["fit_mask"], r["fit_ref"],
+            r["calc_idx"], r["calc_mask"], r["calc_ref"],
+            r["target_rmsd"], r["weight"], rmask,
         )
     return ene
 
@@ -357,12 +360,9 @@ def energy_breakdown(positions, prepared, sigma=None):
         out["rmsd"] = float(
             rmsd_energy(
                 positions,
-                r["target_idx"],
-                r["target_mask"],
-                r["ref_coords"],
-                r["target_rmsd"],
-                r["weight"],
-                rmask,
+                r["fit_idx"], r["fit_mask"], r["fit_ref"],
+                r["calc_idx"], r["calc_mask"], r["calc_ref"],
+                r["target_rmsd"], r["weight"], rmask,
             )
         )
     return out
@@ -432,9 +432,12 @@ def prepare_spec(spec):
     if spec.rmsd is not None and spec.rmsd.mask.sum() > 0:
         r = spec.rmsd
         prepared["rmsd"] = {
-            "target_idx": np.asarray(r.target_local_idx, dtype=np.int64),
-            "target_mask": np.asarray(r.target_mask, dtype=np.float64),
-            "ref_coords": np.asarray(r.ref_coords, dtype=np.float64),
+            "fit_idx": np.asarray(r.fit_idx, dtype=np.int64),
+            "fit_mask": np.asarray(r.fit_mask, dtype=np.float64),
+            "fit_ref": np.asarray(r.fit_ref, dtype=np.float64),
+            "calc_idx": np.asarray(r.calc_idx, dtype=np.int64),
+            "calc_mask": np.asarray(r.calc_mask, dtype=np.float64),
+            "calc_ref": np.asarray(r.calc_ref, dtype=np.float64),
             "target_rmsd": np.asarray(r.target_rmsd, dtype=np.float64),
             "weight": np.asarray(r.weight, dtype=np.float64),
             "mask": np.asarray(r.mask, dtype=np.float64),

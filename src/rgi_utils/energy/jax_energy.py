@@ -148,11 +148,11 @@ def distance_energy(
     return jnp.sum(delta**2 * mask)
 
 
-def _kabsch_aligned_ref(Q0, P0):
-    """Optimal-rotation-aligned reference ``Y0_a = R Q0_a`` (Kabsch). ``H`` (and thus
-    the rotation) is wrapped in ``stop_gradient`` so ``jax.grad`` flows only through
-    ``P0`` — no SVD backward (unstable at degenerate geometry). Mirrors
-    ``numpy_energy._kabsch_aligned_ref``. Pure jnp so it stays JIT/scan-able."""
+def _kabsch_R(Q0, P0):
+    """Optimal proper rotation R (det +1) s.t. R Q0 ~ P0 (Kabsch). ``H`` (and thus R)
+    is wrapped in ``stop_gradient`` so ``jax.grad`` flows only through the moving atoms
+    — no SVD backward (unstable at degenerate geometry). Pure jnp so it stays
+    JIT/scan-able. Mirrors ``numpy_energy._kabsch_R``."""
     H = jax.lax.stop_gradient(jnp.swapaxes(Q0, -1, -2) @ P0)  # (..., 3, 3)
     U, _S, Vt = jnp.linalg.svd(H)
     V = jnp.swapaxes(Vt, -1, -2)
@@ -160,23 +160,31 @@ def _kabsch_aligned_ref(Q0, P0):
     d = jnp.where(d == 0.0, 1.0, d)
     Vd = V.at[..., :, 2].multiply(d[..., None])  # V @ diag(1,1,d)
     R = Vd @ jnp.swapaxes(U, -1, -2)
-    Y0 = Q0 @ jnp.swapaxes(R, -1, -2)
-    return jax.lax.stop_gradient(Y0)
+    return jax.lax.stop_gradient(R)
 
 
-def rmsd_energy(positions, target_idx, target_mask, ref_coords, target_rmsd, weight, mask):
-    """Kabsch-superposed RMSD restraint (mirrors ``numpy_energy.rmsd_energy``); the
-    optimal rotation is stop-gradient'd so only the moving atoms get a gradient."""
-    P = positions[..., target_idx, :]  # (..., n_rmsd, max_atoms, 3)
-    m = target_mask[..., None]
-    n = jnp.sum(target_mask, axis=-1)
-    Pc = jnp.sum(P * m, axis=-2) / (n[..., None] + _EPS)
-    Qc = jnp.sum(ref_coords * m, axis=-2) / (n[..., None] + _EPS)
-    P0 = (P - Pc[..., None, :]) * m
-    Q0 = (ref_coords - Qc[..., None, :]) * m
-    Y0 = _kabsch_aligned_ref(Q0, P0)
-    resid = (P0 - Y0) * m
-    msd = jnp.sum(resid**2, axis=(-2, -1)) / (n + _EPS)
+def rmsd_energy(
+    positions, fit_idx, fit_mask, fit_ref, calc_idx, calc_mask, calc_ref,
+    target_rmsd, weight, mask,
+):
+    """Fit/calc Kabsch RMSD restraint (mirrors ``numpy_energy.rmsd_energy``). R +
+    centroids from the FIT atoms; RMSD over the CALC atoms. R is stop-gradient'd."""
+    Pf = positions[..., fit_idx, :]
+    mf = fit_mask[..., None]
+    nf = jnp.sum(fit_mask, axis=-1)
+    Pfc = jnp.sum(Pf * mf, axis=-2) / (nf[..., None] + _EPS)
+    Qfc = jnp.sum(fit_ref * mf, axis=-2) / (nf[..., None] + _EPS)
+    Pf0 = (Pf - Pfc[..., None, :]) * mf
+    Qf0 = (fit_ref - Qfc[..., None, :]) * mf
+    R = _kabsch_R(Qf0, Pf0)
+    Pc = positions[..., calc_idx, :]
+    mc = calc_mask[..., None]
+    nc = jnp.sum(calc_mask, axis=-1)
+    Pc0 = (Pc - Pfc[..., None, :]) * mc
+    Qc0 = (calc_ref - Qfc[..., None, :]) * mc
+    Yc = jax.lax.stop_gradient(Qc0 @ jnp.swapaxes(R, -1, -2))
+    resid = (Pc0 - Yc) * mc
+    msd = jnp.sum(resid**2, axis=(-2, -1)) / (nc + _EPS)
     rmsd = jnp.sqrt(msd + _EPS)
     return jnp.sum(weight * (rmsd - target_rmsd) ** 2 * mask)
 
@@ -248,12 +256,9 @@ def total_energy(positions, prepared, sigma=None, include_distance=True):
             rmask = rmask * (jnp.asarray(sigma) <= r["start_sigma"]).astype(rmask.dtype)
         ene = ene + rmsd_energy(
             positions,
-            r["target_idx"],
-            r["target_mask"],
-            r["ref_coords"],
-            r["target_rmsd"],
-            r["weight"],
-            rmask,
+            r["fit_idx"], r["fit_mask"], r["fit_ref"],
+            r["calc_idx"], r["calc_mask"], r["calc_ref"],
+            r["target_rmsd"], r["weight"], rmask,
         )
     return ene
 
@@ -349,12 +354,9 @@ def energy_breakdown(positions, prepared, sigma=None):
         out["rmsd"] = float(
             rmsd_energy(
                 positions,
-                r["target_idx"],
-                r["target_mask"],
-                r["ref_coords"],
-                r["target_rmsd"],
-                r["weight"],
-                rmask,
+                r["fit_idx"], r["fit_mask"], r["fit_ref"],
+                r["calc_idx"], r["calc_mask"], r["calc_ref"],
+                r["target_rmsd"], r["weight"], rmask,
             )
         )
     return out
@@ -424,9 +426,12 @@ def prepare_spec(spec):
     if spec.rmsd is not None and spec.rmsd.mask.sum() > 0:
         r = spec.rmsd
         prepared["rmsd"] = {
-            "target_idx": jnp.asarray(r.target_local_idx, dtype=jnp.int32),
-            "target_mask": jnp.asarray(r.target_mask),
-            "ref_coords": jnp.asarray(r.ref_coords),
+            "fit_idx": jnp.asarray(r.fit_idx, dtype=jnp.int32),
+            "fit_mask": jnp.asarray(r.fit_mask),
+            "fit_ref": jnp.asarray(r.fit_ref),
+            "calc_idx": jnp.asarray(r.calc_idx, dtype=jnp.int32),
+            "calc_mask": jnp.asarray(r.calc_mask),
+            "calc_ref": jnp.asarray(r.calc_ref),
             "target_rmsd": jnp.asarray(r.target_rmsd),
             "weight": jnp.asarray(r.weight),
             "mask": jnp.asarray(r.mask),

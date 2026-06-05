@@ -30,6 +30,7 @@ class PdbAtom:
     chain: str
     resid: int  # per-chain 1-based ordinal (resets per chain)
     index: int  # 0-based row in the parsed atom list
+    name: str  # atom name (cols 13-16), for identity-based RMSD pairing
     element: str
     x: float
     y: float
@@ -60,6 +61,7 @@ def read_pdb_atoms(path: str) -> list[PdbAtom]:
         chain = (ln[21].strip() if len(ln) > 21 else "") or " "
         res_seq = ln[22:26].strip()
         icode = ln[26] if len(ln) > 26 else " "
+        name = ln[12:16].strip() if len(ln) > 15 else ""
         try:
             x = float(ln[30:38])
             y = float(ln[38:46])
@@ -80,6 +82,7 @@ def read_pdb_atoms(path: str) -> list[PdbAtom]:
                 chain=chain,
                 resid=chain_ord[chain],
                 index=idx,
+                name=name,
                 element=element,
                 x=x,
                 y=y,
@@ -93,19 +96,25 @@ def read_pdb_atoms(path: str) -> list[PdbAtom]:
     return atoms
 
 
-def select_ref_coords(path: str, selection: str) -> np.ndarray:
-    """Return ``(n_sel, 3)`` coords of the reference atoms matching ``selection``.
+def select_ref_atoms(path: str, selection: str) -> list[PdbAtom]:
+    """Return the reference ``PdbAtom`` records matching ``selection`` (file order).
 
     ``selection`` uses the same DSL as distance restraints (chain / resid / index),
     evaluated against each parsed atom's ``{chain, resid, index}`` via
-    ``AtomSelector.matches``. Atoms are returned in file order so they pair
-    (atom-for-atom) with the diffusion structure's ``atom_selection_target`` group.
+    ``AtomSelector.matches``. Each record carries its atom ``name`` so the RMSD
+    restraint can pair against the diffusion structure by identity (chain, resid,
+    name) rather than by selection order.
     """
     atoms = read_pdb_atoms(path)
     sel = AtomSelector(selection)
-    coords = [
-        (a.x, a.y, a.z)
+    return [
+        a
         for a in atoms
         if sel.matches({"chain": a.chain, "resid": a.resid, "index": a.index})
     ]
-    return np.asarray(coords, dtype=np.float64).reshape(-1, 3)
+
+
+def select_ref_coords(path: str, selection: str) -> np.ndarray:
+    """``(n_sel, 3)`` coords of the matched reference atoms, in file order."""
+    sel = select_ref_atoms(path, selection)
+    return np.asarray([(a.x, a.y, a.z) for a in sel], dtype=np.float64).reshape(-1, 3)

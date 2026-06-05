@@ -359,10 +359,12 @@ def _rmsd_case(seed=3, n=6):
         [[np.cos(th), -np.sin(th), 0], [np.sin(th), np.cos(th), 0], [0, 0, 1]]
     )
     pos = ref @ rz.T + np.array([5.0, 2.0, -3.0]) + rng.standard_normal((n, 3)) * 0.4
-    args = dict(
-        target_idx=np.arange(n).reshape(1, n),
-        target_mask=np.ones((1, n)),
-        ref_coords=ref.reshape(1, n, 3),
+    idx = np.arange(n).reshape(1, n)
+    m = np.ones((1, n))
+    refc = ref.reshape(1, n, 3)
+    args = dict(  # fit == calc (plain superposed RMSD)
+        fit_idx=idx, fit_mask=m, fit_ref=refc,
+        calc_idx=idx, calc_mask=m, calc_ref=refc,
         target_rmsd=np.array([0.0]),
         weight=np.array([1.0]),
         mask=np.array([1.0]),
@@ -429,15 +431,40 @@ def test_rmsd_known_value_and_target():
     rng = np.random.default_rng(0)
     n = 5
     ref = rng.standard_normal((n, 3)) * 2.0
+    idx = np.arange(n).reshape(1, n)
+    m = np.ones((1, n))
+    refc = ref.reshape(1, n, 3)
     e = float(
         numpy_energy.rmsd_energy(
             ref,
-            target_idx=np.arange(n).reshape(1, n),
-            target_mask=np.ones((1, n)),
-            ref_coords=ref.reshape(1, n, 3),
+            idx, m, refc, idx, m, refc,
             target_rmsd=np.array([2.0]),
             weight=np.array([1.5]),
             mask=np.array([1.0]),
         )
     )
     assert abs(e - 1.5 * 2.0**2) < 1e-5
+
+
+def test_rmsd_fit_calc_separation():
+    """Superpose on the FIT atoms, measure RMSD on the CALC atoms. For a target that
+    is a RIGID transform of the reference, fitting on the fit subset aligns the calc
+    atoms perfectly too -> calc RMSD ~ 0 (energy -> 0)."""
+    rng = np.random.default_rng(7)
+    nf, nc = 5, 4
+    ref = rng.standard_normal((nf + nc, 3)) * 3.0  # 0..nf-1 = fit, nf.. = calc
+    th = 0.5
+    rz = np.array(
+        [[np.cos(th), -np.sin(th), 0], [np.sin(th), np.cos(th), 0], [0, 0, 1]]
+    )
+    pos = ref @ rz.T + np.array([2.0, -1.0, 4.0])  # rigid (no noise)
+    e = float(
+        numpy_energy.rmsd_energy(
+            pos,
+            np.arange(nf).reshape(1, nf), np.ones((1, nf)), ref[:nf].reshape(1, nf, 3),
+            np.arange(nf, nf + nc).reshape(1, nc), np.ones((1, nc)),
+            ref[nf:].reshape(1, nc, 3),
+            target_rmsd=np.array([0.0]), weight=np.array([1.0]), mask=np.array([1.0]),
+        )
+    )
+    assert e < 1e-6, e

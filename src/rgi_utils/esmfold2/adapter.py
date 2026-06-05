@@ -80,6 +80,10 @@ class ESMFold2Adapter:
         self._ref_element = _batch0(features["ref_element"]).astype(
             np.int64
         )  # (n_atom,)
+        ranc = features.get("ref_atom_name_chars")  # (n_atom, 4) ord(c)-32 codes
+        self._ref_atom_name_chars = (
+            _batch0(ranc).astype(np.int64) if ranc is not None else None
+        )
         tb = _batch0(features["token_bonds"])  # (n_tok, n_tok) or (n_tok, n_tok, 1)
         self._token_bonds = tb[..., 0] if tb.ndim == 3 else tb
         self._n_atom = (
@@ -116,8 +120,15 @@ class ESMFold2Adapter:
             tok = int(a2t[i])
             asym = int(self._asym[tok])
             chain = self._asym_to_name.get(asym, str(asym))
+            nm = None
+            if self._ref_atom_name_chars is not None:
+                nm = "".join(
+                    chr(int(x) + 32)
+                    for x in self._ref_atom_name_chars[i]
+                    if int(x) != 0
+                ).strip() or None
             yield AtomRecord(
-                chain=chain, resid=int(self._tok_ordinal[tok]), index=int(i)
+                chain=chain, resid=int(self._tok_ordinal[tok]), index=int(i), name=nm
             )
 
     # --- ConformerAdapter -----------------------------------------------------

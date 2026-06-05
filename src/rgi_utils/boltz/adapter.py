@@ -61,6 +61,7 @@ class BoltzFeatsAdapter:
         """
         asym_id_atom_b0, atom_to_token_b0 = self._per_atom()
         record = self.feats["record"]
+        name_of = self._atom_name_lookup(record)
         for chain in record[0].chains:
             chain_id = chain.chain_id
             # exclude padding atoms (else they surface as chain-0 / resid 1)
@@ -78,7 +79,40 @@ class BoltzFeatsAdapter:
                     chain=chain.chain_name,
                     resid=tok2resid[t],
                     index=int(gidx),
+                    name=name_of(int(gidx)),
                 )
+
+    def _atom_name_lookup(self, record):
+        """Return ``gidx -> atom name`` (or None). The feats atom dim is padded
+        per window, so map a feats atom index to its rank among real atoms (= its
+        row in ``record[0].atoms``, which is in structure order). Best-effort: any
+        shape/dtype surprise -> None (RMSD falls back to selection-order pairing)."""
+        try:
+            names_col = record[0].atoms["name"]
+            real_idx = torch.where(self._pad0)[0].tolist()
+            g2rank = {int(g): k for k, g in enumerate(real_idx)}
+            n = len(names_col)
+
+            def f(gidx):
+                k = g2rank.get(gidx)
+                if k is None or k >= n:
+                    return None
+                v = names_col[k]
+                if isinstance(v, bytes):
+                    return v.decode("ascii", "ignore").strip() or None
+                arr = np.asarray(v)
+                if arr.dtype.kind in ("i", "u"):  # old Atom dtype: 4 int8 chars
+                    return (
+                        bytes(int(c) & 0xFF for c in arr.ravel() if int(c) != 0)
+                        .decode("ascii", "ignore")
+                        .strip()
+                        or None
+                    )
+                return str(v).strip() or None
+
+            return f
+        except Exception:
+            return lambda gidx: None
 
     # --- ConformerAdapter -----------------------------------------------------
     def num_atoms(self) -> int:

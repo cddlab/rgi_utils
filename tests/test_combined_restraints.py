@@ -309,7 +309,7 @@ def test_rmsd_resolve_and_minimize(tmp_path):
     atoms = [AtomRecord("A", i + 1, i) for i in range(n)]
     cr.setup(MockAdapter(atoms))
     assert cr.is_active() and cr.spec.has_rmsd()
-    assert cr.config.rmsd_data[0].ref_coords.shape == (n, 3)
+    assert cr.config.rmsd_data[0].calc_ref_coords.shape == (n, 3)
 
     coords = tgt.reshape(1, n, 3).copy()
     before = _superposed_rmsd(coords[0], ref)
@@ -419,3 +419,123 @@ def test_gpu_false_cuda_coords_compute_on_cpu():
     assert coords.device.type == "cuda"  # written back to the original device
     d = float(torch.norm(coords[0, 2:].mean(0) - coords[0, :2].mean(0)))
     assert abs(d - 5.0) < 1e-4
+
+
+def _write_pdb_records(path, records, chain="A"):
+    """records: list of (resid, name, x, y, z). Atoms are written in the given order
+    (so callers can shuffle within a residue to exercise identity pairing)."""
+    lines = []
+    for i, (resid, name, x, y, z) in enumerate(records):
+        lines.append(
+            "ATOM  "
+            f"{i + 1:>5} "
+            f"{name:<4}"
+            " "
+            f"{'ALA':>3} "
+            f"{chain}"
+            f"{resid:>4}    "
+            f"{x:>8.3f}{y:>8.3f}{z:>8.3f}"
+            "  1.00  0.00          "
+            f"{(name[0] if name else 'C'):>2}\n"
+        )
+    path.write_text("".join(lines) + "END\n")
+
+
+def test_rmsd_identity_pairing_within_residue_order(tmp_path):
+    """Atoms shuffled WITHIN each residue in the ref PDB still pair by (chain, resid,
+    name) — the AF3 failure mode. The resolved ref coords come back in the adapter's
+    atom order (order-pairing would have mis-paired them)."""
+    rng = np.random.default_rng(8)
+    res_atoms = ["N", "CA", "C"]
+    nres = 4
+    coords = {}  # (resid, name) -> xyz
+    atoms = []  # adapter order: residue-major, atoms in N/CA/C order
+    idx = 0
+    for r in range(1, nres + 1):
+        for nm in res_atoms:
+            coords[(r, nm)] = rng.standard_normal(3) * 3.0
+            atoms.append(AtomRecord("A", r, idx, name=nm))
+            idx += 1
+    # PDB: residues in order, but atoms WITHIN each residue in a different order
+    records = []
+    for r in range(1, nres + 1):
+        for nm in ["CA", "C", "N"]:
+            records.append((r, nm, *coords[(r, nm)]))
+    pdb = tmp_path / "ref.pdb"
+    _write_pdb_records(pdb, records)
+    cr = CombinedRestraints.get_instance()
+    cr.set_config(
+        {
+            "backend": "torch",
+            "rmsd_restraints_config": [
+                {
+                    "ref_pdb": str(pdb),
+                    "target_rmsd": 0.0,
+                    "atom_selection_ref": "chain A",
+                    "atom_selection_target": "chain A",
+                    "start_sigma": 1e30,
+                }
+            ],
+        }
+    )
+    cr.setup(MockAdapter(atoms))
+    rr = cr.config.rmsd_data[0]
+    expected = np.array([coords[(a.resid, a.name)] for a in atoms])
+    assert np.allclose(rr.calc_ref_coords, expected, atol=1e-3)
+
+
+def test_rmsd_fit_calc_resolves(tmp_path):
+    """Separate fit/calc selections resolve to their own atom groups."""
+    rng = np.random.default_rng(9)
+    n = 6
+    ref = rng.standard_normal((n, 3)) * 3.0
+    pdb = tmp_path / "ref.pdb"
+    _write_pdb_records(pdb, [(i + 1, "CA", *ref[i]) for i in range(n)])
+    atoms = [AtomRecord("A", i + 1, i, name="CA") for i in range(n)]
+    cr = CombinedRestraints.get_instance()
+    cr.set_config(
+        {
+            "backend": "torch",
+            "rmsd_restraints_config": [
+                {
+                    "ref_pdb": str(pdb),
+                    "target_rmsd": 0.0,
+                    "atom_selection_ref_fit": "chain A and (resid 1 to 3)",
+                    "atom_selection_target_fit": "chain A and (resid 1 to 3)",
+                    "atom_selection_ref_calc": "chain A and (resid 4 to 6)",
+                    "atom_selection_target_calc": "chain A and (resid 4 to 6)",
+                    "start_sigma": 1e30,
+                }
+            ],
+        }
+    )
+    cr.setup(MockAdapter(atoms))
+    rr = cr.config.rmsd_data[0]
+    assert rr.fit_target_sites == [0, 1, 2]
+    assert rr.calc_target_sites == [3, 4, 5]
+    assert rr.fit_ref_coords.shape == (3, 3) and rr.calc_ref_coords.shape == (3, 3)
+
+
+def test_rmsd_identity_missing_atom_raises(tmp_path):
+    """A target atom with no matching (chain, resid, name) in the ref errors."""
+    rng = np.random.default_rng(10)
+    ref = rng.standard_normal((5, 3)) * 3.0  # ref has residues 1..5
+    pdb = tmp_path / "ref.pdb"
+    _write_pdb_records(pdb, [(i + 1, "CA", *ref[i]) for i in range(5)])
+    atoms = [AtomRecord("A", i + 1, i, name="CA") for i in range(6)]  # 1..6
+    cr = CombinedRestraints.get_instance()
+    cr.set_config(
+        {
+            "backend": "torch",
+            "rmsd_restraints_config": [
+                {
+                    "ref_pdb": str(pdb),
+                    "target_rmsd": 0.0,
+                    "atom_selection_ref": "chain A",
+                    "atom_selection_target": "chain A",
+                }
+            ],
+        }
+    )
+    with pytest.raises(ValueError, match="no matching"):
+        cr.setup(MockAdapter(atoms))
