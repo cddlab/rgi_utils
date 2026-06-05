@@ -89,6 +89,8 @@ class CombinedRestraints:
         cfg = self.config
         for dr in cfg.distance_data:
             dr.resolve_sites(adapter)
+        for rr in cfg.rmsd_data:
+            rr.resolve_sites(adapter)
 
         ligand_confs = []
         if hasattr(adapter, "iter_ligand_confs"):
@@ -107,6 +109,7 @@ class CombinedRestraints:
             cfg.conformer_config,
             elements=elements,
             conf_start_sigma=cfg.conf_start_sigma,
+            rmsd_restraints=cfg.rmsd_data,
         )
         self._backend = cfg.resolve_backend()
         self._optimizer = None
@@ -123,6 +126,8 @@ class CombinedRestraints:
         if cfg.verbose:
             d = self.spec.distance
             n_dist = 0 if d is None else int(d.mask.sum())
+            rm = self.spec.rmsd
+            n_rmsd = 0 if rm is None else int(rm.mask.sum())
             vc = self.spec.vdw_config
             vdw_s = (
                 "off"
@@ -144,6 +149,7 @@ class CombinedRestraints:
                 f"[rgi_utils] setup: backend={self._backend} "
                 f"n_active={self.spec.n_active} "
                 f"conformer={self.spec.has_conformer()} n_distance={n_dist} "
+                f"n_rmsd={n_rmsd} "
                 f"vdw={vdw_s} conf_start_sigma={self.spec.conf_start_sigma:g} "
                 f"dist_start_sigma={dist_ss}"
             )
@@ -173,6 +179,14 @@ class CombinedRestraints:
             if ss.size and float(ss.min()) < 0:
                 msgs.append(
                     "one or more distance restraints have start_sigma < 0, so they "
+                    "will NEVER activate (gate is sigma <= start_sigma)"
+                )
+        rm = spec.rmsd
+        if rm is not None and rm.mask.sum() > 0:
+            ss = np.asarray(rm.start_sigma)[np.asarray(rm.mask) > 0]
+            if ss.size and float(ss.min()) < 0:
+                msgs.append(
+                    "one or more RMSD restraints have start_sigma < 0, so they "
                     "will NEVER activate (gate is sigma <= start_sigma)"
                 )
         for m in msgs:
@@ -275,6 +289,7 @@ class CombinedRestraints:
                 + bd["dihedral"]
                 + bd["vdw"]
                 + bd["distance"]
+                + bd.get("rmsd", 0.0)
             )
             # The dynamic ligand-protein VdW (spec.vdw_config) is applied only inside
             # the torch optimizer and is absent from the static per-term breakdown
@@ -295,7 +310,8 @@ class CombinedRestraints:
                 f"bond={bd['bond']:.5f} angle={bd['angle']:.5f} "
                 f"chiral={bd['chiral']:.5f} dihedral={bd['dihedral']:.5f} "
                 f"vdw={bd['vdw']:.5f} "
-                f"distance={bd['distance']:.5f} total={total:.5f}"
+                f"distance={bd['distance']:.5f} rmsd={bd.get('rmsd', 0.0):.5f} "
+                f"total={total:.5f}"
             )
             logger.info(msg)
             print(msg, flush=True)

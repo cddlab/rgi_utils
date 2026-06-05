@@ -144,6 +144,28 @@ class DistanceArrays:
 
 
 @dataclass
+class RmsdArrays:
+    """Kabsch-superposed RMSD restraints to a fixed reference (padded).
+
+    Each restraint pulls a group of moving atoms (``target_local_idx``, local
+    indices into active_sites) so that its optimally-superposed RMSD to a fixed
+    reference (``ref_coords``, paired atom-for-atom by selection order) approaches
+    ``target_rmsd``. Energy ``weight * (rmsd - target_rmsd)**2``, active when
+    ``sigma <= start_sigma``. Optimised by the CG solver (NOT closed-form), so the
+    target atoms join active_sites. The optimal rotation is recomputed (and treated
+    as constant) each energy evaluation — see ``energy.*_energy.rmsd_energy``.
+    """
+
+    target_local_idx: np.ndarray  # (n_rmsd, max_atoms) int local indices into active
+    target_mask: np.ndarray  # (n_rmsd, max_atoms) float {0,1}: 1 = real atom, 0 = pad
+    ref_coords: np.ndarray  # (n_rmsd, max_atoms, 3) reference coords (padded, constant)
+    target_rmsd: np.ndarray  # (n_rmsd,) target RMSD value
+    weight: np.ndarray  # (n_rmsd,)
+    start_sigma: np.ndarray  # (n_rmsd,) per-restraint; active when sigma<=start_sigma
+    mask: np.ndarray  # (n_rmsd,) float {0,1}: 1 = valid, 0 = padding
+
+
+@dataclass
 class RestraintSpec:
     """Backend-agnostic restraint definition.
 
@@ -160,6 +182,7 @@ class RestraintSpec:
     vdw: VdwArrays | None = None
     vdw_config: VdwConfig | None = None
     distance: DistanceArrays | None = None
+    rmsd: RmsdArrays | None = None
     # one start_sigma for ALL conformer (bond/angle/chiral/vdw) restraints; each
     # distance restraint carries its own in DistanceArrays.start_sigma.
     conf_start_sigma: float = -1.0
@@ -177,9 +200,16 @@ class RestraintSpec:
         """True if any distance restraint exists."""
         return self.distance is not None and self.distance.mask.sum() > 0
 
+    def has_rmsd(self) -> bool:
+        """True if any RMSD restraint exists. Like conformer, RMSD is optimised by
+        the CG solver (not closed-form), so the solver must run when this is True."""
+        return self.rmsd is not None and self.rmsd.mask.sum() > 0
+
     def is_active(self) -> bool:
         """True if there is any work to do."""
-        return self.n_active > 0 and (self.has_conformer() or self.has_distance())
+        return self.n_active > 0 and (
+            self.has_conformer() or self.has_distance() or self.has_rmsd()
+        )
 
     def max_start_sigma(self) -> float:
         """Largest start_sigma over all active restraints. The optimizer can skip
@@ -189,4 +219,6 @@ class RestraintSpec:
             vals.append(float(self.conf_start_sigma))
         if self.has_distance() and self.distance is not None:
             vals.append(float(np.max(self.distance.start_sigma)))
+        if self.has_rmsd() and self.rmsd is not None:
+            vals.append(float(np.max(self.rmsd.start_sigma)))
         return max(vals) if vals else -1.0

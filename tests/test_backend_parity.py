@@ -333,3 +333,96 @@ def test_distance_closed_form_coupled_restraints():
     )
     assert np.allclose(a_np, a_t, atol=1e-6)
     assert np.allclose(a_np, a_j, atol=1e-5)
+
+
+def _rmsd_case(seed=3, n=6):
+    """One RMSD restraint over n atoms: reference + a rotated/translated/noised target."""
+    rng = np.random.default_rng(seed)
+    ref = rng.standard_normal((n, 3)) * 3.0
+    th = 0.7
+    rz = np.array(
+        [[np.cos(th), -np.sin(th), 0], [np.sin(th), np.cos(th), 0], [0, 0, 1]]
+    )
+    pos = ref @ rz.T + np.array([5.0, 2.0, -3.0]) + rng.standard_normal((n, 3)) * 0.4
+    args = dict(
+        target_idx=np.arange(n).reshape(1, n),
+        target_mask=np.ones((1, n)),
+        ref_coords=ref.reshape(1, n, 3),
+        target_rmsd=np.array([0.0]),
+        weight=np.array([1.0]),
+        mask=np.array([1.0]),
+    )
+    return ref, pos, args
+
+
+def test_rmsd_kabsch_backend_parity():
+    """The Kabsch-superposed RMSD energy agrees across numpy/torch/jax, its
+    autodiff gradient agrees torch-vs-jax (the detached rotation makes a numpy
+    finite-difference gradient inapplicable, like the dihedral degenerate case),
+    and the energy is invariant to a rigid motion of the target (the Kabsch
+    property)."""
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.energy import jax_energy, torch_energy
+
+    ref, pos, args = _rmsd_case()
+
+    e_np = float(numpy_energy.rmsd_energy(pos, **args))
+    e_t = float(
+        torch_energy.rmsd_energy(
+            torch.tensor(pos), **{k: torch.tensor(v) for k, v in args.items()}
+        )
+    )
+    e_j = float(
+        jax_energy.rmsd_energy(
+            jnp.asarray(pos), **{k: jnp.asarray(v) for k, v in args.items()}
+        )
+    )
+    assert e_np > 0.0
+    assert abs(e_np - e_t) < 1e-6 and abs(e_np - e_j) < 1e-6
+
+    # gradient parity: torch vs jax (both stop-gradient the rotation)
+    pt = torch.tensor(pos, requires_grad=True)
+    torch_energy.rmsd_energy(
+        pt, **{k: torch.tensor(v) for k, v in args.items()}
+    ).backward()
+    g_t = pt.grad.numpy()
+    g_j = np.asarray(
+        jax.grad(
+            lambda x: jax_energy.rmsd_energy(
+                x, **{k: jnp.asarray(v) for k, v in args.items()}
+            )
+        )(jnp.asarray(pos))
+    )
+    assert np.allclose(g_t, g_j, atol=1e-6), f"max|d|={np.abs(g_t - g_j).max()}"
+
+    # Kabsch property: energy is invariant under a rigid motion of the target
+    th2 = 1.3
+    ry = np.array(
+        [[np.cos(th2), 0, np.sin(th2)], [0, 1, 0], [-np.sin(th2), 0, np.cos(th2)]]
+    )
+    pos2 = pos @ ry.T + np.array([-7.0, 11.0, 4.0])
+    e_np2 = float(numpy_energy.rmsd_energy(pos2, **args))
+    assert abs(e_np - e_np2) < 1e-6
+
+
+def test_rmsd_known_value_and_target():
+    """ref == target -> superposed RMSD 0 -> E = weight * target_rmsd**2."""
+    rng = np.random.default_rng(0)
+    n = 5
+    ref = rng.standard_normal((n, 3)) * 2.0
+    e = float(
+        numpy_energy.rmsd_energy(
+            ref,
+            target_idx=np.arange(n).reshape(1, n),
+            target_mask=np.ones((1, n)),
+            ref_coords=ref.reshape(1, n, 3),
+            target_rmsd=np.array([2.0]),
+            weight=np.array([1.5]),
+            mask=np.array([1.0]),
+        )
+    )
+    assert abs(e - 1.5 * 2.0**2) < 1e-5

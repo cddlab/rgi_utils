@@ -11,6 +11,7 @@ import logging
 from dataclasses import dataclass, field
 
 from rgi_utils.distance_restr_data import DistanceData
+from rgi_utils.rmsd_restr_data import RmsdData
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ class RestraintsConfig:
     learning_rate: float = 0.01  # jax gradient-descent step size
     conformer_config: dict = field(default_factory=dict)
     distance_data: list = field(default_factory=list)
+    rmsd_data: list = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, config: dict | None) -> "RestraintsConfig":
@@ -88,6 +90,13 @@ class RestraintsConfig:
             if dd.start_sigma is None:
                 dd.start_sigma = _ALWAYS_ON
             cfg.distance_data.append(dd)
+        for entry in config.get("rmsd_restraints_config", []) or []:
+            rr = RmsdData()
+            rr.set_config(entry)
+            # start_sigma is optional; omitted -> active at every step (+inf gate).
+            if rr.start_sigma is None:
+                rr.start_sigma = _ALWAYS_ON
+            cfg.rmsd_data.append(rr)
         return cfg
 
     def resolve_backend(self) -> str:

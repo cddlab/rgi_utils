@@ -29,6 +29,7 @@ from rgi_utils.spec import (
     DihedralArrays,
     DistanceArrays,
     RestraintSpec,
+    RmsdArrays,
     VdwArrays,
     VdwConfig,
 )
@@ -307,9 +308,11 @@ def build_spec(
     conformer_config: dict | None = None,
     elements: np.ndarray | None = None,
     conf_start_sigma: float = -1.0,
+    rmsd_restraints: list | None = None,
 ) -> RestraintSpec:
     """Build a RestraintSpec. ``distance_restraints`` are DistanceData with
-    ``target_sites1``/``target_sites2`` already resolved to global indices."""
+    ``target_sites1``/``target_sites2`` already resolved to global indices;
+    ``rmsd_restraints`` are RmsdData with ``target_sites``/``ref_coords`` resolved."""
     ligand_confs = ligand_confs or []
     cfg = conformer_config or {}
     # Conformer restraints are OPT-IN -- this is the single enforcement point for every
@@ -325,6 +328,9 @@ def build_spec(
     ]
     distance_restraints = [
         dr for dr in (distance_restraints or []) if getattr(dr, "run_restr", False)
+    ]
+    rmsd_restraints = [
+        rr for rr in (rmsd_restraints or []) if getattr(rr, "run_restr", False)
     ]
     bw = cfg.get("bond", {}).get("weight", 0.05)
     bsl = cfg.get("bond", {}).get("slack", 0.0)
@@ -365,6 +371,8 @@ def build_spec(
     for dr in distance_restraints:
         active.update(int(s) for s in dr.target_sites1)
         active.update(int(s) for s in dr.target_sites2)
+    for rr in rmsd_restraints:
+        active.update(int(s) for s in rr.target_sites)
     # VdW pushes the whole ligand, so every ligand atom must be optimisable even
     # if it carries no bond/angle/chiral term (e.g. a monatomic ion).
     if vdw_weight > 0:
@@ -476,6 +484,38 @@ def build_spec(
             start_sigma=dist_start_sigma,
         )
 
+    # ---- RMSD arrays (padded, local target indices + fixed reference coords) ----
+    rmsd = None
+    if rmsd_restraints:
+        n = len(rmsd_restraints)
+        max_atoms = max(len(rr.target_sites) for rr in rmsd_restraints)
+        target_local_idx = np.zeros((n, max_atoms), dtype=np.int64)
+        target_mask = np.zeros((n, max_atoms))
+        ref_coords = np.zeros((n, max_atoms, 3))
+        target_rmsd = np.zeros(n)
+        rmsd_weight = np.zeros(n)
+        rmsd_start_sigma = np.full(n, -1.0)
+        for ri, rr in enumerate(rmsd_restraints):
+            local = [g2l[int(s)] for s in rr.target_sites]
+            k = len(local)
+            target_local_idx[ri, :k] = local
+            target_mask[ri, :k] = 1.0
+            # resolve_sites already enforced len(target_sites) == len(ref_coords)
+            ref_coords[ri, :k] = np.asarray(rr.ref_coords, dtype=np.float64)
+            target_rmsd[ri] = float(rr.target_rmsd)
+            rmsd_weight[ri] = float(rr.weight) if rr.weight else 1.0
+            ss = getattr(rr, "start_sigma", None)
+            rmsd_start_sigma[ri] = float(ss) if ss is not None else conf_start_sigma
+        rmsd = RmsdArrays(
+            target_local_idx=target_local_idx,
+            target_mask=target_mask,
+            ref_coords=ref_coords,
+            target_rmsd=target_rmsd,
+            weight=rmsd_weight,
+            start_sigma=rmsd_start_sigma,
+            mask=np.ones(n),
+        )
+
     spec = RestraintSpec(
         n_active=len(active_sites),
         active_sites=active_sites,
@@ -484,6 +524,7 @@ def build_spec(
         chiral=chiral,
         dihedral=dihedral,
         distance=distance,
+        rmsd=rmsd,
         vdw=vdw_arrays,
         vdw_config=vdw_config,
         conf_start_sigma=conf_start_sigma,
@@ -498,13 +539,14 @@ def build_spec(
         vdw_desc = "off"
     logger.info(
         "built spec: n_active=%d bonds=%d angles=%d chirals=%d dihedrals=%d "
-        "distances=%d vdw=%s",
+        "distances=%d rmsd=%d vdw=%s",
         spec.n_active,
         len(bonds),
         len(angles),
         len(chirals),
         len(dihedrals),
         len(distance_restraints),
+        len(rmsd_restraints),
         vdw_desc,
     )
     return spec

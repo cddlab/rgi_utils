@@ -50,6 +50,7 @@ def make_minimizer(
     is_cg = (method or "lbfgs").lower() in ("cg", "ncg", "nonlinear-cg", "nonlinearcg")
     has_dist = spec.has_distance()
     has_conf = spec.has_conformer()
+    has_rmsd = spec.has_rmsd()
     dist_prepared = prepared.get("distance")
 
     def _descend(coords, sigma):
@@ -58,9 +59,10 @@ def make_minimizer(
         #    solver) -- a COM-distance restraint is 1-DOF. Gated per-restraint inside.
         if has_dist:
             active = apply_distance_shift_jax(active, dist_prepared, sigma)
-        # 2) Conformer restraints: jaxopt on the conformer-only energy (distance is
-        #    applied above). Skipped entirely for a distance-only spec.
-        if has_conf:
+        # 2) Conformer + RMSD restraints: jaxopt on the non-distance energy (distance is
+        #    applied above; total_energy(include_distance=False) covers conformer AND
+        #    RMSD). Skipped entirely for a distance-only spec.
+        if has_conf or has_rmsd:
 
             def energy_fn(a):
                 return jax_energy.total_energy(a, prepared, sigma, include_distance=False)

@@ -15,6 +15,38 @@ from rgi_utils import CombinedRestraints
 from rgi_utils.atom_context import AtomRecord, LigandConf
 
 
+def _write_pdb(path, coords, chain="A"):
+    """Write one CA atom per coord, each its own residue (chain ``chain``)."""
+    lines = []
+    for i, (x, y, z) in enumerate(coords):
+        lines.append(
+            "ATOM  "
+            f"{i + 1:>5} "
+            f"{'CA':<4}"
+            " "
+            f"{'ALA':>3} "
+            f"{chain}"
+            f"{i + 1:>4}    "
+            f"{x:>8.3f}{y:>8.3f}{z:>8.3f}"
+            "  1.00  0.00          "
+            f"{'C':>2}\n"
+        )
+    path.write_text("".join(lines) + "END\n")
+
+
+def _superposed_rmsd(P, Q):
+    """Kabsch RMSD between target P and reference Q (matches rmsd_energy)."""
+    P0 = P - P.mean(0)
+    Q0 = Q - Q.mean(0)
+    U, _S, Vt = np.linalg.svd(Q0.T @ P0)
+    V = Vt.T
+    d = np.sign(np.linalg.det(V @ U.T)) or 1.0
+    Vd = V.copy()
+    Vd[:, 2] *= d
+    R = Vd @ U.T  # R Q0 ~ P0
+    return float(np.sqrt(((P0 - Q0 @ R.T) ** 2).sum() / len(P)))
+
+
 class MockAdapter:
     """Mock FrameworkAdapter + ConformerAdapter for testing without a framework."""
 
@@ -236,3 +268,88 @@ def test_multiligand_conformer_setup():
     assert cr.is_active()
     assert cr.spec.n_active == 2 * n
     assert cr.spec.bond.idx.shape[0] == 2 * m.GetNumBonds()
+
+
+def test_rmsd_resolve_and_minimize(tmp_path):
+    """RMSD restraint (target_rmsd=0) drives the moving group's superposed RMSD to
+    the reference down. Exercises pdb_ref + RmsdData.resolve_sites + the CG solver."""
+    rng = np.random.default_rng(5)
+    n = 6
+    ref = rng.standard_normal((n, 3)) * 3.0
+    pdb = tmp_path / "ref.pdb"
+    _write_pdb(pdb, ref)
+    th = 0.6
+    rz = np.array(
+        [[np.cos(th), -np.sin(th), 0], [np.sin(th), np.cos(th), 0], [0, 0, 1]]
+    )
+    tgt = ref @ rz.T + np.array([4.0, -2.0, 1.0]) + rng.standard_normal((n, 3)) * 0.8
+
+    cr = CombinedRestraints.get_instance()
+    cr.set_config(
+        {
+            "backend": "numpy",
+            "rmsd_restraints_config": [
+                {
+                    "ref_pdb": str(pdb),
+                    "target_rmsd": 0.0,
+                    "atom_selection_ref": "chain A",
+                    "atom_selection_target": "chain A",
+                    "start_sigma": 1e30,
+                }
+            ],
+        }
+    )
+    atoms = [AtomRecord("A", i + 1, i) for i in range(n)]
+    cr.setup(MockAdapter(atoms))
+    assert cr.is_active() and cr.spec.has_rmsd()
+    assert cr.config.rmsd_data[0].ref_coords.shape == (n, 3)
+
+    coords = tgt.reshape(1, n, 3).copy()
+    before = _superposed_rmsd(coords[0], ref)
+    cr.minimize(coords, 0, sigma=0.0)
+    after = _superposed_rmsd(coords[0], ref)
+    assert after < before, f"rmsd did not decrease: {before:.3f} -> {after:.3f}"
+
+
+def test_rmsd_count_mismatch_raises(tmp_path):
+    """User requirement: mismatched ref/target atom counts must error out."""
+    ref = np.random.default_rng(1).standard_normal((6, 3))
+    pdb = tmp_path / "ref.pdb"
+    _write_pdb(pdb, ref)
+    cr = CombinedRestraints.get_instance()
+    cr.set_config(
+        {
+            "backend": "numpy",
+            "rmsd_restraints_config": [
+                {
+                    "ref_pdb": str(pdb),
+                    "target_rmsd": 1.0,
+                    "atom_selection_ref": "chain A",  # 6 atoms
+                    "atom_selection_target": "chain A and resid 1 to 3",  # 3 atoms
+                }
+            ],
+        }
+    )
+    atoms = [AtomRecord("A", i + 1, i) for i in range(6)]
+    with pytest.raises(ValueError, match="count mismatch"):
+        cr.setup(MockAdapter(atoms))
+
+
+def test_rmsd_missing_pdb_raises(tmp_path):
+    cr = CombinedRestraints.get_instance()
+    cr.set_config(
+        {
+            "backend": "numpy",
+            "rmsd_restraints_config": [
+                {
+                    "ref_pdb": str(tmp_path / "does_not_exist.pdb"),
+                    "target_rmsd": 1.0,
+                    "atom_selection_ref": "chain A",
+                    "atom_selection_target": "chain A",
+                }
+            ],
+        }
+    )
+    atoms = [AtomRecord("A", i + 1, i) for i in range(3)]
+    with pytest.raises(ValueError, match="could not be read"):
+        cr.setup(MockAdapter(atoms))

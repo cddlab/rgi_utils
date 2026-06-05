@@ -7,6 +7,7 @@ active_sites. Adapted from the AlphaFold 3 restraint prototype.
 
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
 
 _EPS = 1e-12
@@ -147,6 +148,39 @@ def distance_energy(
     return jnp.sum(delta**2 * mask)
 
 
+def _kabsch_aligned_ref(Q0, P0):
+    """Optimal-rotation-aligned reference ``Y0_a = R Q0_a`` (Kabsch). ``H`` (and thus
+    the rotation) is wrapped in ``stop_gradient`` so ``jax.grad`` flows only through
+    ``P0`` — no SVD backward (unstable at degenerate geometry). Mirrors
+    ``numpy_energy._kabsch_aligned_ref``. Pure jnp so it stays JIT/scan-able."""
+    H = jax.lax.stop_gradient(jnp.swapaxes(Q0, -1, -2) @ P0)  # (..., 3, 3)
+    U, _S, Vt = jnp.linalg.svd(H)
+    V = jnp.swapaxes(Vt, -1, -2)
+    d = jnp.sign(jnp.linalg.det(V @ jnp.swapaxes(U, -1, -2)))
+    d = jnp.where(d == 0.0, 1.0, d)
+    Vd = V.at[..., :, 2].multiply(d[..., None])  # V @ diag(1,1,d)
+    R = Vd @ jnp.swapaxes(U, -1, -2)
+    Y0 = Q0 @ jnp.swapaxes(R, -1, -2)
+    return jax.lax.stop_gradient(Y0)
+
+
+def rmsd_energy(positions, target_idx, target_mask, ref_coords, target_rmsd, weight, mask):
+    """Kabsch-superposed RMSD restraint (mirrors ``numpy_energy.rmsd_energy``); the
+    optimal rotation is stop-gradient'd so only the moving atoms get a gradient."""
+    P = positions[..., target_idx, :]  # (..., n_rmsd, max_atoms, 3)
+    m = target_mask[..., None]
+    n = jnp.sum(target_mask, axis=-1)
+    Pc = jnp.sum(P * m, axis=-2) / (n[..., None] + _EPS)
+    Qc = jnp.sum(ref_coords * m, axis=-2) / (n[..., None] + _EPS)
+    P0 = (P - Pc[..., None, :]) * m
+    Q0 = (ref_coords - Qc[..., None, :]) * m
+    Y0 = _kabsch_aligned_ref(Q0, P0)
+    resid = (P0 - Y0) * m
+    msd = jnp.sum(resid**2, axis=(-2, -1)) / (n + _EPS)
+    rmsd = jnp.sqrt(msd + _EPS)
+    return jnp.sum(weight * (rmsd - target_rmsd) ** 2 * mask)
+
+
 def total_energy(positions, prepared, sigma=None, include_distance=True):
     """Sum all restraint energies. ``sigma`` (current noise level) gates each
     restraint via ``sigma <= start_sigma`` folded into the mask (conformer terms
@@ -206,6 +240,21 @@ def total_energy(positions, prepared, sigma=None, include_distance=True):
             d["dist_type"],
             dmask,
         )
+    # RMSD: optimised by the CG solver, so summed regardless of include_distance.
+    if "rmsd" in prepared:
+        r = prepared["rmsd"]
+        rmask = r["mask"]
+        if sigma is not None:
+            rmask = rmask * (jnp.asarray(sigma) <= r["start_sigma"]).astype(rmask.dtype)
+        ene = ene + rmsd_energy(
+            positions,
+            r["target_idx"],
+            r["target_mask"],
+            r["ref_coords"],
+            r["target_rmsd"],
+            r["weight"],
+            rmask,
+        )
     return ene
 
 
@@ -228,6 +277,7 @@ def energy_breakdown(positions, prepared, sigma=None):
         "dihedral": 0.0,
         "vdw": 0.0,
         "distance": 0.0,
+        "rmsd": 0.0,
     }
     if "bond" in prepared:
         b = prepared["bond"]
@@ -289,6 +339,22 @@ def energy_breakdown(positions, prepared, sigma=None):
                 d["target2"],
                 d["dist_type"],
                 dmask,
+            )
+        )
+    if "rmsd" in prepared:
+        r = prepared["rmsd"]
+        rmask = r["mask"]
+        if sigma is not None:
+            rmask = rmask * (jnp.asarray(sigma) <= r["start_sigma"]).astype(rmask.dtype)
+        out["rmsd"] = float(
+            rmsd_energy(
+                positions,
+                r["target_idx"],
+                r["target_mask"],
+                r["ref_coords"],
+                r["target_rmsd"],
+                r["weight"],
+                rmask,
             )
         )
     return out
@@ -354,5 +420,16 @@ def prepare_spec(spec):
             "dist_type": jnp.asarray(d.dist_type, dtype=jnp.int32),
             "mask": jnp.asarray(d.mask),
             "start_sigma": jnp.asarray(d.start_sigma),
+        }
+    if spec.rmsd is not None and spec.rmsd.mask.sum() > 0:
+        r = spec.rmsd
+        prepared["rmsd"] = {
+            "target_idx": jnp.asarray(r.target_local_idx, dtype=jnp.int32),
+            "target_mask": jnp.asarray(r.target_mask),
+            "ref_coords": jnp.asarray(r.ref_coords),
+            "target_rmsd": jnp.asarray(r.target_rmsd),
+            "weight": jnp.asarray(r.weight),
+            "mask": jnp.asarray(r.mask),
+            "start_sigma": jnp.asarray(r.start_sigma),
         }
     return prepared

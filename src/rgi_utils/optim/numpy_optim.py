@@ -44,8 +44,10 @@ class NumpyRestraintOptimizer:
         if self.spec.has_distance():
             active = apply_distance_shift_numpy(active, self.prepared["distance"], sigma)
 
-        # 2) Conformer restraints: scipy on the conformer-only energy.
-        if self.spec.has_conformer():
+        # 2) Conformer + RMSD restraints: scipy on the non-distance energy
+        #    (total_energy(include_distance=False) covers both). Distance is closed-form
+        #    above; skipped entirely when only distance restraints exist.
+        if self.spec.has_conformer() or self.spec.has_rmsd():
             shape = active.shape
             prepared = self.prepared
 

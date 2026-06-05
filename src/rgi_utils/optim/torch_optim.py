@@ -107,6 +107,7 @@ class TorchRestraintOptimizer:
 
         has_dist = self.spec.has_distance()
         has_conf = self.spec.has_conformer()
+        has_rmsd = self.spec.has_rmsd()
         prepared = self._prepared
 
         # boltz / Lightning run prediction under torch.inference_mode, where leaf
@@ -125,10 +126,11 @@ class TorchRestraintOptimizer:
                         active, prepared["distance"], sigma
                     )
 
-            # 2) Conformer restraints (bond/angle/chiral/dihedral/vdw): gradient solver
-            #    on the conformer-only energy (distance is already applied above). Skipped
+            # 2) Conformer (bond/angle/chiral/dihedral/vdw) + RMSD restraints: gradient
+            #    solver on the non-distance energy (distance is already applied above;
+            #    total_energy(include_distance=False) covers conformer AND RMSD). Skipped
             #    entirely for a distance-only run.
-            if has_conf:
+            if has_conf or has_rmsd:
                 active = active.detach().clone()
                 active.requires_grad_(True)
                 prot_pos = None

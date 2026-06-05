@@ -151,6 +151,48 @@ def distance_energy(
     return np.sum(delta**2 * mask)
 
 
+def _kabsch_aligned_ref(Q0, P0):
+    """Optimal-rotation-aligned reference: return ``Y0`` with ``Y0_a = R Q0_a`` where
+    ``R`` minimises ``sum_a ||R Q0_a - P0_a||^2`` (Kabsch). ``Q0``/``P0`` are
+    centred, padding-zeroed ``(..., A, 3)`` arrays. ``R`` is a function of the data,
+    but the torch/jax mirrors STOP its gradient (the numpy reference has no autodiff,
+    so it is constant here too) — see ``rmsd_energy``."""
+    H = np.swapaxes(Q0, -1, -2) @ P0  # (..., 3, 3) cross-covariance sum_a Q0_a x P0_a
+    U, _S, Vt = np.linalg.svd(H)
+    V = np.swapaxes(Vt, -1, -2)
+    # reflection fix so R is a proper rotation (det +1), not a roto-reflection
+    d = np.sign(np.linalg.det(V @ np.swapaxes(U, -1, -2)))
+    d = np.where(d == 0.0, 1.0, d)  # degenerate H (det 0) -> no flip
+    Vd = V.copy()
+    Vd[..., :, 2] = Vd[..., :, 2] * d[..., None]  # V @ diag(1,1,d)
+    R = Vd @ np.swapaxes(U, -1, -2)  # (..., 3, 3): R Q0 ~ P0
+    return Q0 @ np.swapaxes(R, -1, -2)  # (..., A, 3): rotate each Q0_a by R
+
+
+def rmsd_energy(positions, target_idx, target_mask, ref_coords, target_rmsd, weight, mask):
+    """Kabsch-superposed RMSD restraint: ``sum_r weight_r (rmsd_r - target_rmsd_r)^2``.
+
+    ``target_idx`` (n_rmsd, max_atoms) are local indices into ``positions``; the moving
+    group ``P`` and the fixed reference ``ref_coords`` (same shape, padded) are paired
+    atom-for-atom. Both are centred, the reference is rotated onto ``P`` by the optimal
+    (Kabsch) rotation, and the residual RMSD is driven to ``target_rmsd``. The rotation
+    is treated as constant per evaluation (numpy: no autodiff; torch/jax: stop-gradient),
+    which avoids differentiating the SVD; centred residuals sum to zero so the gradient
+    is translation-invariant and the rotation is re-fit each solver iteration."""
+    P = positions[..., target_idx, :]  # (..., n_rmsd, max_atoms, 3)
+    m = target_mask[..., None]  # (n_rmsd, max_atoms, 1)
+    n = np.sum(target_mask, axis=-1)  # (n_rmsd,)
+    Pc = np.sum(P * m, axis=-2) / (n[..., None] + _EPS)  # (..., n_rmsd, 3)
+    Qc = np.sum(ref_coords * m, axis=-2) / (n[..., None] + _EPS)  # (n_rmsd, 3)
+    P0 = (P - Pc[..., None, :]) * m
+    Q0 = (ref_coords - Qc[..., None, :]) * m
+    Y0 = _kabsch_aligned_ref(Q0, P0)
+    resid = (P0 - Y0) * m
+    msd = np.sum(resid**2, axis=(-2, -1)) / (n + _EPS)  # (..., n_rmsd)
+    rmsd = np.sqrt(msd + _EPS)
+    return np.sum(weight * (rmsd - target_rmsd) ** 2 * mask)
+
+
 def total_energy(positions, prepared, sigma=None, include_distance=True):
     """Sum all restraint energies. ``prepared`` is the dict from ``prepare_spec``.
 
@@ -208,6 +250,23 @@ def total_energy(positions, prepared, sigma=None, include_distance=True):
             d["dist_type"],
             dmask,
         )
+    # RMSD is optimised by the CG solver (not closed-form like distance), so it is
+    # summed UNCONDITIONALLY of include_distance — the solver calls total_energy with
+    # include_distance=False and must still see the RMSD term.
+    if "rmsd" in prepared:
+        r = prepared["rmsd"]
+        rmask = r["mask"]
+        if sigma is not None:
+            rmask = rmask * (sigma <= r["start_sigma"])
+        ene = ene + rmsd_energy(
+            positions,
+            r["target_idx"],
+            r["target_mask"],
+            r["ref_coords"],
+            r["target_rmsd"],
+            r["weight"],
+            rmask,
+        )
     return ene
 
 
@@ -226,6 +285,7 @@ def energy_breakdown(positions, prepared, sigma=None):
         "dihedral": 0.0,
         "vdw": 0.0,
         "distance": 0.0,
+        "rmsd": 0.0,
     }
     if "bond" in prepared:
         b = prepared["bond"]
@@ -287,6 +347,22 @@ def energy_breakdown(positions, prepared, sigma=None):
                 d["target2"],
                 d["dist_type"],
                 dmask,
+            )
+        )
+    if "rmsd" in prepared:
+        r = prepared["rmsd"]
+        rmask = r["mask"]
+        if sigma is not None:
+            rmask = rmask * (sigma <= r["start_sigma"])
+        out["rmsd"] = float(
+            rmsd_energy(
+                positions,
+                r["target_idx"],
+                r["target_mask"],
+                r["ref_coords"],
+                r["target_rmsd"],
+                r["weight"],
+                rmask,
             )
         )
     return out
@@ -352,5 +428,16 @@ def prepare_spec(spec):
             "dist_type": np.asarray(d.dist_type, dtype=np.int64),
             "mask": np.asarray(d.mask, dtype=np.float64),
             "start_sigma": np.asarray(d.start_sigma, dtype=np.float64),
+        }
+    if spec.rmsd is not None and spec.rmsd.mask.sum() > 0:
+        r = spec.rmsd
+        prepared["rmsd"] = {
+            "target_idx": np.asarray(r.target_local_idx, dtype=np.int64),
+            "target_mask": np.asarray(r.target_mask, dtype=np.float64),
+            "ref_coords": np.asarray(r.ref_coords, dtype=np.float64),
+            "target_rmsd": np.asarray(r.target_rmsd, dtype=np.float64),
+            "weight": np.asarray(r.weight, dtype=np.float64),
+            "mask": np.asarray(r.mask, dtype=np.float64),
+            "start_sigma": np.asarray(r.start_sigma, dtype=np.float64),
         }
     return prepared
