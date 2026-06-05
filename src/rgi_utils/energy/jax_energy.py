@@ -10,6 +10,8 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 
+from rgi_utils.energy._terms import BREAKDOWN_KEYS, pack_spec, term_energies
+
 _EPS = 1e-12
 
 
@@ -191,252 +193,62 @@ def rmsd_energy(
     return jnp.sum(weight * (rmsd - target_rmsd) ** 2 * mask)
 
 
+# leaf energy functions by name, for the shared term_energies dispatch
+_LEAF_FNS = {
+    "bond_energy": bond_energy,
+    "angle_energy": angle_energy,
+    "chiral_energy": chiral_energy,
+    "dihedral_energy": dihedral_energy,
+    "vdw_energy": vdw_energy,
+    "distance_energy": distance_energy,
+    "rmsd_energy": rmsd_energy,
+}
+
+
+def _gates(prepared, positions, sigma):
+    """The conformer gate ``cg`` and a per-restraint ``sigma_gate``. jnp comparisons
+    (tracer-safe inside ``lax.scan``); identity when ``sigma is None``."""
+    if sigma is None:
+        return 1.0, (lambda start_sigma, mask: mask)
+    s = jnp.asarray(sigma)
+    cg = (s <= prepared.get("conf_start_sigma", 1e30)).astype(positions.dtype)
+
+    def sigma_gate(start_sigma, mask):
+        return mask * (s <= start_sigma).astype(mask.dtype)
+
+    return cg, sigma_gate
+
+
 def total_energy(positions, prepared, sigma=None, include_distance=True):
     """Sum all restraint energies. ``sigma`` (current noise level) gates each
-    restraint via ``sigma <= start_sigma`` folded into the mask (conformer terms
-    share ``conf_start_sigma``; distances have their own). ``sigma=None`` disables
-    gating. Pure jnp so it stays JIT/vmap-able."""
-    if sigma is None:
-        cg = 1.0
-    else:
-        cg = (jnp.asarray(sigma) <= prepared.get("conf_start_sigma", 1e30)).astype(
-            positions.dtype
-        )
+    restraint via ``sigma <= start_sigma`` folded into the mask (conformer terms share
+    ``conf_start_sigma``; distance/RMSD have their own). RMSD is summed regardless of
+    ``include_distance``. ``sigma=None`` disables gating. Pure jnp so it stays
+    JIT/vmap-able."""
+    cg, sigma_gate = _gates(prepared, positions, sigma)
     ene = jnp.asarray(0.0, dtype=positions.dtype)
-    if "bond" in prepared:
-        b = prepared["bond"]
-        ene = ene + bond_energy(
-            positions,
-            b["idx"],
-            b["r0"],
-            b["slack"],
-            b["weight"],
-            b["half"],
-            b["mask"] * cg,
-        )
-    if "angle" in prepared:
-        a = prepared["angle"]
-        ene = ene + angle_energy(
-            positions, a["idx"], a["th0"], a["slack"], a["weight"], a["mask"] * cg
-        )
-    if "chiral" in prepared:
-        c = prepared["chiral"]
-        ene = ene + chiral_energy(
-            positions, c["idx"], c["vol0"], c["slack"], c["weight"], c["mask"] * cg
-        )
-    if "dihedral" in prepared:
-        dh = prepared["dihedral"]
-        ene = ene + dihedral_energy(
-            positions, dh["idx"], dh["phi0"], dh["slack"], dh["weight"], dh["mask"] * cg
-        )
-    if "vdw" in prepared:
-        v = prepared["vdw"]
-        ene = ene + vdw_energy(
-            positions, v["idx"], v["r_min"], v["weight"], v["mask"] * cg
-        )
-    if include_distance and "distance" in prepared:
-        d = prepared["distance"]
-        dmask = d["mask"]
-        if sigma is not None:
-            dmask = dmask * (jnp.asarray(sigma) <= d["start_sigma"]).astype(dmask.dtype)
-        ene = ene + distance_energy(
-            positions,
-            d["grp1_idx"],
-            d["grp2_idx"],
-            d["grp1_mask"],
-            d["grp2_mask"],
-            d["target1"],
-            d["target2"],
-            d["dist_type"],
-            dmask,
-        )
-    # RMSD: optimised by the CG solver, so summed regardless of include_distance.
-    if "rmsd" in prepared:
-        r = prepared["rmsd"]
-        rmask = r["mask"]
-        if sigma is not None:
-            rmask = rmask * (jnp.asarray(sigma) <= r["start_sigma"]).astype(rmask.dtype)
-        ene = ene + rmsd_energy(
-            positions,
-            r["fit_idx"], r["fit_mask"], r["fit_ref"],
-            r["calc_idx"], r["calc_mask"], r["calc_ref"],
-            r["target_rmsd"], r["weight"], rmask,
-        )
+    for v in term_energies(
+        _LEAF_FNS, prepared, positions, cg, sigma_gate, include_distance
+    ).values():
+        ene = ene + v
     return ene
 
 
 def energy_breakdown(positions, prepared, sigma=None):
-    """Per-term restraint energies (same maths + gating as ``total_energy``).
-
-    Returns ``{bond, angle, chiral, vdw, distance}`` python floats (host-side).
-    Not for use inside JIT (the floats force a device->host sync); for diagnostics.
-    """
-    if sigma is None:
-        cg = 1.0
-    else:
-        cg = (jnp.asarray(sigma) <= prepared.get("conf_start_sigma", 1e30)).astype(
-            positions.dtype
-        )
-    out = {
-        "bond": 0.0,
-        "angle": 0.0,
-        "chiral": 0.0,
-        "dihedral": 0.0,
-        "vdw": 0.0,
-        "distance": 0.0,
-        "rmsd": 0.0,
-    }
-    if "bond" in prepared:
-        b = prepared["bond"]
-        out["bond"] = float(
-            bond_energy(
-                positions,
-                b["idx"],
-                b["r0"],
-                b["slack"],
-                b["weight"],
-                b["half"],
-                b["mask"] * cg,
-            )
-        )
-    if "angle" in prepared:
-        a = prepared["angle"]
-        out["angle"] = float(
-            angle_energy(
-                positions, a["idx"], a["th0"], a["slack"], a["weight"], a["mask"] * cg
-            )
-        )
-    if "chiral" in prepared:
-        c = prepared["chiral"]
-        out["chiral"] = float(
-            chiral_energy(
-                positions, c["idx"], c["vol0"], c["slack"], c["weight"], c["mask"] * cg
-            )
-        )
-    if "dihedral" in prepared:
-        dh = prepared["dihedral"]
-        out["dihedral"] = float(
-            dihedral_energy(
-                positions,
-                dh["idx"],
-                dh["phi0"],
-                dh["slack"],
-                dh["weight"],
-                dh["mask"] * cg,
-            )
-        )
-    if "vdw" in prepared:
-        v = prepared["vdw"]
-        out["vdw"] = float(
-            vdw_energy(positions, v["idx"], v["r_min"], v["weight"], v["mask"] * cg)
-        )
-    if "distance" in prepared:
-        d = prepared["distance"]
-        dmask = d["mask"]
-        if sigma is not None:
-            dmask = dmask * (jnp.asarray(sigma) <= d["start_sigma"]).astype(dmask.dtype)
-        out["distance"] = float(
-            distance_energy(
-                positions,
-                d["grp1_idx"],
-                d["grp2_idx"],
-                d["grp1_mask"],
-                d["grp2_mask"],
-                d["target1"],
-                d["target2"],
-                d["dist_type"],
-                dmask,
-            )
-        )
-    if "rmsd" in prepared:
-        r = prepared["rmsd"]
-        rmask = r["mask"]
-        if sigma is not None:
-            rmask = rmask * (jnp.asarray(sigma) <= r["start_sigma"]).astype(rmask.dtype)
-        out["rmsd"] = float(
-            rmsd_energy(
-                positions,
-                r["fit_idx"], r["fit_mask"], r["fit_ref"],
-                r["calc_idx"], r["calc_mask"], r["calc_ref"],
-                r["target_rmsd"], r["weight"], rmask,
-            )
-        )
+    """Per-term restraint energies (same maths + gating as ``total_energy``), as a
+    ``{bond, angle, chiral, dihedral, vdw, distance, rmsd}`` python-float dict. Not
+    for use inside JIT (the floats force a device->host sync); for diagnostics."""
+    cg, sigma_gate = _gates(prepared, positions, sigma)
+    out = dict.fromkeys(BREAKDOWN_KEYS, 0.0)
+    for k, v in term_energies(
+        _LEAF_FNS, prepared, positions, cg, sigma_gate, include_distance=True
+    ).items():
+        out[k] = float(v)
     return out
 
 
 def prepare_spec(spec):
     """Convert a backend-agnostic ``RestraintSpec`` into jnp arrays."""
-    prepared = {"conf_start_sigma": float(getattr(spec, "conf_start_sigma", -1.0))}
-    if spec.bond is not None and spec.bond.mask.sum() > 0:
-        b = spec.bond
-        prepared["bond"] = {
-            "idx": jnp.asarray(b.idx, dtype=jnp.int32),
-            "r0": jnp.asarray(b.r0),
-            "slack": jnp.asarray(b.slack),
-            "weight": jnp.asarray(b.weight),
-            "half": jnp.asarray(b.half),
-            "mask": jnp.asarray(b.mask),
-        }
-    if spec.angle is not None and spec.angle.mask.sum() > 0:
-        a = spec.angle
-        prepared["angle"] = {
-            "idx": jnp.asarray(a.idx, dtype=jnp.int32),
-            "th0": jnp.asarray(a.th0),
-            "slack": jnp.asarray(a.slack),
-            "weight": jnp.asarray(a.weight),
-            "mask": jnp.asarray(a.mask),
-        }
-    if spec.chiral is not None and spec.chiral.mask.sum() > 0:
-        c = spec.chiral
-        prepared["chiral"] = {
-            "idx": jnp.asarray(c.idx, dtype=jnp.int32),
-            "vol0": jnp.asarray(c.vol0),
-            "slack": jnp.asarray(c.slack),
-            "weight": jnp.asarray(c.weight),
-            "mask": jnp.asarray(c.mask),
-        }
-    if spec.dihedral is not None and spec.dihedral.mask.sum() > 0:
-        dh = spec.dihedral
-        prepared["dihedral"] = {
-            "idx": jnp.asarray(dh.idx, dtype=jnp.int32),
-            "phi0": jnp.asarray(dh.phi0),
-            "slack": jnp.asarray(dh.slack),
-            "weight": jnp.asarray(dh.weight),
-            "mask": jnp.asarray(dh.mask),
-        }
-    if spec.vdw is not None and spec.vdw.mask.sum() > 0:
-        v = spec.vdw
-        prepared["vdw"] = {
-            "idx": jnp.asarray(v.idx, dtype=jnp.int32),
-            "r_min": jnp.asarray(v.r_min),
-            "weight": jnp.asarray(v.weight),
-            "mask": jnp.asarray(v.mask),
-        }
-    if spec.distance is not None and spec.distance.mask.sum() > 0:
-        d = spec.distance
-        prepared["distance"] = {
-            "grp1_idx": jnp.asarray(d.grp1_idx, dtype=jnp.int32),
-            "grp2_idx": jnp.asarray(d.grp2_idx, dtype=jnp.int32),
-            "grp1_mask": jnp.asarray(d.grp1_mask),
-            "grp2_mask": jnp.asarray(d.grp2_mask),
-            "target1": jnp.asarray(d.target1),
-            "target2": jnp.asarray(d.target2),
-            "dist_type": jnp.asarray(d.dist_type, dtype=jnp.int32),
-            "mask": jnp.asarray(d.mask),
-            "start_sigma": jnp.asarray(d.start_sigma),
-        }
-    if spec.rmsd is not None and spec.rmsd.mask.sum() > 0:
-        r = spec.rmsd
-        prepared["rmsd"] = {
-            "fit_idx": jnp.asarray(r.fit_idx, dtype=jnp.int32),
-            "fit_mask": jnp.asarray(r.fit_mask),
-            "fit_ref": jnp.asarray(r.fit_ref),
-            "calc_idx": jnp.asarray(r.calc_idx, dtype=jnp.int32),
-            "calc_mask": jnp.asarray(r.calc_mask),
-            "calc_ref": jnp.asarray(r.calc_ref),
-            "target_rmsd": jnp.asarray(r.target_rmsd),
-            "weight": jnp.asarray(r.weight),
-            "mask": jnp.asarray(r.mask),
-            "start_sigma": jnp.asarray(r.start_sigma),
-        }
-    return prepared
+    return pack_spec(
+        spec, lambda x: jnp.asarray(x, dtype=jnp.int32), lambda x: jnp.asarray(x)
+    )

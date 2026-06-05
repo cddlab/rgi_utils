@@ -17,12 +17,21 @@ import jax
 import jax.numpy as jnp
 
 from rgi_utils.energy import jax_energy
+from rgi_utils.optim._cg_config import (
+    ARMIJO_C1,
+    BACKTRACK,
+    EPS,
+    FTOL,
+    GG_FLOOR,
+    GTOL,
+    MAX_LS,
+)
 from rgi_utils.optim.distance_shift import apply_distance_shift_jax
 
 logger = logging.getLogger(__name__)
 
 
-def _cg_minimize(energy_fn, x0, max_iter, max_ls=20, gtol=1e-7, ftol=1e-9):
+def _cg_minimize(energy_fn, x0, max_iter, max_ls=MAX_LS, gtol=GTOL, ftol=FTOL):
     """Pure-jax nonlinear conjugate gradient (Polak-Ribiere+, backtracking Armijo line
     search, restart on non-descent) — a port of the torch ``TorchRestraintOptimizer.
     _minimize_cg`` built from ``jax.lax.while_loop`` so it stays JIT/scan/vmap-able.
@@ -31,7 +40,6 @@ def _cg_minimize(energy_fn, x0, max_iter, max_ls=20, gtol=1e-7, ftol=1e-9):
     is the same algorithm everywhere and (unlike jaxopt NonlinearCG) it converges the
     RMSD energy."""
     vg = jax.value_and_grad(energy_fn)
-    eps = 1e-12
 
     def line_search(x_base, d, f, g_proto, slope):
         def cond(s):
@@ -42,8 +50,8 @@ def _cg_minimize(energy_fn, x0, max_iter, max_ls=20, gtol=1e-7, ftol=1e-9):
             step, _acc, _x, _f, _g, i = s
             xt = x_base + step * d
             ft, gt = vg(xt)
-            ok = ft <= f + 1e-4 * step * slope  # Armijo sufficient decrease
-            return (jnp.where(ok, step, step * 0.5), ok, xt, ft, gt, i + 1)
+            ok = ft <= f + ARMIJO_C1 * step * slope  # Armijo sufficient decrease
+            return (jnp.where(ok, step, step * BACKTRACK), ok, xt, ft, gt, i + 1)
 
         init = (jnp.asarray(1.0), jnp.asarray(False), x_base, f, g_proto, jnp.asarray(0))
         _s, accepted, xt, ft, gt, _i = jax.lax.while_loop(cond, body, init)
@@ -59,7 +67,7 @@ def _cg_minimize(energy_fn, x0, max_iter, max_ls=20, gtol=1e-7, ftol=1e-9):
 
     def body(st):
         x, f, g, d, gg, it, _stop = st
-        bad = jnp.logical_or(jnp.logical_not(jnp.isfinite(gg)), gg <= 1e-20)
+        bad = jnp.logical_or(jnp.logical_not(jnp.isfinite(gg)), gg <= GG_FLOOR)
         d = jnp.where(jnp.sum(d * g) >= 0.0, -g, d)  # restart if not a descent dir
         # On a degenerate iteration (non-finite / underflowed gg) zero the search
         # direction so the line search accepts step 0 in ONE eval (no wasted
@@ -71,7 +79,7 @@ def _cg_minimize(energy_fn, x0, max_iter, max_ls=20, gtol=1e-7, ftol=1e-9):
             jnp.max(jnp.abs(gt)) < gtol,
             jnp.abs(ft - f) < ftol * (1.0 + jnp.abs(f)),
         )
-        beta = jnp.maximum(0.0, jnp.sum(gt * (gt - g)) / (gg + eps))  # PR+
+        beta = jnp.maximum(0.0, jnp.sum(gt * (gt - g)) / (gg + EPS))  # PR+
         use = jnp.logical_and(accepted, jnp.logical_not(bad))
         nx = jnp.where(use, xt, x)
         nf = jnp.where(use, ft, f)

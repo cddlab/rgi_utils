@@ -23,11 +23,20 @@ import math
 import torch
 
 from rgi_utils.energy import torch_energy
+from rgi_utils.optim._cg_config import (
+    ARMIJO_C1,
+    BACKTRACK,
+    EPS,
+    FTOL,
+    GG_FLOOR,
+    GTOL,
+    MAX_LS,
+)
 from rgi_utils.optim.distance_shift import apply_distance_shift_torch
 
 logger = logging.getLogger(__name__)
 
-_EPS = 1e-12
+_EPS = 1e-12  # vdw distance-floor guard (the CG solver uses the shared EPS)
 
 
 class TorchRestraintOptimizer:
@@ -186,9 +195,9 @@ class TorchRestraintOptimizer:
         active,
         energy_fn,
         max_iter,
-        max_ls: int = 20,
-        gtol: float = 1e-7,
-        ftol: float = 1e-9,
+        max_ls: int = MAX_LS,
+        gtol: float = GTOL,
+        ftol: float = FTOL,
     ) -> None:
         """In-place nonlinear conjugate gradient (Polak-Ribiere+, backtracking
         Armijo line search). Matches the jax backend's pure-jax CG (a port of this
@@ -221,7 +230,7 @@ class TorchRestraintOptimizer:
             # one host read for both top-of-iteration scalars (gg + descent slope)
             dg = torch.sum(d * g)
             gg_v, dg_v = torch.stack((gg, dg)).tolist()
-            if not math.isfinite(gg_v) or gg_v <= 1e-20:
+            if not math.isfinite(gg_v) or gg_v <= GG_FLOOR:
                 break
             if dg_v >= 0.0:  # not a descent direction -> restart (rare)
                 d = g.neg()
@@ -234,10 +243,10 @@ class TorchRestraintOptimizer:
                     active.copy_(x0 + step * d)
                 e_t, g_new = value_grad()
                 f_new = float(e_t)  # 1 sync/trial (Armijo needs the value)
-                if f_new <= f + 1e-4 * step * slope:  # Armijo sufficient decrease
+                if f_new <= f + ARMIJO_C1 * step * slope:  # Armijo sufficient decrease
                     accepted = True
                     break
-                step *= 0.5
+                step *= BACKTRACK
             if not accepted:  # line search exhausted -> converged / stuck
                 with torch.no_grad():
                     active.copy_(x0)
@@ -247,7 +256,7 @@ class TorchRestraintOptimizer:
                 (g_new.abs().max(), torch.sum(g_new * (g_new - g)))
             ).tolist()
             converged = gmax_v < gtol or abs(f_new - f) < ftol * (1.0 + abs(f))
-            beta = max(0.0, pr_num_v / (gg_v + _EPS))  # gg_v = this iter's gg
+            beta = max(0.0, pr_num_v / (gg_v + EPS))  # gg_v = this iter's gg
             d = g_new.neg() + beta * d  # Polak-Ribiere+ (auto-restart when beta<0)
             f, g, gg = f_new, g_new, torch.sum(g_new * g_new)
             if converged:

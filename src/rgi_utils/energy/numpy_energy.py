@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from rgi_utils.energy._terms import BREAKDOWN_KEYS, pack_spec, term_energies
+
 _EPS = 1e-12
 
 
@@ -203,248 +205,65 @@ def rmsd_energy(
     return np.sum(weight * (rmsd - target_rmsd) ** 2 * mask)
 
 
+# leaf energy functions by name, for the shared term_energies dispatch
+_LEAF_FNS = {
+    "bond_energy": bond_energy,
+    "angle_energy": angle_energy,
+    "chiral_energy": chiral_energy,
+    "dihedral_energy": dihedral_energy,
+    "vdw_energy": vdw_energy,
+    "distance_energy": distance_energy,
+    "rmsd_energy": rmsd_energy,
+}
+
+
+def _gates(prepared, sigma):
+    """The conformer gate ``cg`` and a per-restraint ``sigma_gate`` for this noise
+    level (numpy: a plain boolean multiplier; identity when ``sigma is None``)."""
+    cg = 1.0 if sigma is None else (sigma <= prepared.get("conf_start_sigma", 1e30))
+
+    def sigma_gate(start_sigma, mask):
+        return mask if sigma is None else mask * (sigma <= start_sigma)
+
+    return cg, sigma_gate
+
+
 def total_energy(positions, prepared, sigma=None, include_distance=True):
     """Sum all restraint energies. ``prepared`` is the dict from ``prepare_spec``.
 
-    ``sigma`` is the current diffusion noise level: each restraint contributes
-    only when ``sigma <= start_sigma`` (a 0/1 gate folded into its mask). The
-    conformer terms (bond/angle/chiral/vdw) share one ``conf_start_sigma``; each
-    distance restraint has its own. ``sigma=None`` disables gating (all active).
+    ``sigma`` is the current diffusion noise level: each restraint contributes only
+    when ``sigma <= start_sigma`` (a 0/1 gate folded into its mask). The conformer
+    terms (bond/angle/chiral/dihedral/vdw) share one ``conf_start_sigma``; distance
+    and RMSD have their own per-restraint gate. RMSD is summed regardless of
+    ``include_distance`` (the CG solver calls with ``include_distance=False``).
+    ``sigma=None`` disables gating (all active).
     """
-    cg = 1.0 if sigma is None else (sigma <= prepared.get("conf_start_sigma", 1e30))
+    cg, sigma_gate = _gates(prepared, sigma)
     ene = 0.0
-    if "bond" in prepared:
-        b = prepared["bond"]
-        ene = ene + bond_energy(
-            positions,
-            b["idx"],
-            b["r0"],
-            b["slack"],
-            b["weight"],
-            b["half"],
-            b["mask"] * cg,
-        )
-    if "angle" in prepared:
-        a = prepared["angle"]
-        ene = ene + angle_energy(
-            positions, a["idx"], a["th0"], a["slack"], a["weight"], a["mask"] * cg
-        )
-    if "chiral" in prepared:
-        c = prepared["chiral"]
-        ene = ene + chiral_energy(
-            positions, c["idx"], c["vol0"], c["slack"], c["weight"], c["mask"] * cg
-        )
-    if "dihedral" in prepared:
-        dh = prepared["dihedral"]
-        ene = ene + dihedral_energy(
-            positions, dh["idx"], dh["phi0"], dh["slack"], dh["weight"], dh["mask"] * cg
-        )
-    if "vdw" in prepared:
-        v = prepared["vdw"]
-        ene = ene + vdw_energy(
-            positions, v["idx"], v["r_min"], v["weight"], v["mask"] * cg
-        )
-    if include_distance and "distance" in prepared:
-        d = prepared["distance"]
-        dmask = d["mask"]
-        if sigma is not None:
-            dmask = dmask * (sigma <= d["start_sigma"])
-        ene = ene + distance_energy(
-            positions,
-            d["grp1_idx"],
-            d["grp2_idx"],
-            d["grp1_mask"],
-            d["grp2_mask"],
-            d["target1"],
-            d["target2"],
-            d["dist_type"],
-            dmask,
-        )
-    # RMSD is optimised by the CG solver (not closed-form like distance), so it is
-    # summed UNCONDITIONALLY of include_distance — the solver calls total_energy with
-    # include_distance=False and must still see the RMSD term.
-    if "rmsd" in prepared:
-        r = prepared["rmsd"]
-        rmask = r["mask"]
-        if sigma is not None:
-            rmask = rmask * (sigma <= r["start_sigma"])
-        ene = ene + rmsd_energy(
-            positions,
-            r["fit_idx"], r["fit_mask"], r["fit_ref"],
-            r["calc_idx"], r["calc_mask"], r["calc_ref"],
-            r["target_rmsd"], r["weight"], rmask,
-        )
+    for v in term_energies(
+        _LEAF_FNS, prepared, positions, cg, sigma_gate, include_distance
+    ).values():
+        ene = ene + v
     return ene
 
 
 def energy_breakdown(positions, prepared, sigma=None):
-    """Per-term restraint energies (same maths + gating as ``total_energy``).
-
-    Returns ``{bond, angle, chiral, vdw, distance}`` floats so callers can report
-    how much each restraint type contributes (e.g. ``finalize`` logging). Terms
-    absent from ``prepared`` stay 0.0.
-    """
-    cg = 1.0 if sigma is None else (sigma <= prepared.get("conf_start_sigma", 1e30))
-    out = {
-        "bond": 0.0,
-        "angle": 0.0,
-        "chiral": 0.0,
-        "dihedral": 0.0,
-        "vdw": 0.0,
-        "distance": 0.0,
-        "rmsd": 0.0,
-    }
-    if "bond" in prepared:
-        b = prepared["bond"]
-        out["bond"] = float(
-            bond_energy(
-                positions,
-                b["idx"],
-                b["r0"],
-                b["slack"],
-                b["weight"],
-                b["half"],
-                b["mask"] * cg,
-            )
-        )
-    if "angle" in prepared:
-        a = prepared["angle"]
-        out["angle"] = float(
-            angle_energy(
-                positions, a["idx"], a["th0"], a["slack"], a["weight"], a["mask"] * cg
-            )
-        )
-    if "chiral" in prepared:
-        c = prepared["chiral"]
-        out["chiral"] = float(
-            chiral_energy(
-                positions, c["idx"], c["vol0"], c["slack"], c["weight"], c["mask"] * cg
-            )
-        )
-    if "dihedral" in prepared:
-        dh = prepared["dihedral"]
-        out["dihedral"] = float(
-            dihedral_energy(
-                positions,
-                dh["idx"],
-                dh["phi0"],
-                dh["slack"],
-                dh["weight"],
-                dh["mask"] * cg,
-            )
-        )
-    if "vdw" in prepared:
-        v = prepared["vdw"]
-        out["vdw"] = float(
-            vdw_energy(positions, v["idx"], v["r_min"], v["weight"], v["mask"] * cg)
-        )
-    if "distance" in prepared:
-        d = prepared["distance"]
-        dmask = d["mask"]
-        if sigma is not None:
-            dmask = dmask * (sigma <= d["start_sigma"])
-        out["distance"] = float(
-            distance_energy(
-                positions,
-                d["grp1_idx"],
-                d["grp2_idx"],
-                d["grp1_mask"],
-                d["grp2_mask"],
-                d["target1"],
-                d["target2"],
-                d["dist_type"],
-                dmask,
-            )
-        )
-    if "rmsd" in prepared:
-        r = prepared["rmsd"]
-        rmask = r["mask"]
-        if sigma is not None:
-            rmask = rmask * (sigma <= r["start_sigma"])
-        out["rmsd"] = float(
-            rmsd_energy(
-                positions,
-                r["fit_idx"], r["fit_mask"], r["fit_ref"],
-                r["calc_idx"], r["calc_mask"], r["calc_ref"],
-                r["target_rmsd"], r["weight"], rmask,
-            )
-        )
+    """Per-term restraint energies (same maths + gating as ``total_energy``), as a
+    ``{bond, angle, chiral, dihedral, vdw, distance, rmsd}`` float dict for callers
+    that report each term's contribution (e.g. ``finalize`` logging)."""
+    cg, sigma_gate = _gates(prepared, sigma)
+    out = dict.fromkeys(BREAKDOWN_KEYS, 0.0)
+    for k, v in term_energies(
+        _LEAF_FNS, prepared, positions, cg, sigma_gate, include_distance=True
+    ).items():
+        out[k] = float(v)
     return out
 
 
 def prepare_spec(spec):
     """Convert a backend-agnostic ``RestraintSpec`` into NumPy arrays (dict form)."""
-    prepared = {"conf_start_sigma": float(getattr(spec, "conf_start_sigma", -1.0))}
-    if spec.bond is not None and spec.bond.mask.sum() > 0:
-        b = spec.bond
-        prepared["bond"] = {
-            "idx": np.asarray(b.idx, dtype=np.int64),
-            "r0": np.asarray(b.r0, dtype=np.float64),
-            "slack": np.asarray(b.slack, dtype=np.float64),
-            "weight": np.asarray(b.weight, dtype=np.float64),
-            "half": np.asarray(b.half, dtype=np.float64),
-            "mask": np.asarray(b.mask, dtype=np.float64),
-        }
-    if spec.angle is not None and spec.angle.mask.sum() > 0:
-        a = spec.angle
-        prepared["angle"] = {
-            "idx": np.asarray(a.idx, dtype=np.int64),
-            "th0": np.asarray(a.th0, dtype=np.float64),
-            "slack": np.asarray(a.slack, dtype=np.float64),
-            "weight": np.asarray(a.weight, dtype=np.float64),
-            "mask": np.asarray(a.mask, dtype=np.float64),
-        }
-    if spec.chiral is not None and spec.chiral.mask.sum() > 0:
-        c = spec.chiral
-        prepared["chiral"] = {
-            "idx": np.asarray(c.idx, dtype=np.int64),
-            "vol0": np.asarray(c.vol0, dtype=np.float64),
-            "slack": np.asarray(c.slack, dtype=np.float64),
-            "weight": np.asarray(c.weight, dtype=np.float64),
-            "mask": np.asarray(c.mask, dtype=np.float64),
-        }
-    if spec.dihedral is not None and spec.dihedral.mask.sum() > 0:
-        dh = spec.dihedral
-        prepared["dihedral"] = {
-            "idx": np.asarray(dh.idx, dtype=np.int64),
-            "phi0": np.asarray(dh.phi0, dtype=np.float64),
-            "slack": np.asarray(dh.slack, dtype=np.float64),
-            "weight": np.asarray(dh.weight, dtype=np.float64),
-            "mask": np.asarray(dh.mask, dtype=np.float64),
-        }
-    if spec.vdw is not None and spec.vdw.mask.sum() > 0:
-        v = spec.vdw
-        prepared["vdw"] = {
-            "idx": np.asarray(v.idx, dtype=np.int64),
-            "r_min": np.asarray(v.r_min, dtype=np.float64),
-            "weight": np.asarray(v.weight, dtype=np.float64),
-            "mask": np.asarray(v.mask, dtype=np.float64),
-        }
-    if spec.distance is not None and spec.distance.mask.sum() > 0:
-        d = spec.distance
-        prepared["distance"] = {
-            "grp1_idx": np.asarray(d.grp1_idx, dtype=np.int64),
-            "grp2_idx": np.asarray(d.grp2_idx, dtype=np.int64),
-            "grp1_mask": np.asarray(d.grp1_mask, dtype=np.float64),
-            "grp2_mask": np.asarray(d.grp2_mask, dtype=np.float64),
-            "target1": np.asarray(d.target1, dtype=np.float64),
-            "target2": np.asarray(d.target2, dtype=np.float64),
-            "dist_type": np.asarray(d.dist_type, dtype=np.int64),
-            "mask": np.asarray(d.mask, dtype=np.float64),
-            "start_sigma": np.asarray(d.start_sigma, dtype=np.float64),
-        }
-    if spec.rmsd is not None and spec.rmsd.mask.sum() > 0:
-        r = spec.rmsd
-        prepared["rmsd"] = {
-            "fit_idx": np.asarray(r.fit_idx, dtype=np.int64),
-            "fit_mask": np.asarray(r.fit_mask, dtype=np.float64),
-            "fit_ref": np.asarray(r.fit_ref, dtype=np.float64),
-            "calc_idx": np.asarray(r.calc_idx, dtype=np.int64),
-            "calc_mask": np.asarray(r.calc_mask, dtype=np.float64),
-            "calc_ref": np.asarray(r.calc_ref, dtype=np.float64),
-            "target_rmsd": np.asarray(r.target_rmsd, dtype=np.float64),
-            "weight": np.asarray(r.weight, dtype=np.float64),
-            "mask": np.asarray(r.mask, dtype=np.float64),
-            "start_sigma": np.asarray(r.start_sigma, dtype=np.float64),
-        }
-    return prepared
+    return pack_spec(
+        spec,
+        lambda x: np.asarray(x, dtype=np.int64),
+        lambda x: np.asarray(x, dtype=np.float64),
+    )

@@ -58,27 +58,36 @@ def apply_distance_shift_numpy(active, d, sigma=None):
         diff = com2 - com1
         dist = np.sqrt((diff * diff).sum(-1) + _EPS)
         u = diff / (dist[..., None] + _EPS)
-        delta = _delta_np(dist, t1, t2, dt) * gate
+        delta = _delta(dist, t1, t2, dt, np.where, np.zeros_like) * gate
         com1_shift = (-delta * (n2 / denom))[..., None] * u
         com2_shift = (delta * (n1 / denom))[..., None] * u
-        pa1 = (com1_shift[..., :, None, :] * m1[..., None]).reshape(
-            *com1_shift.shape[:-2], -1, 3
-        )
-        pa2 = (com2_shift[..., :, None, :] * m2[..., None]).reshape(
-            *com2_shift.shape[:-2], -1, 3
-        )
+        pa1 = _per_atom_shift(com1_shift, m1)
+        pa2 = _per_atom_shift(com2_shift, m2)
         _scatter_add_numpy(active, idx1.reshape(-1), pa1)
         _scatter_add_numpy(active, idx2.reshape(-1), pa2)
     return active
 
 
-def _delta_np(dist, t1, t2, dt):
-    zero = np.zeros_like(dist)
+def _delta(dist, t1, t2, dt, where, zeros_like):
+    """Per-restraint COM-distance correction by type (0=harmonic, 1=flat-bottomed,
+    2=lower-bound, 3=upper-bound). ``where``/``zeros_like`` are the backend's ops, so
+    this one formula serves numpy/torch/jax."""
+    zero = zeros_like(dist)
     dh = t1 - dist
-    df = np.where(dist < t1, t1 - dist, np.where(dist > t2, t2 - dist, zero))
-    dl = np.where(dist < t1, t1 - dist, zero)
-    du = np.where(dist > t2, t2 - dist, zero)
-    return np.where(dt == 0, dh, np.where(dt == 1, df, np.where(dt == 2, dl, du)))
+    df = where(dist < t1, t1 - dist, where(dist > t2, t2 - dist, zero))
+    dl = where(dist < t1, t1 - dist, zero)
+    du = where(dist > t2, t2 - dist, zero)
+    return where(dt == 0, dh, where(dt == 1, df, where(dt == 2, dl, du)))
+
+
+def _per_atom_shift(com_shift, m):
+    """Broadcast a per-restraint COM shift ``(..., n_dist, 3)`` to per-(restraint,
+    atom) via the group mask, then flatten the ``(n_dist, max_grp)`` dims so it lines
+    up with the flattened scatter index. Pure ``*``/``reshape``, so the one helper
+    works on every backend (numpy/torch/jax arrays alike)."""
+    return (com_shift[..., :, None, :] * m[..., None]).reshape(
+        *com_shift.shape[:-2], -1, 3
+    )
 
 
 def _scatter_add_numpy(active, flat_idx, vals):
@@ -119,23 +128,11 @@ def apply_distance_shift_torch(active, d, sigma=None):
         diff = com2 - com1
         dist = torch.sqrt((diff * diff).sum(-1) + _EPS)
         u = diff / (dist[..., None] + _EPS)
-        zero = torch.zeros_like(dist)
-        dh = t1 - dist
-        df = torch.where(dist < t1, t1 - dist, torch.where(dist > t2, t2 - dist, zero))
-        dl = torch.where(dist < t1, t1 - dist, zero)
-        du = torch.where(dist > t2, t2 - dist, zero)
-        delta = torch.where(
-            dt == 0, dh, torch.where(dt == 1, df, torch.where(dt == 2, dl, du))
-        )
-        delta = delta * gate
+        delta = _delta(dist, t1, t2, dt, torch.where, torch.zeros_like) * gate
         com1_shift = (-delta * (n2 / denom))[..., None] * u
         com2_shift = (delta * (n1 / denom))[..., None] * u
-        pa1 = (com1_shift[..., :, None, :] * m1[..., None]).reshape(
-            *com1_shift.shape[:-2], -1, 3
-        )
-        pa2 = (com2_shift[..., :, None, :] * m2[..., None]).reshape(
-            *com2_shift.shape[:-2], -1, 3
-        )
+        pa1 = _per_atom_shift(com1_shift, m1)
+        pa2 = _per_atom_shift(com2_shift, m2)
         active = active.index_add(-2, fidx1, pa1.to(active.dtype))
         active = active.index_add(-2, fidx2, pa2.to(active.dtype))
     return active
@@ -165,23 +162,11 @@ def apply_distance_shift_jax(active, d, sigma):
         diff = com2 - com1
         dist = jnp.sqrt((diff * diff).sum(-1) + _EPS)
         u = diff / (dist[..., None] + _EPS)
-        zero = jnp.zeros_like(dist)
-        dh = t1 - dist
-        df = jnp.where(dist < t1, t1 - dist, jnp.where(dist > t2, t2 - dist, zero))
-        dl = jnp.where(dist < t1, t1 - dist, zero)
-        du = jnp.where(dist > t2, t2 - dist, zero)
-        delta = jnp.where(
-            dt == 0, dh, jnp.where(dt == 1, df, jnp.where(dt == 2, dl, du))
-        )
-        delta = delta * gate
+        delta = _delta(dist, t1, t2, dt, jnp.where, jnp.zeros_like) * gate
         com1_shift = (-delta * (n2 / denom))[..., None] * u
         com2_shift = (delta * (n1 / denom))[..., None] * u
-        pa1 = (com1_shift[..., :, None, :] * m1[..., None]).reshape(
-            *com1_shift.shape[:-2], -1, 3
-        )
-        pa2 = (com2_shift[..., :, None, :] * m2[..., None]).reshape(
-            *com2_shift.shape[:-2], -1, 3
-        )
+        pa1 = _per_atom_shift(com1_shift, m1)
+        pa2 = _per_atom_shift(com2_shift, m2)
         active = active.at[..., fidx1, :].add(pa1)
         active = active.at[..., fidx2, :].add(pa2)
     return active
