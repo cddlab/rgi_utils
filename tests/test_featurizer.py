@@ -23,10 +23,17 @@ def test_multiligand_no_collision():
     m1, c1 = _ethane()
     m2, c2 = _ethane()
     n = m1.GetNumAtoms()
-    lc1 = LigandConf(mol=m1, conf_coords=c1, global_indices=np.arange(n))
-    lc2 = LigandConf(mol=m2, conf_coords=c2, global_indices=np.arange(n) + 100)
+    lc1 = LigandConf(
+        mol=m1, conf_coords=c1, global_indices=np.arange(n), conformer_restraints=True
+    )
+    lc2 = LigandConf(
+        mol=m2,
+        conf_coords=c2,
+        global_indices=np.arange(n) + 100,
+        conformer_restraints=True,
+    )
 
-    spec = build_spec([lc1, lc2], [], {})
+    spec = build_spec([lc1, lc2], [], {"bond": {"weight": 0.05}})
 
     assert spec.bond is not None
     # both ligands contribute their bonds, with no overlap
@@ -42,7 +49,9 @@ def test_multiligand_no_collision():
 def test_distance_and_conformer_active_union():
     m, c = _ethane()
     n = m.GetNumAtoms()
-    lc = LigandConf(mol=m, conf_coords=c, global_indices=np.arange(n))
+    lc = LigandConf(
+        mol=m, conf_coords=c, global_indices=np.arange(n), conformer_restraints=True
+    )
 
     # a distance restraint referencing atoms outside the ligand
     dd = DistanceData()
@@ -57,7 +66,7 @@ def test_distance_and_conformer_active_union():
     dd.target_sites1 = [50]
     dd.target_sites2 = [60]
 
-    spec = build_spec([lc], [dd], {})
+    spec = build_spec([lc], [dd], {"bond": {"weight": 0.05}})
 
     # active sites = ligand atoms (conformer) UNION distance atoms
     assert spec.distance is not None
@@ -71,7 +80,9 @@ def test_distance_and_conformer_active_union():
 def test_vdw_config_protein_background():
     m, c = _ethane()
     n = m.GetNumAtoms()
-    lc = LigandConf(mol=m, conf_coords=c, global_indices=np.arange(n))
+    lc = LigandConf(
+        mol=m, conf_coords=c, global_indices=np.arange(n), conformer_restraints=True
+    )
 
     n_atom = n + 3
     elements = np.zeros(n_atom, dtype=np.int64)
@@ -104,7 +115,9 @@ def test_intramolecular_vdw_static_arrays():
     m = Chem.RemoveHs(m)  # 4 heavy atoms
     n = m.GetNumAtoms()
     c = np.asarray(m.GetConformer().GetPositions())
-    lc = LigandConf(mol=m, conf_coords=c, global_indices=np.arange(n))
+    lc = LigandConf(
+        mol=m, conf_coords=c, global_indices=np.arange(n), conformer_restraints=True
+    )
 
     spec = build_spec(
         [lc], [], {"vdw": {"weight": 1.0, "mode": "intramolecular", "dmax": 10.0}}
