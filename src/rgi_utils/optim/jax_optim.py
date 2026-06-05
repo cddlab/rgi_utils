@@ -67,7 +67,15 @@ def make_minimizer(
             def energy_fn(a):
                 return jax_energy.total_energy(a, prepared, sigma, include_distance=False)
 
-            solver_cls = jaxopt.NonlinearCG if is_cg else jaxopt.LBFGS
+            # RMSD's energy fixes the Kabsch rotation per evaluation (stop_gradient),
+            # so its gradient is inconsistent with the recomputed-rotation value across
+            # a step; NonlinearCG's conjugacy then breaks and backtracking rejects every
+            # trial -> ~no progress (AF3 RMSD stuck at ~14 A). LBFGS (quasi-Newton) is
+            # robust to this and converges, so use it whenever an RMSD restraint is
+            # present (it also handles the conformer terms). Conformer-only keeps the
+            # configured NonlinearCG. (The torch backend's custom CG already converges.)
+            use_lbfgs = (not is_cg) or has_rmsd
+            solver_cls = jaxopt.LBFGS if use_lbfgs else jaxopt.NonlinearCG
             solver = solver_cls(
                 fun=energy_fn,
                 maxiter=max_iter,

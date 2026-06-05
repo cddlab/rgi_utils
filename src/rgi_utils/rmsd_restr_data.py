@@ -127,6 +127,15 @@ class RmsdData:
             )
         tgt_named = all(a.name for a in tgt)
         ref_named = all(r.name for r in ref)
+        logger.info(
+            "rmsd %s pairing=%s target=%d ref=%d; target names[:4]=%s ref names[:4]=%s",
+            tag,
+            "identity" if (tgt_named and ref_named) else "order",
+            len(tgt),
+            len(ref),
+            [a.name for a in tgt[:4]],
+            [r.name for r in ref[:4]],
+        )
         if tgt_named and ref_named:
             refmap = {(r.chain, r.resid, r.name): (r.x, r.y, r.z) for r in ref}
             sites, coords = [], []
