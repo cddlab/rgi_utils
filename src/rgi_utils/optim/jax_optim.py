@@ -17,6 +17,7 @@ import jax
 import jax.numpy as jnp
 
 from rgi_utils.energy import jax_energy
+from rgi_utils.optim.distance_shift import apply_distance_shift_jax
 
 logger = logging.getLogger(__name__)
 
@@ -47,26 +48,34 @@ def make_minimizer(
     # eps-regularised distance makes the gradient vanish (a false stationary
     # point) — backtracking rejects that step.
     is_cg = (method or "lbfgs").lower() in ("cg", "ncg", "nonlinear-cg", "nonlinearcg")
+    has_dist = spec.has_distance()
+    has_conf = spec.has_conformer()
+    dist_prepared = prepared.get("distance")
 
     def _descend(coords, sigma):
-        # Build the (sigma-gated) energy + solver per call so each restraint is
-        # active only when sigma <= its start_sigma (folded into the energy mask).
-        def energy_fn(active):
-            return jax_energy.total_energy(active, prepared, sigma)
-
-        solver_cls = jaxopt.NonlinearCG if is_cg else jaxopt.LBFGS
-        solver = solver_cls(
-            fun=energy_fn,
-            maxiter=max_iter,
-            linesearch="backtracking",
-            implicit_diff=False,
-        )
         active = coords[..., active_idx, :]
-        active_opt = solver.run(active).params
-        # Robustness: a degenerate geometry can still make a solver step diverge;
-        # keep the input coordinates if the result is non-finite.
-        active_opt = jnp.where(jnp.all(jnp.isfinite(active_opt)), active_opt, active)
-        return coords.at[..., active_idx, :].set(active_opt)
+        # 1) Distance restraints: closed-form rigid COM translation (pure jnp, no
+        #    solver) -- a COM-distance restraint is 1-DOF. Gated per-restraint inside.
+        if has_dist:
+            active = apply_distance_shift_jax(active, dist_prepared, sigma)
+        # 2) Conformer restraints: jaxopt on the conformer-only energy (distance is
+        #    applied above). Skipped entirely for a distance-only spec.
+        if has_conf:
+
+            def energy_fn(a):
+                return jax_energy.total_energy(a, prepared, sigma, include_distance=False)
+
+            solver_cls = jaxopt.NonlinearCG if is_cg else jaxopt.LBFGS
+            solver = solver_cls(
+                fun=energy_fn,
+                maxiter=max_iter,
+                linesearch="backtracking",
+                implicit_diff=False,
+            )
+            opt = solver.run(active).params
+            # keep the input coordinates if the solver diverged to non-finite
+            active = jnp.where(jnp.all(jnp.isfinite(opt)), opt, active)
+        return coords.at[..., active_idx, :].set(active)
 
     def minimize(coords, sigma):
         if not spec.is_active():

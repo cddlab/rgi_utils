@@ -13,6 +13,7 @@ import numpy as np
 from scipy import optimize
 
 from rgi_utils.energy import numpy_energy
+from rgi_utils.optim.distance_shift import apply_distance_shift_numpy
 
 logger = logging.getLogger(__name__)
 
@@ -30,29 +31,42 @@ class NumpyRestraintOptimizer:
         self._prepared_t = None
 
     def minimize(self, coords, sigma=None, start_sigma=None, max_iter=None):
-        """Optimize ``coords`` (..., n_atom, 3) numpy array in-place. Restraints
-        are gated per-term on ``sigma <= start_sigma`` inside the energy."""
+        """Optimize ``coords`` (..., n_atom, 3) numpy array in-place. Distance
+        restraints are applied in closed form (rigid COM shift); conformer terms are
+        optimised with scipy. Each restraint is gated on ``sigma <= start_sigma``."""
         if not self.spec.is_active():
             return coords
         if sigma is not None and sigma > self.spec.max_start_sigma():
             return coords
-        active = coords[..., self.active_sites, :]
-        shape = active.shape
-        prepared = self.prepared
+        active = np.array(coords[..., self.active_sites, :], dtype=np.float64, copy=True)
 
-        def f(x):
-            return float(numpy_energy.total_energy(x.reshape(shape), prepared, sigma))
+        # 1) Distance restraints: closed-form rigid COM translation (no solver).
+        if self.spec.has_distance():
+            active = apply_distance_shift_numpy(active, self.prepared["distance"], sigma)
 
-        jac = self._make_jac(shape, sigma)
-        x0 = np.asarray(active, dtype=np.float64).reshape(-1)
-        res = optimize.minimize(
-            f,
-            x0,
-            jac=jac,
-            method=self._scipy_method(),
-            options={"maxiter": max_iter or self.max_iter},
-        )
-        coords[..., self.active_sites, :] = res.x.reshape(shape)
+        # 2) Conformer restraints: scipy on the conformer-only energy.
+        if self.spec.has_conformer():
+            shape = active.shape
+            prepared = self.prepared
+
+            def f(x):
+                return float(
+                    numpy_energy.total_energy(
+                        x.reshape(shape), prepared, sigma, include_distance=False
+                    )
+                )
+
+            jac = self._make_jac(shape, sigma)
+            res = optimize.minimize(
+                f,
+                active.reshape(-1),
+                jac=jac,
+                method=self._scipy_method(),
+                options={"maxiter": max_iter or self.max_iter},
+            )
+            active = res.x.reshape(shape)
+
+        coords[..., self.active_sites, :] = active
         return coords
 
     def _scipy_method(self) -> str:
@@ -84,7 +98,9 @@ class NumpyRestraintOptimizer:
                 xt = torch.tensor(
                     x.reshape(shape), dtype=torch.float64, requires_grad=True
                 )
-                torch_energy.total_energy(xt, prepared_t, sigma).backward()
+                torch_energy.total_energy(
+                    xt, prepared_t, sigma, include_distance=False
+                ).backward()
                 g = xt.grad.detach().cpu().numpy()
             return np.asarray(g, dtype=np.float64).reshape(-1)
 

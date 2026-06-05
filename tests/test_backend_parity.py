@@ -257,3 +257,42 @@ def test_dihedral_degenerate_gradient_parity():
         assert np.allclose(g_t, g_j, rtol=1e-5, atol=1e-6), (
             f"{name}: torch/jax grad mismatch, max|d|={np.abs(g_t - g_j).max()}"
         )
+
+
+def test_distance_closed_form_backend_parity():
+    """The closed-form COM-distance shift agrees across numpy/torch/jax and lands the
+    COM separation exactly on target in one step (this replaced the per-atom CG)."""
+    torch = pytest.importorskip("torch")
+    jnp = pytest.importorskip("jax.numpy")
+    from rgi_utils.optim import distance_shift as ds
+
+    d_np = dict(
+        grp1_idx=np.array([[0, 1]]),
+        grp2_idx=np.array([[2, 3]]),
+        grp1_mask=np.array([[1.0, 1.0]]),
+        grp2_mask=np.array([[1.0, 1.0]]),
+        target1=np.array([5.0]),
+        target2=np.array([0.0]),
+        dist_type=np.array([0]),
+        mask=np.array([1.0]),
+        start_sigma=np.array([1e30]),
+    )
+    active = np.zeros((4, 3))
+    active[2:, 0] = 20.0  # COM1 at x=0, COM2 at x=20 -> dist 20
+
+    a_np = ds.apply_distance_shift_numpy(active, d_np, 0.0)
+    a_t = ds.apply_distance_shift_torch(
+        torch.as_tensor(active), {k: torch.as_tensor(v) for k, v in d_np.items()}, 0.0
+    ).numpy()
+    a_j = np.asarray(
+        ds.apply_distance_shift_jax(
+            jnp.asarray(active), {k: jnp.asarray(v) for k, v in d_np.items()}, 0.0
+        )
+    )
+
+    def com_dist(a):
+        return np.linalg.norm(a[2:].mean(0) - a[:2].mean(0))
+
+    assert abs(com_dist(a_np) - 5.0) < 1e-6
+    assert np.allclose(a_np, a_t, atol=1e-6)
+    assert np.allclose(a_np, a_j, atol=1e-5)

@@ -129,6 +129,41 @@ def test_distance_resolve_and_minimize():
     assert abs(d1 - 5.0) < abs(d0 - 5.0)
 
 
+def test_distance_closed_form_hits_target_exactly():
+    """The COM-distance restraint is applied in closed form (rigid translation), so one
+    minimize lands the group COM distance exactly on target -- no iterative residual,
+    and no conformer solver is needed for a distance-only spec."""
+    cr = CombinedRestraints.get_instance()
+    cr.set_config(
+        {
+            "backend": "numpy",
+            "distance_restraints_config": [
+                {
+                    "atom_selection1": "chain A",
+                    "atom_selection2": "chain B",
+                    "start_sigma": 1e30,
+                    "harmonic": {"target_distance": 7.0},
+                }
+            ],
+        }
+    )
+    atoms = [
+        AtomRecord("A", 1, 0),
+        AtomRecord("A", 2, 1),
+        AtomRecord("B", 1, 2),
+        AtomRecord("B", 2, 3),
+    ]
+    cr.setup(MockAdapter(atoms))
+    coords = np.zeros((1, 4, 3))
+    coords[0, 2:, 0] = 20.0  # COM1 at x=0, COM2 at x=20 -> dist 20
+    cr.minimize(coords, 0, sigma=0.0)
+    d = np.linalg.norm(coords[0, 2:].mean(0) - coords[0, :2].mean(0))
+    assert abs(d - 7.0) < 1e-6
+    # minimal-displacement split (equal group sizes) -> COMs meet symmetrically
+    assert abs(coords[0, :2].mean(0)[0] - 6.5) < 1e-6
+    assert abs(coords[0, 2:].mean(0)[0] - 13.5) < 1e-6
+
+
 def test_minimize_skipped_above_start_sigma():
     cr = CombinedRestraints.get_instance()
     cr.set_config(

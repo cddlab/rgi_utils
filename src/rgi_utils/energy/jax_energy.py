@@ -147,7 +147,7 @@ def distance_energy(
     return jnp.sum(delta**2 * mask)
 
 
-def total_energy(positions, prepared, sigma=None):
+def total_energy(positions, prepared, sigma=None, include_distance=True):
     """Sum all restraint energies. ``sigma`` (current noise level) gates each
     restraint via ``sigma <= start_sigma`` folded into the mask (conformer terms
     share ``conf_start_sigma``; distances have their own). ``sigma=None`` disables
@@ -190,7 +190,7 @@ def total_energy(positions, prepared, sigma=None):
         ene = ene + vdw_energy(
             positions, v["idx"], v["r_min"], v["weight"], v["mask"] * cg
         )
-    if "distance" in prepared:
+    if include_distance and "distance" in prepared:
         d = prepared["distance"]
         dmask = d["mask"]
         if sigma is not None:

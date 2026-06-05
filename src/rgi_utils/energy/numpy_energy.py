@@ -151,7 +151,7 @@ def distance_energy(
     return np.sum(delta**2 * mask)
 
 
-def total_energy(positions, prepared, sigma=None):
+def total_energy(positions, prepared, sigma=None, include_distance=True):
     """Sum all restraint energies. ``prepared`` is the dict from ``prepare_spec``.
 
     ``sigma`` is the current diffusion noise level: each restraint contributes
@@ -192,7 +192,7 @@ def total_energy(positions, prepared, sigma=None):
         ene = ene + vdw_energy(
             positions, v["idx"], v["r_min"], v["weight"], v["mask"] * cg
         )
-    if "distance" in prepared:
+    if include_distance and "distance" in prepared:
         d = prepared["distance"]
         dmask = d["mask"]
         if sigma is not None:

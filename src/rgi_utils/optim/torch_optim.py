@@ -22,6 +22,7 @@ import logging
 import torch
 
 from rgi_utils.energy import torch_energy
+from rgi_utils.optim.distance_shift import apply_distance_shift_torch
 
 logger = logging.getLogger(__name__)
 
@@ -104,40 +105,59 @@ class TorchRestraintOptimizer:
             sigma is None or sigma <= float(self.spec.conf_start_sigma)
         )
 
+        has_dist = self.spec.has_distance()
+        has_conf = self.spec.has_conformer()
+        prepared = self._prepared
+
         # boltz / Lightning run prediction under torch.inference_mode, where leaf
-        # tensors cannot require grad. Re-enable autograd and copy the slices into
-        # normal leaf tensors so LBFGS can build a graph. Only active sites are
-        # optimised; the protein VdW background is a fixed copy.
+        # tensors cannot require grad. Re-enable autograd and copy the active sites
+        # into a normal tensor we can mutate / attach a graph to.
         with torch.inference_mode(False), torch.enable_grad():
             active = torch.empty_like(coords[..., self._active_idx, :])
             active.copy_(coords[..., self._active_idx, :])
-            active.requires_grad_(True)
-            prot_pos = None
-            if vdw_active:
-                prot_pos = torch.empty_like(coords[..., self._vdw["prot_global"], :])
-                prot_pos.copy_(coords[..., self._vdw["prot_global"], :])
-            prepared = self._prepared
 
-            def energy_fn():
-                e = torch_energy.total_energy(active, prepared, sigma)
-                if prot_pos is not None:
-                    e = e + self._vdw_energy(active, prot_pos)
-                return e
+            # 1) Distance restraints: closed-form rigid COM translation (no solver, no
+            #    autograd) -- a COM-distance restraint is a 1-DOF problem, so iterating
+            #    a per-atom CG over it is wasteful. Gated per-restraint inside the shift.
+            if has_dist:
+                with torch.no_grad():
+                    active = apply_distance_shift_torch(
+                        active, prepared["distance"], sigma
+                    )
 
-            if self._is_cg():
-                self._minimize_cg(active, energy_fn, mi)
-            else:
-                opt = torch.optim.LBFGS(
-                    [active], max_iter=mi, line_search_fn="strong_wolfe"
-                )
+            # 2) Conformer restraints (bond/angle/chiral/dihedral/vdw): gradient solver
+            #    on the conformer-only energy (distance is already applied above). Skipped
+            #    entirely for a distance-only run.
+            if has_conf:
+                active = active.detach().clone()
+                active.requires_grad_(True)
+                prot_pos = None
+                if vdw_active:
+                    prot_pos = torch.empty_like(coords[..., self._vdw["prot_global"], :])
+                    prot_pos.copy_(coords[..., self._vdw["prot_global"], :])
 
-                def closure():
-                    opt.zero_grad()
-                    e = energy_fn()
-                    e.backward()
+                def energy_fn():
+                    e = torch_energy.total_energy(
+                        active, prepared, sigma, include_distance=False
+                    )
+                    if prot_pos is not None:
+                        e = e + self._vdw_energy(active, prot_pos)
                     return e
 
-                opt.step(closure)
+                if self._is_cg():
+                    self._minimize_cg(active, energy_fn, mi)
+                else:
+                    opt = torch.optim.LBFGS(
+                        [active], max_iter=mi, line_search_fn="strong_wolfe"
+                    )
+
+                    def closure():
+                        opt.zero_grad()
+                        e = energy_fn()
+                        e.backward()
+                        return e
+
+                    opt.step(closure)
             new_active = active.detach().clone()
 
         # Robustness (mirror the jax backend's guard in jax_optim.py): a degenerate
