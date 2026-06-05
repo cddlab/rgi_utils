@@ -18,6 +18,7 @@ moving ligand (only the ligand is pushed; the protein is held fixed).
 from __future__ import annotations
 
 import logging
+import math
 
 import torch
 
@@ -198,30 +199,41 @@ class TorchRestraintOptimizer:
         tolerance_grad / tolerance_change) or when the line search stalls, so simple
         restraints finish well under ``max_iter``."""
 
+        # GPU note: every float()/.item() on a device scalar is a blocking
+        # device->host sync that serialises the GPU; for this tiny CG that dominates
+        # the runtime. value_grad returns the energy as a TENSOR and the loop BATCHES
+        # the per-iteration scalar reads into one .tolist() each, keeping the maths
+        # identical to a plain CG.
         def value_grad():
             if active.grad is not None:
                 active.grad = None
             e = energy_fn()
             e.backward()
-            return float(e.detach()), active.grad.detach().clone()
+            return e.detach(), active.grad.detach().clone()
 
-        f, g = value_grad()
+        e_t, g = value_grad()
+        f = float(e_t)  # the line search needs the scalar energy
         if float(g.abs().max()) < gtol:
             return
         d = g.neg()
         gg = torch.sum(g * g)
         for _ in range(max_iter):
-            if not torch.isfinite(gg) or float(gg) <= 1e-20:
+            # one host read for both top-of-iteration scalars (gg + descent slope)
+            dg = torch.sum(d * g)
+            gg_v, dg_v = torch.stack((gg, dg)).tolist()
+            if not math.isfinite(gg_v) or gg_v <= 1e-20:
                 break
-            if float(torch.sum(d * g)) >= 0.0:  # not a descent direction -> restart
+            if dg_v >= 0.0:  # not a descent direction -> restart (rare)
                 d = g.neg()
-            slope = float(torch.sum(d * g))
+                dg_v = float(torch.sum(d * g))
+            slope = dg_v
             x0 = active.detach().clone()
             step, accepted = 1.0, False
             for _ in range(max_ls):
                 with torch.no_grad():
                     active.copy_(x0 + step * d)
-                f_new, g_new = value_grad()
+                e_t, g_new = value_grad()
+                f_new = float(e_t)  # 1 sync/trial (Armijo needs the value)
                 if f_new <= f + 1e-4 * step * slope:  # Armijo sufficient decrease
                     accepted = True
                     break
@@ -230,10 +242,12 @@ class TorchRestraintOptimizer:
                 with torch.no_grad():
                     active.copy_(x0)
                 break
-            converged = float(g_new.abs().max()) < gtol or abs(f_new - f) < ftol * (
-                1.0 + abs(f)
-            )
-            beta = max(0.0, float(torch.sum(g_new * (g_new - g)) / (gg + _EPS)))
+            # one host read for the post-step scalars (grad-max + PR+ numerator)
+            gmax_v, pr_num_v = torch.stack(
+                (g_new.abs().max(), torch.sum(g_new * (g_new - g)))
+            ).tolist()
+            converged = gmax_v < gtol or abs(f_new - f) < ftol * (1.0 + abs(f))
+            beta = max(0.0, pr_num_v / (gg_v + _EPS))  # gg_v = this iter's gg
             d = g_new.neg() + beta * d  # Polak-Ribiere+ (auto-restart when beta<0)
             f, g, gg = f_new, g_new, torch.sum(g_new * g_new)
             if converged:
