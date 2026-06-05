@@ -86,8 +86,9 @@ def test_config_defaults():
     assert cr.config.resolve_backend() == "torch"
     cr.set_config({"gpu": True})
     assert cr.config.resolve_backend() == "torch"
-    cr.set_config({"backend": "numpy"})
-    assert cr.config.resolve_backend() == "numpy"
+    # the numpy/scipy backend was removed -> backend:numpy is rejected loudly
+    with pytest.raises(ValueError, match="numpy"):
+        cr.set_config({"backend": "numpy"})
 
 
 def test_start_sigma_validation():
@@ -136,7 +137,7 @@ def test_distance_resolve_and_minimize():
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "numpy",
+            "backend": "torch",
             "distance_restraints_config": [
                 {
                     "atom_selection1": "chain A",
@@ -174,7 +175,7 @@ def test_distance_closed_form_hits_target_exactly():
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "numpy",
+            "backend": "torch",
             "distance_restraints_config": [
                 {
                     "atom_selection1": "chain A",
@@ -206,7 +207,7 @@ def test_minimize_skipped_above_start_sigma():
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "numpy",
+            "backend": "torch",
             "distance_restraints_config": [
                 {
                     "atom_selection1": "chain A",
@@ -234,7 +235,7 @@ def test_conformer_opt_in():
     n = m.GetNumAtoms()
     atoms = [AtomRecord("A", i + 1, i) for i in range(n)]
     conf_cfg = {
-        "backend": "numpy",
+        "backend": "torch",
         "conformer_restraints_config": {"start_sigma": 1e30, "bond": {"weight": 0.1}},
     }
     cr = CombinedRestraints.get_instance()
@@ -248,7 +249,7 @@ def test_conformer_opt_in():
     cr.setup(MockAdapter(atoms, [LigandConf(m, c, np.arange(n))]))
     assert not cr.spec.has_conformer()
     # (c) ligand flagged but NO conformer_restraints_config -> config gate: no conformer
-    cr.set_config({"backend": "numpy"})
+    cr.set_config({"backend": "torch"})
     cr.setup(MockAdapter(atoms, [LigandConf(m, c, np.arange(n), conformer_restraints=True)]))
     assert not cr.spec.has_conformer()
 
@@ -257,7 +258,7 @@ def test_multiligand_conformer_setup():
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "numpy",
+            "backend": "torch",
             "conformer_restraints_config": {"start_sigma": 1e30, "bond": {"weight": 0.1}},
         }
     )
@@ -293,7 +294,7 @@ def test_rmsd_resolve_and_minimize(tmp_path):
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "numpy",
+            "backend": "torch",
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(pdb),
@@ -325,7 +326,7 @@ def test_rmsd_count_mismatch_raises(tmp_path):
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "numpy",
+            "backend": "torch",
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(pdb),
@@ -345,7 +346,7 @@ def test_rmsd_missing_pdb_raises(tmp_path):
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "numpy",
+            "backend": "torch",
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(tmp_path / "does_not_exist.pdb"),

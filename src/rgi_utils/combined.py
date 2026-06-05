@@ -221,12 +221,6 @@ class CombinedRestraints:
                 learning_rate=self.config.learning_rate,
                 method=self.config.method,
             )
-        elif b == "numpy":
-            from rgi_utils.optim.numpy_optim import NumpyRestraintOptimizer
-
-            self._optimizer = NumpyRestraintOptimizer(
-                self.spec, max_iter=self.config.max_iter, method=self.config.method
-            )
         else:
             raise ValueError(f"unknown backend: {b}")
 
@@ -239,7 +233,7 @@ class CombinedRestraints:
 
     def minimize(self, coords, istep: int = 0, sigma=None):
         """Optimize coordinates for one denoising step. Returns the (possibly new)
-        coordinate object. torch/numpy mutate in place; jax returns a new array."""
+        coordinate object. torch mutates in place; jax returns a new array."""
         if not self.is_active():
             return coords
         b = self._backend
@@ -247,57 +241,49 @@ class CombinedRestraints:
         # term); each optimizer additionally skips the step when sigma exceeds
         # every restraint's start_sigma (spec.max_start_sigma()).
         if b == "jax":
-            # sigma=None means "no gating, all restraints active" (matching the
-            # numpy/torch branches). The gate is `sigma <= start_sigma`, so the
-            # None sentinel must be LOW (-inf) to pass every gate; 1e30 would skip
-            # everything (1e30 <= start_sigma is always False).
+            # sigma=None means "no gating, all restraints active" (matching the torch
+            # branch). The gate is `sigma <= start_sigma`, so the None sentinel must be
+            # LOW (-inf) to pass every gate; 1e30 would skip everything.
             s = sigma if sigma is not None else float("-inf")
             return self._minimize_fn(coords, s)
         if b == "torch":
-            self._minimize_torch(coords, sigma)
-            return coords
-        if b == "numpy":
-            return self._minimize_numpy(coords, sigma)
+            return self._minimize_torch(coords, sigma)
         return coords
 
     def _minimize_torch(self, coords, sigma=None):
-        """Run the torch optimizer. With ``gpu:false`` compute on CPU even when the
-        model's coords live on the accelerator: move them to CPU, optimize, and write
-        the result back to the original device. This is the same CPU round-trip the
-        numpy backend used, but it runs the *torch* optimizer — so the optimization
-        is identical to the GPU path (and the dynamic ligand-protein VdW still
-        applies, unlike the scipy path). With ``gpu:true`` (or coords already on CPU,
-        i.e. a no-GPU run) optimize in place on the coords' own device."""
+        """Run the torch optimizer (the only CPU/GPU restraint optimizer — the
+        numpy/scipy backend was removed).
+
+        - ``torch.Tensor``: optimize on the coords' device, except with ``gpu:false``
+          on an accelerator tensor, where we compute on CPU (move to CPU, optimize,
+          write the result back to the original device). The optimization is identical
+          to the GPU path and the dynamic ligand-protein VdW still applies.
+        - numpy array: optimize on a CPU torch tensor and write the result back in
+          place (the torch optimizer replaces the old scipy path for array callers)."""
         import torch
 
-        if (
-            not self.config.gpu
-            and isinstance(coords, torch.Tensor)
-            and coords.device.type != "cpu"
-        ):
-            cpu_coords = coords.detach().to("cpu")
-            self._optimizer.minimize(cpu_coords, sigma=sigma)
-            with torch.no_grad():
-                coords.copy_(cpu_coords.to(device=coords.device, dtype=coords.dtype))
-        else:
-            self._optimizer.minimize(coords, sigma=sigma)
+        if isinstance(coords, torch.Tensor):
+            if not self.config.gpu and coords.device.type != "cpu":
+                cpu_coords = coords.detach().to("cpu")
+                self._optimizer.minimize(cpu_coords, sigma=sigma)
+                with torch.no_grad():
+                    coords.copy_(
+                        cpu_coords.to(device=coords.device, dtype=coords.dtype)
+                    )
+            else:
+                self._optimizer.minimize(coords, sigma=sigma)
+            return coords
 
-    def _minimize_numpy(self, coords, sigma=None):
         import numpy as np
 
-        if hasattr(coords, "detach"):  # torch tensor on the numpy backend (gpu:false)
-            import torch
-
-            arr = coords.detach().cpu().numpy().astype(np.float64)
-            self._optimizer.minimize(arr, sigma=sigma)
-            with torch.no_grad():
-                coords.copy_(
-                    torch.as_tensor(arr, device=coords.device, dtype=coords.dtype)
-                )
-            return coords
         arr = np.asarray(coords)
-        self._optimizer.minimize(arr, sigma=sigma)
-        return arr
+        t = torch.as_tensor(arr, dtype=torch.float64)
+        self._optimizer.minimize(t, sigma=sigma)
+        out = t.detach().cpu().numpy()
+        if isinstance(arr, np.ndarray) and arr.dtype.kind == "f" and arr.flags.writeable:
+            arr[...] = out  # update the caller's array in place
+            return arr
+        return out
 
     def finalize(self, coords, istep: int = 0) -> None:
         if not self.is_active() or not self.config.verbose:
@@ -369,21 +355,10 @@ class CombinedRestraints:
                 spec, dtype=torch.float64, device=active.device
             )
             return torch_energy.energy_breakdown(active, prepared)
-        from rgi_utils.energy import numpy_energy
-
-        arr = (
-            coords.detach().cpu().numpy()
-            if hasattr(coords, "detach")
-            else np.asarray(coords)
-        )
-        active = arr[..., active_idx, :]
-        return numpy_energy.energy_breakdown(active, numpy_energy.prepare_spec(spec))
+        raise ValueError(f"unknown backend: {b}")
 
     def _restraint_energy(self, coords) -> float:
         b = self._backend
-        if b == "numpy":
-            arr = coords.detach().cpu().numpy() if hasattr(coords, "detach") else coords
-            return self._optimizer.energy(arr)
         if b == "jax":
             from rgi_utils.optim.jax_optim import energy_of
 

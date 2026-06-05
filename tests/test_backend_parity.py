@@ -94,6 +94,22 @@ def _positions(seed: int = 0) -> np.ndarray:
     return rng.standard_normal((N_ACTIVE, 3)) * 2.0
 
 
+def _fd_grad(f, x, eps: float = 1e-6):
+    """Central finite-difference gradient of scalar ``f`` at ``x`` (numpy-only,
+    replaces scipy.optimize.approx_fprime so the suite needs no scipy)."""
+    x = np.asarray(x, dtype=np.float64).copy()
+    g = np.zeros_like(x)
+    for i in range(x.size):
+        orig = x.flat[i]
+        x.flat[i] = orig + eps
+        fp = f(x)
+        x.flat[i] = orig - eps
+        fm = f(x)
+        x.flat[i] = orig
+        g.flat[i] = (fp - fm) / (2.0 * eps)
+    return g
+
+
 def test_energy_parity():
     torch = pytest.importorskip("torch")
     jax = pytest.importorskip("jax")
@@ -126,7 +142,6 @@ def test_grad_parity():
     jax = pytest.importorskip("jax")
     jax.config.update("jax_enable_x64", True)
     import jax.numpy as jnp
-    from scipy.optimize import approx_fprime
 
     from rgi_utils.energy import jax_energy, torch_energy
 
@@ -139,7 +154,7 @@ def test_grad_parity():
     def f(x):
         return float(numpy_energy.total_energy(x.reshape(N_ACTIVE, 3), prep_np))
 
-    g_fd = approx_fprime(pos.flatten(), f, 1e-6).reshape(N_ACTIVE, 3)
+    g_fd = _fd_grad(f, pos.flatten()).reshape(N_ACTIVE, 3)
 
     # torch autograd
     pt = torch.tensor(pos, dtype=torch.float64, requires_grad=True)

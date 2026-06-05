@@ -59,18 +59,21 @@ class RestraintsConfig:
             gpu = bool(gpu_raw)
         else:
             gpu = str(gpu_raw).strip().lower() in ("1", "true", "yes", "on")
-        # Normalize/validate the explicit backend, and surface a gpu/backend conflict.
+        # Normalize/validate the explicit backend. The numpy/scipy optimizer backend
+        # was removed (gpu:false now runs torch on CPU), so reject it loudly rather
+        # than silently doing something else.
         backend = config.get("backend", None)
         if backend is not None:
             backend = str(backend).strip().lower()
-            if backend not in ("numpy", "torch", "jax"):
-                logger.warning(
-                    "unknown restraints backend %r (expected numpy/torch/jax)", backend
+            if backend == "numpy":
+                raise ValueError(
+                    "the numpy/scipy restraint backend has been removed; use the "
+                    "default torch backend (gpu:false runs torch on CPU) or "
+                    "backend: jax"
                 )
-            elif gpu and backend == "numpy":
+            if backend not in ("torch", "jax"):
                 logger.warning(
-                    "gpu:true but backend='numpy' is set explicitly; restraints will "
-                    "run on the CPU (explicit backend overrides gpu)"
+                    "unknown restraints backend %r (expected torch/jax)", backend
                 )
         cfg = cls(
             verbose=config.get("verbose", False),
@@ -102,8 +105,9 @@ class RestraintsConfig:
     def resolve_backend(self) -> str:
         """Default to torch; ``gpu`` selects the DEVICE (CPU when false, the
         accelerator when true), not the backend — so ``gpu:false`` runs the same
-        torch optimizer on CPU instead of the numpy (scipy) reference path. An
-        explicit ``backend:`` wins, so numpy stays reachable via ``backend: numpy``."""
+        torch optimizer on CPU. The only other backend is jax (AF3); the numpy/scipy
+        optimizer was removed (an explicit ``backend: numpy`` is rejected in
+        ``from_dict``)."""
         if self.backend:
             return self.backend
         return "torch"

@@ -8,7 +8,6 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 
 from rgi_utils.atom_context import LigandConf
-from rgi_utils.energy import numpy_energy
 from rgi_utils.featurizer import build_spec
 
 
@@ -33,21 +32,6 @@ def _distorted_ethane():
     rng = np.random.default_rng(0)
     coords[0, spec.active_sites, :] += rng.standard_normal((spec.n_active, 3)) * 0.3
     return spec, coords
-
-
-def _energy(spec, coords_np):
-    prep = numpy_energy.prepare_spec(spec)
-    return float(numpy_energy.total_energy(coords_np[:, spec.active_sites, :], prep))
-
-
-def test_numpy_minimize_reduces_energy():
-    from rgi_utils.optim.numpy_optim import NumpyRestraintOptimizer
-
-    spec, coords = _distorted_ethane()
-    e0 = _energy(spec, coords)
-    NumpyRestraintOptimizer(spec, max_iter=300, method="CG").minimize(coords)
-    e1 = _energy(spec, coords)
-    assert e1 < 0.5 * e0, f"{e0} -> {e1}"
 
 
 def test_torch_minimize_reduces_energy():
