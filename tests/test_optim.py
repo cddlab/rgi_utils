@@ -109,3 +109,161 @@ def test_torch_vdw_pushes_ligand_off_fixed_protein():
     assert d1 > d0, f"ligand not pushed away: {d0} -> {d1}"
     # the fixed protein atom must not move (it is not in active_sites)
     assert torch.allclose(coords[0, n], prot_before, atol=1e-9)
+
+
+# --- sync-free GPU CG (optim/_torch_cg_gpu.py) -----------------------------------
+
+
+def _rmsd_spec(n=6, seed=3):
+    """A RestraintSpec with one RMSD restraint (ref) + a rotated/translated/noised
+    distorted starting pose, for the sync-free CG tests."""
+    from rgi_utils.spec import RestraintSpec, RmsdArrays
+
+    rng = np.random.default_rng(seed)
+    ref = rng.standard_normal((n, 3)) * 3.0
+    idx = np.arange(n).reshape(1, n)
+    spec = RestraintSpec(
+        n_active=n,
+        active_sites=np.arange(n),
+        rmsd=RmsdArrays(
+            fit_idx=idx, fit_mask=np.ones((1, n)), fit_ref=ref.reshape(1, n, 3),
+            calc_idx=idx, calc_mask=np.ones((1, n)), calc_ref=ref.reshape(1, n, 3),
+            target_rmsd=np.array([0.0]), weight=np.array([1.0]),
+            start_sigma=np.array([1e30]), mask=np.array([1.0]),
+        ),
+        conf_start_sigma=1e30,
+    )
+    th = 0.7
+    rz = np.array(
+        [[np.cos(th), -np.sin(th), 0], [np.sin(th), np.cos(th), 0], [0, 0, 1]]
+    )
+    pos = ref @ rz.T + np.array([2.0, 1.0, -1.0]) + rng.standard_normal((n, 3)) * 0.3
+    return spec, pos.reshape(1, n, 3)
+
+
+def test_func_grad_matches_backward_conformer():
+    """torch.func.grad_and_value (the GPU CG's gradient source) must equal the
+    .backward() gradient for the conformer energy — guards the grad-source switch."""
+    torch = pytest.importorskip("torch")
+    from rgi_utils.energy import torch_energy
+
+    spec, coords_np = _distorted_ethane()
+    prepared = torch_energy.prepare_spec(spec, dtype=torch.float64)
+    a0 = torch.tensor(coords_np[0, spec.active_sites, :], dtype=torch.float64)
+
+    def e_of(a):
+        return torch_energy.total_energy(a, prepared, sigma=None, include_distance=False)
+
+    ab = a0.clone().requires_grad_(True)
+    e_of(ab).backward()
+    g_func, _v = torch.func.grad_and_value(e_of)(a0)
+    assert torch.allclose(g_func, ab.grad, atol=1e-8), (g_func - ab.grad).abs().max()
+
+
+def test_func_grad_matches_backward_rmsd():
+    """Same, for rmsd_energy: confirms the detached Kabsch rotation (_kabsch_R) stops
+    the gradient identically under torch.func (the no_grad context is a functorch no-op;
+    the .detach() is what must hold)."""
+    torch = pytest.importorskip("torch")
+    from rgi_utils.energy import torch_energy
+
+    _spec, pos = _rmsd_spec()
+    n = pos.shape[1]
+    ref = _spec.rmsd.fit_ref
+    idx = torch.arange(n).reshape(1, n)
+    m = torch.ones((1, n), dtype=torch.float64)
+    refc = torch.tensor(ref, dtype=torch.float64)
+    kw = dict(
+        fit_idx=idx, fit_mask=m, fit_ref=refc, calc_idx=idx, calc_mask=m, calc_ref=refc,
+        target_rmsd=torch.zeros(1, dtype=torch.float64),
+        weight=torch.ones(1, dtype=torch.float64),
+        mask=torch.ones(1, dtype=torch.float64),
+    )
+    p = torch.tensor(pos[0], dtype=torch.float64)
+
+    def e_of(a):
+        return torch_energy.rmsd_energy(a, **kw)
+
+    ab = p.clone().requires_grad_(True)
+    e_of(ab).backward()
+    g_func, _v = torch.func.grad_and_value(e_of)(p)
+    assert torch.allclose(g_func, ab.grad, atol=1e-8), (g_func - ab.grad).abs().max()
+
+
+def test_sync_free_cg_reduces_conformer_energy():
+    """The sync-free CG (gpu_cg) is device-agnostic; verify the algorithm reduces the
+    conformer energy on CPU (the GPU path runs the identical code, checked E2E via
+    sbatch)."""
+    torch = pytest.importorskip("torch")
+    from rgi_utils.energy import torch_energy
+    from rgi_utils.optim._torch_cg_gpu import gpu_cg
+
+    spec, coords_np = _distorted_ethane()
+    prepared = torch_energy.prepare_spec(spec, dtype=torch.float64)
+    a0 = torch.tensor(coords_np[0, spec.active_sites, :], dtype=torch.float64)
+
+    def e_of(a):
+        return torch_energy.total_energy(a, prepared, sigma=None, include_distance=False)
+
+    e0 = float(e_of(a0))
+    a1 = gpu_cg(e_of, a0, 200)
+    assert float(e_of(a1)) < 0.5 * e0
+
+
+def test_sync_free_cg_reduces_rmsd_energy():
+    """The sync-free CG drives the Kabsch RMSD energy down (the detached-rotation
+    gradient that stalls jaxopt NonlinearCG; this CG converges it like the jax port)."""
+    torch = pytest.importorskip("torch")
+    from rgi_utils.energy import torch_energy
+    from rgi_utils.optim._torch_cg_gpu import gpu_cg
+
+    spec, pos = _rmsd_spec()
+    prepared = torch_energy.prepare_spec(spec, dtype=torch.float64)
+    a0 = torch.tensor(pos[0], dtype=torch.float64)
+
+    def e_of(a):
+        return torch_energy.total_energy(a, prepared, sigma=None, include_distance=False)
+
+    e0 = float(e_of(a0))
+    a1 = gpu_cg(e_of, a0, 500)
+    assert float(e_of(a1)) < 0.1 * e0, f"{e0} -> {float(e_of(a1))}"
+
+
+def test_sync_free_cg_nonfinite_guard():
+    """A non-finite gradient/energy returns the input coords unchanged (on-device
+    guard, mirroring the jax backend) — no NaN written into the structure."""
+    torch = pytest.importorskip("torch")
+    from rgi_utils.optim._torch_cg_gpu import _cg_minimize_torch
+
+    x0 = torch.zeros((4, 3), dtype=torch.float64)
+
+    def vg_nan(x):
+        return torch.full_like(x, float("nan")), torch.tensor(float("nan"))
+
+    out = _cg_minimize_torch(vg_nan, x0, max_iter=5)
+    assert torch.isfinite(out).all() and torch.allclose(out, x0)
+
+
+@pytest.mark.gpu
+def test_gpu_cg_matches_cpu_minimum():
+    """The GPU (sync-free) CG and the CPU (early-exit) CG reach the same minimum."""
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("no cuda device")
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+
+    spec, coords_np = _distorted_ethane()
+    cc = torch.tensor(coords_np, dtype=torch.float64)
+    oc = TorchRestraintOptimizer(spec, max_iter=200)
+    e0c = oc.energy(cc)
+    oc.minimize(cc)
+    e1c = oc.energy(cc)
+
+    cg = torch.tensor(coords_np, dtype=torch.float64, device="cuda")
+    og = TorchRestraintOptimizer(spec, max_iter=200)
+    e0g = og.energy(cg)
+    og.minimize(cg)
+    e1g = og.energy(cg)
+
+    assert e1c < 0.5 * e0c and e1g < 0.5 * e0g
+    assert abs(e1c - e1g) < 1e-3 + 0.1 * abs(e1c), f"cpu {e1c} vs gpu {e1g}"

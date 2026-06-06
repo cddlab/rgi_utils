@@ -156,7 +156,25 @@ class TorchRestraintOptimizer:
                         e = e + self._vdw_energy(active, prot_pos)
                     return e
 
-                if self._is_cg():
+                if self._is_cg() and active.is_cuda:
+                    # GPU: sync-free CG (functional grad + vmap line search) so the tiny
+                    # restraint kernels pipeline instead of stalling on a host sync every
+                    # iteration (the eager _minimize_cg below is sync-bound on GPU). CPU
+                    # keeps the early-exit _minimize_cg (syncs are free there).
+                    from rgi_utils.optim._torch_cg_gpu import gpu_cg
+
+                    def _e_of(a):
+                        e = torch_energy.total_energy(
+                            a, prepared, sigma, include_distance=False
+                        )
+                        if prot_pos is not None:
+                            e = e + self._vdw_energy(a, prot_pos)
+                        return e
+
+                    opt = gpu_cg(_e_of, active.detach(), mi)
+                    with torch.no_grad():
+                        active.copy_(opt)
+                elif self._is_cg():
                     self._minimize_cg(active, energy_fn, mi)
                 else:
                     opt = torch.optim.LBFGS(
