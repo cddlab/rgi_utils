@@ -12,12 +12,20 @@ Backward-compatible shorthand: ``atom_selection_ref`` / ``atom_selection_target`
 set BOTH fit and calc (so a single selection == fit==calc == the original
 behaviour).
 
+Selections are OPTIONAL. Omit them (no ``atom_selection*`` at all) to fit + measure
+RMSD over the WHOLE structure: the whole diffusion structure is superposed onto the
+whole reference and the RMSD is taken over everything, BEST-EFFORT -- atoms matched to
+the reference by identity (chain, resid, name) are used and any structure atom missing
+from the reference (e.g. the ref has no hydrogens) is skipped, so an incomplete ref
+still works (pymol-align-like). Only ``ref_pdb`` and ``target_rmsd`` are required.
+
 Reference and target atoms are paired by IDENTITY (chain, resid, atom-name) when
 both sides expose atom names, so the reference PDB's atom order need not match the
 tool's internal order. If names are unavailable on either side it falls back to
-selection-order pairing (the original behaviour). A target atom with no matching
-(chain, resid, name) in the reference -- or an atom-count mismatch in the order
-fallback -- raises ``ValueError``.
+selection-order pairing (the original behaviour). With an EXPLICIT selection the
+pairing is strict: a target atom with no matching (chain, resid, name) in the
+reference -- or an atom-count mismatch in the order fallback -- raises ``ValueError``
+(best-effort skipping applies only to the no-selection whole-structure default).
 """
 
 from __future__ import annotations
@@ -63,25 +71,22 @@ class RmsdData:
         _ss = config.get("start_sigma")
         if _ss is not None:
             self.start_sigma = float(_ss)
-        # explicit _fit / _calc override the shared ref/target shorthand
+        # explicit _fit / _calc override the shared ref/target shorthand. A selection
+        # left None means "the whole structure on that side" (resolved best-effort).
         ref = config.get("atom_selection_ref")
         tgt = config.get("atom_selection_target")
         self.sel_ref_fit = config.get("atom_selection_ref_fit", ref)
         self.sel_target_fit = config.get("atom_selection_target_fit", tgt)
         self.sel_ref_calc = config.get("atom_selection_ref_calc", ref)
         self.sel_target_calc = config.get("atom_selection_target_calc", tgt)
-        self.run_restr = (
-            self.ref_pdb is not None
-            and self.target_rmsd is not None
-            and self.sel_ref_fit is not None
-            and self.sel_target_fit is not None
-            and self.sel_ref_calc is not None
-            and self.sel_target_calc is not None
-        )
+        # selections are OPTIONAL (omit -> whole-structure best-effort); only ref_pdb +
+        # target_rmsd are required.
+        self.run_restr = self.ref_pdb is not None and self.target_rmsd is not None
         if not self.run_restr:
             raise ValueError(
-                "rmsd_restraints_config entry requires ref_pdb, target_rmsd, and ref/"
-                "target selections (atom_selection_ref/target, or the _fit/_calc pairs)"
+                "rmsd_restraints_config entry requires ref_pdb and target_rmsd (atom "
+                "selections are optional: omit them to fit + measure RMSD over the whole "
+                "structure, best-effort over atoms matched to the reference)"
             )
         logger.info("rmsd restraint configured: target_rmsd=%.3f", self.target_rmsd)
 
@@ -90,11 +95,15 @@ class RmsdData:
             return
         atoms = list(adapter.iter_atoms())
         ref_atoms = read_pdb_atoms(self.ref_pdb)  # raises ValueError on a bad file
+        # no target selection -> whole structure, paired best-effort (skip atoms missing
+        # from the reference); an explicit selection stays strict.
         self.fit_target_sites, self.fit_ref_coords = self._pair(
-            atoms, ref_atoms, self.sel_target_fit, self.sel_ref_fit, "fit"
+            atoms, ref_atoms, self.sel_target_fit, self.sel_ref_fit, "fit",
+            best_effort=self.sel_target_fit is None,
         )
         self.calc_target_sites, self.calc_ref_coords = self._pair(
-            atoms, ref_atoms, self.sel_target_calc, self.sel_ref_calc, "calc"
+            atoms, ref_atoms, self.sel_target_calc, self.sel_ref_calc, "calc",
+            best_effort=self.sel_target_calc is None,
         )
         logger.info(
             "rmsd restraint resolved: fit=%d calc=%d atoms, target_rmsd=%.3f",
@@ -103,22 +112,32 @@ class RmsdData:
             self.target_rmsd,
         )
 
-    def _pair(self, atoms, ref_atoms, sel_target, sel_ref, tag):
-        """Resolve one (target, ref) selection pair -> (target_global_indices,
-        ref_coords aligned to the target order). Identity pairing by (chain, resid,
-        name) when both sides have names; else selection-order."""
-        st = AtomSelector(sel_target)
-        sr = AtomSelector(sel_ref)
-        tgt = [
-            a
-            for a in atoms
-            if st.matches({"chain": a.chain, "resid": a.resid, "index": a.index})
-        ]
-        ref = [
-            r
-            for r in ref_atoms
-            if sr.matches({"chain": r.chain, "resid": r.resid, "index": r.index})
-        ]
+    def _pair(self, atoms, ref_atoms, sel_target, sel_ref, tag, best_effort=False):
+        """Resolve one (target, ref) selection pair -> (target_global_indices, ref_coords
+        aligned to the target order). A ``None`` selection means the WHOLE structure on
+        that side (no filter). Pairing is by IDENTITY (chain, resid, name) when both sides
+        expose names; else selection-order (counts must match). With ``best_effort`` (the
+        no-selection whole-structure default) a target atom missing from the reference is
+        SKIPPED rather than raising, so an incomplete ref still fits 'as much as possible';
+        with an explicit selection it stays strict (a missing match raises)."""
+        if sel_target is None:  # whole structure (no filter)
+            tgt = list(atoms)
+        else:
+            st = AtomSelector(sel_target)
+            tgt = [
+                a
+                for a in atoms
+                if st.matches({"chain": a.chain, "resid": a.resid, "index": a.index})
+            ]
+        if sel_ref is None:  # whole reference (no filter)
+            ref = list(ref_atoms)
+        else:
+            sr = AtomSelector(sel_ref)
+            ref = [
+                r
+                for r in ref_atoms
+                if sr.matches({"chain": r.chain, "resid": r.resid, "index": r.index})
+            ]
         if not tgt:
             raise ValueError(
                 f"rmsd {tag} target selection matched no atoms: {sel_target!r}"
@@ -152,16 +171,30 @@ class RmsdData:
                         f"disambiguate the ref selection"
                     )
                 refmap[k] = (r.x, r.y, r.z)
-            sites, coords = [], []
+            sites, coords, skipped = [], [], 0
             for a in tgt:
                 key = (a.chain, a.resid, a.name)
                 if key not in refmap:
+                    if best_effort:  # whole-structure default: use what matches
+                        skipped += 1
+                        continue
                     raise ValueError(
                         f"rmsd {tag}: target atom {key} has no matching "
                         f"(chain, resid, name) in ref {self.ref_pdb!r}"
                     )
                 sites.append(int(a.index))
                 coords.append(refmap[key])
+            if not sites:
+                raise ValueError(
+                    f"rmsd {tag}: no target atom matched the reference by "
+                    f"(chain, resid, name) in {self.ref_pdb!r}"
+                )
+            if skipped:  # transparency: do not silently drop atoms
+                logger.info(
+                    "rmsd %s (whole-structure best-effort): matched %d / %d atoms "
+                    "(%d unmatched in ref skipped)",
+                    tag, len(sites), len(tgt), skipped,
+                )
             return sites, np.asarray(coords, dtype=np.float64).reshape(-1, 3)
         # order fallback (no atom names): pair by selection order, counts must match
         if len(tgt) != len(ref):

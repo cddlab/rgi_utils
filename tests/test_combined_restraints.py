@@ -665,3 +665,64 @@ def test_boltz_adapter_decodes_atom_names_from_ref_chars():
     assert name_of(10_000) is None  # out of range -> None
     # missing field -> all None (graceful fall back to order pairing), no crash
     assert BoltzFeatsAdapter({})._atom_name_lookup()(0) is None
+
+
+def test_rmsd_no_selection_whole_structure(tmp_path):
+    """No atom_selection -> fit + RMSD over the WHOLE structure (every atom paired to the
+    reference by identity); only ref_pdb + target_rmsd are required."""
+    from rgi_utils.rmsd_restr_data import RmsdData
+
+    rng = np.random.default_rng(11)
+    n = 8  # 4 residues x (N, CA)
+    spec = [(r, nm) for r in range(1, 5) for nm in ("N", "CA")]
+    xyz = rng.standard_normal((n, 3)) * 3.0
+    atoms = [AtomRecord("A", spec[i][0], 100 + i, name=spec[i][1]) for i in range(n)]
+    pdb = tmp_path / "ref.pdb"
+    _write_pdb_records(pdb, [(spec[i][0], spec[i][1], *xyz[i]) for i in range(n)])
+
+    rr = RmsdData()
+    rr.set_config({"ref_pdb": str(pdb), "target_rmsd": 0.0})  # NO selection
+    assert rr.is_valid() and rr.sel_target_fit is None
+    rr.resolve_sites(MockAdapter(atoms))
+    assert rr.fit_target_sites == [a.index for a in atoms]  # the whole structure
+    assert rr.calc_target_sites == [a.index for a in atoms]
+    assert rr.fit_ref_coords.shape == (n, 3)
+
+
+def test_rmsd_no_selection_best_effort_skips_unmatched(tmp_path):
+    """No selection + a reference that lacks some structure atoms (e.g. no hydrogens):
+    best-effort fits/measures over the matched subset instead of raising."""
+    from rgi_utils.rmsd_restr_data import RmsdData
+
+    rng = np.random.default_rng(12)
+    atoms, recs = [], []
+    idx = 0
+    for r in range(1, 5):  # 4 residues x (N, CA, H); the ref omits every H
+        for nm in ("N", "CA", "H"):
+            v = rng.standard_normal(3) * 3.0
+            atoms.append(AtomRecord("A", r, idx, name=nm))
+            if nm != "H":
+                recs.append((r, nm, *v))
+            idx += 1
+    pdb = tmp_path / "ref.pdb"
+    _write_pdb_records(pdb, recs)
+
+    rr = RmsdData()
+    rr.set_config({"ref_pdb": str(pdb), "target_rmsd": 0.0})
+    rr.resolve_sites(MockAdapter(atoms))  # must NOT raise (4 H's skipped)
+    matched = {a.index for a in atoms if a.name != "H"}
+    assert set(rr.fit_target_sites) == matched and len(rr.fit_target_sites) == 8
+    assert set(rr.calc_target_sites) == matched
+
+
+def test_rmsd_requires_ref_pdb_and_target_only():
+    """Selections are optional now, but ref_pdb + target_rmsd are still required."""
+    from rgi_utils.rmsd_restr_data import RmsdData
+
+    with pytest.raises(ValueError, match="ref_pdb and target_rmsd"):
+        RmsdData().set_config({"target_rmsd": 0.0})  # missing ref_pdb
+    with pytest.raises(ValueError, match="ref_pdb and target_rmsd"):
+        RmsdData().set_config({"ref_pdb": "x.pdb"})  # missing target_rmsd
+    rr = RmsdData()
+    rr.set_config({"ref_pdb": "x.pdb", "target_rmsd": 1.0})  # no selection -> valid
+    assert rr.is_valid() and rr.sel_target_calc is None
