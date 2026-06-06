@@ -277,6 +277,69 @@ def test_gpu_cg_converges_stiff_chiral():
     assert ch0 > 0.0 and ch1 < 0.1 * ch0, f"chiral not converged: {ch0} -> {ch1}"
 
 
+def test_gated_prepared_matches_energy_gate():
+    """The GPU pre-gated masks (_gated_prepared + total_energy(sigma=None)) reproduce the
+    energy layer's own sigma gating for conf-on/off and rmsd-on/off, so the compiled GPU
+    minimum can't silently diverge from the CPU/jax one."""
+    torch = pytest.importorskip("torch")
+    from rgi_utils.energy import torch_energy
+    from rgi_utils.optim._torch_cg_gpu import _energy
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+    from rgi_utils.spec import BondArrays, RestraintSpec, RmsdArrays
+
+    rng = np.random.default_rng(2)
+    n = 6
+    ref = rng.standard_normal((n, 3)) * 3.0
+    idx = np.arange(n).reshape(1, n)
+    spec = RestraintSpec(
+        n_active=n, active_sites=np.arange(n),
+        bond=BondArrays(
+            idx=np.array([[0, 1], [2, 3]], dtype=np.int64), r0=np.array([1.0, 1.5]),
+            slack=np.zeros(2), weight=np.ones(2), half=np.zeros(2), mask=np.ones(2),
+        ),
+        rmsd=RmsdArrays(
+            fit_idx=idx, fit_mask=np.ones((1, n)), fit_ref=ref.reshape(1, n, 3),
+            calc_idx=idx, calc_mask=np.ones((1, n)), calc_ref=ref.reshape(1, n, 3),
+            target_rmsd=np.array([0.0]), weight=np.array([1.0]),
+            start_sigma=np.array([5.0]), mask=np.array([1.0]),
+        ),
+        conf_start_sigma=10.0,
+    )
+    opt = TorchRestraintOptimizer(spec)
+    opt._ensure(torch.device("cpu"), torch.float64)
+    pos = torch.tensor(rng.standard_normal((n, 3)), dtype=torch.float64)
+    for sigma in (50.0, 8.0, 3.0, None):  # conf+rmsd off / conf-on-rmsd-off / both / both
+        pg = opt._gated_prepared(sigma)
+        e_gpu = float(_energy(pos, pg))
+        e_ref = float(
+            torch_energy.total_energy(pos, opt._prepared, sigma, include_distance=False)
+        )
+        assert abs(e_gpu - e_ref) < 1e-9, (sigma, e_gpu, e_ref)
+        # the dropped scalar leaf must not be in the compiled pytree (per-value recompile)
+        assert "conf_start_sigma" not in pg
+    # conf gated off (sigma 50 > conf_start_sigma 10) zeros the conformer masks
+    assert float(opt._gated_prepared(50.0)["bond"]["mask"].sum()) == 0.0
+
+
+def test_compiled_energy_matches_eager():
+    """torch.compile of the GPU energy+grad must equal eager grad_and_value (compiling
+    fuses kernels; it must NOT change the maths), incl. the detached Kabsch SVD in the
+    RMSD term. Runs on CPU (inductor, no CUDA graph) so it guards the invariant in CI."""
+    torch = pytest.importorskip("torch")
+    from rgi_utils.energy import torch_energy
+    from rgi_utils.optim import _torch_cg_gpu as g
+
+    spec, pos_np = _rmsd_spec()
+    prepared = torch_energy.prepare_spec(spec, dtype=torch.float64)
+    pos = torch.tensor(pos_np[0], dtype=torch.float64)
+    eager_vg = torch.func.grad_and_value(g._energy, argnums=0)
+    comp_vg = torch.compile(torch.func.grad_and_value(g._energy, argnums=0))
+    ge, ve = eager_vg(pos, prepared)
+    gc, vc = comp_vg(pos, prepared)
+    assert torch.allclose(ge, gc, atol=1e-8), (ge - gc).abs().max()
+    assert abs(float(ve) - float(vc)) < 1e-8
+
+
 def test_dynamic_vdw_pair_energy_matches_optimizer():
     """The pure _vdw_pair_energy (folded into the compiled GPU energy) must equal the
     optimizer's _vdw_energy method (used on the CPU/eager path) — so compiling the

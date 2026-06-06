@@ -5,8 +5,13 @@ gated on the noise level with ``jax.lax.cond``. ``method='CG'`` (the default, sh
 with torch) runs ``_cg_minimize`` — a pure-jax port of the torch nonlinear CG
 (``lax.while_loop``); ``method='l-bfgs'`` uses ``jaxopt.LBFGS`` (lazily imported).
 There is NO ``pure_callback`` and NO scipy, so the whole optimization runs inside XLA
-on the accelerator. The custom CG matches torch exactly and converges the RMSD energy
-(whose fixed-rotation gradient stalls jaxopt's NonlinearCG + backtracking line search).
+on the accelerator. The custom CG is the SAME algorithm + constants as the torch CG and
+converges the RMSD energy (whose fixed-rotation gradient stalls jaxopt's NonlinearCG +
+backtracking line search). Note: it is not bit-identical to torch — XLA float-op
+reordering inside ``lax.while_loop`` can make the jax minimum differ from torch's by a
+small, input-dependent amount, and on some inputs at high ``max_iter`` (>~300) the
+backtracking line search can stall a little earlier than the eager torch loop; at the
+default ``max_iter=100`` they agree on the standard fixtures.
 """
 
 from __future__ import annotations
@@ -36,9 +41,10 @@ def _cg_minimize(energy_fn, x0, max_iter, max_ls=MAX_LS, gtol=GTOL, ftol=FTOL):
     search, restart on non-descent) — a port of the torch ``TorchRestraintOptimizer.
     _minimize_cg`` built from ``jax.lax.while_loop`` so it stays JIT/scan/vmap-able.
     ``x0`` is the active-site coords; ``energy_fn(x) -> scalar`` is the restraint energy.
-    Returns the optimized coords. Identical CG to the torch backend, so ``method='CG'``
-    is the same algorithm everywhere and (unlike jaxopt NonlinearCG) it converges the
-    RMSD energy."""
+    Returns the optimized coords. Same algorithm + constants as the torch backend (so
+    ``method='CG'`` means CG everywhere) and (unlike jaxopt NonlinearCG) it converges the
+    RMSD energy — though XLA float reordering in ``lax.while_loop`` can make its minimum
+    differ from torch's by a small, input-dependent amount (see the module docstring)."""
     vg = jax.value_and_grad(energy_fn)
 
     def line_search(x_base, d, f, g_proto, slope):

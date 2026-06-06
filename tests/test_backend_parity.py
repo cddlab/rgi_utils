@@ -426,6 +426,72 @@ def test_rmsd_kabsch_backend_parity():
     assert abs(e_np - e_np2) < 1e-6
 
 
+def test_energy_breakdown_sums_to_total():
+    """energy_breakdown (now schema-driven via _terms) must sum to total_energy, expose
+    exactly the BREAKDOWN_KEYS, and agree across backends — it powers the finalize
+    per-term log (CLAUDE.md's 'decisive signals'), which nothing else tests."""
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.energy import _terms, jax_energy, torch_energy
+
+    spec = _make_spec()
+    pos = _positions()
+    per_key = {}
+    for name, mod, prep, p in (
+        ("numpy", numpy_energy, numpy_energy.prepare_spec(spec), pos),
+        (
+            "torch", torch_energy,
+            torch_energy.prepare_spec(spec, dtype=torch.float64),
+            torch.tensor(pos, dtype=torch.float64),
+        ),
+        ("jax", jax_energy, jax_energy.prepare_spec(spec), jnp.asarray(pos)),
+    ):
+        bd = mod.energy_breakdown(p, prep)
+        assert set(bd) == set(_terms.BREAKDOWN_KEYS), name
+        tot = float(mod.total_energy(p, prep))
+        assert abs(sum(bd.values()) - tot) < 1e-6, (name, sum(bd.values()), tot)
+        per_key[name] = bd
+    for k in _terms.BREAKDOWN_KEYS:  # per-term cross-backend agreement
+        assert abs(per_key["numpy"][k] - per_key["torch"][k]) < 1e-6, k
+        assert abs(per_key["numpy"][k] - per_key["jax"][k]) < 1e-6, k
+
+
+def test_jax_torch_cg_same_minimum_at_default_iters():
+    """The jax CG (_cg_minimize) and the torch CG (_cg_minimize_torch, == the CUDA
+    algorithm) reach the same minimum on _make_spec at the default max_iter. (XLA float
+    reordering can diverge at very high max_iter; this pins the default-setting parity —
+    the cross-tool invariant that one restraints_config converges the same everywhere.)"""
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.energy import jax_energy, torch_energy
+    from rgi_utils.optim._torch_cg_gpu import _cg_minimize_torch
+    from rgi_utils.optim.jax_optim import _cg_minimize
+
+    spec = _make_spec()  # conformer + vdw + distance (no rmsd); CG handles conf only here
+    pos = _positions(0)
+    prep_t = torch_energy.prepare_spec(spec, dtype=torch.float64)
+    prep_j = jax_energy.prepare_spec(spec)
+
+    def et(a):
+        return torch_energy.total_energy(a, prep_t, sigma=None, include_distance=False)
+
+    def ej(a):
+        return jax_energy.total_energy(a, prep_j, sigma=None, include_distance=False)
+
+    xt = _cg_minimize_torch(
+        torch.func.grad_and_value(et), torch.tensor(pos, dtype=torch.float64), 100
+    )
+    Et = float(et(xt))
+    Ej = float(ej(_cg_minimize(ej, jnp.asarray(pos), 100)))
+    assert abs(Et - Ej) < 1e-3 + 0.05 * abs(Et), (Et, Ej)
+
+
 def test_rmsd_known_value_and_target():
     """ref == target -> superposed RMSD 0 -> E = weight * target_rmsd**2."""
     rng = np.random.default_rng(0)

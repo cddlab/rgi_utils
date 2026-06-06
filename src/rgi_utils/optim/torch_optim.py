@@ -23,6 +23,7 @@ import math
 import torch
 
 from rgi_utils.energy import torch_energy
+from rgi_utils.energy._terms import CONF_KEYS
 from rgi_utils.optim._cg_config import (
     ARMIJO_C1,
     BACKTRACK,
@@ -35,8 +36,6 @@ from rgi_utils.optim._cg_config import (
 from rgi_utils.optim.distance_shift import apply_distance_shift_torch
 
 logger = logging.getLogger(__name__)
-
-_EPS = 1e-12  # vdw distance-floor guard (the CG solver uses the shared EPS)
 
 
 class TorchRestraintOptimizer:
@@ -66,15 +65,19 @@ class TorchRestraintOptimizer:
             self._setup_vdw(device, dtype)
         self._device = device
 
-    def _gated_prepared(self, cg, sigma):
+    def _gated_prepared(self, sigma):
         """Stable pre-gated ``prepared`` for the compiled GPU CG, cached by the discrete
-        GATE STATE — the conformer gate ``cg`` (0/1) plus the per-restraint rmsd gate
-        (``sigma <= start_sigma``). Stable object identity per state lets ``torch.compile``
-        reuse its artifact (a fresh dict of fresh tensors each step would re-trace). sigma
-        decreases monotonically, so each restraint's gate flips at most once -> only a
-        few states -> a few compiles, then reuse. distance is excluded (closed-form)."""
+        GATE STATE — the conformer gate (``sigma <= conf_start_sigma``) plus the
+        per-restraint rmsd gate (``sigma <= start_sigma``). The noise gate is folded into
+        the masks here so the compiled energy is called with ``sigma=None``; scalar leaves
+        (e.g. ``conf_start_sigma``) are DROPPED because a python-float in the compiled
+        energy's pytree makes dynamo guard on its value and recompile per distinct value.
+        Stable object identity per gate state lets ``torch.compile`` reuse its artifact;
+        sigma decreases monotonically so each gate flips at most once -> a few states ->
+        a few compiles, then reuse. distance is excluded (closed-form). The conformer-gated
+        key set comes from ``_terms.CONF_KEYS`` (not a literal) so it tracks ``_TERMS``."""
         p = self._prepared
-        cg_key = 1.0 if cg >= 0.5 else 0.0
+        cg_key = 1.0 if sigma is None else float(sigma <= float(self.spec.conf_start_sigma))
         if "rmsd" in p and sigma is not None:
             # one tiny sync per step; tuple of per-restraint on/off (sigma<=start_sigma)
             rgate = tuple(bool(b) for b in (sigma <= p["rmsd"]["start_sigma"]).tolist())
@@ -86,8 +89,10 @@ class TorchRestraintOptimizer:
             pg = {}
             for k, v in p.items():
                 if not isinstance(v, dict):
-                    pg[k] = v
-                elif k in ("bond", "angle", "chiral", "dihedral", "vdw"):
+                    continue  # drop scalar leaves (conf_start_sigma): a python-float in
+                    # the compiled energy's pytree forces a per-value dynamo recompile,
+                    # and total_energy(sigma=None) never reads it
+                elif k in CONF_KEYS:
                     pg[k] = {**v, "mask": v["mask"] * cg_key}
                 elif k == "rmsd" and rgate is not None:
                     rg = torch.tensor(
@@ -113,27 +118,25 @@ class TorchRestraintOptimizer:
                 vc.protein_global, dtype=torch.long, device=device
             ),
             "prot_r": torch.as_tensor(vc.protein_radii, dtype=dtype, device=device),
-            "weight": float(vc.weight),
-            "scale": float(vc.scale),
+            # 0-dim tensors (NOT python floats): passed into the compiled VdW energy, where
+            # a python-float arg would make dynamo guard on its value and recompile per
+            # distinct scale/weight across structures in a batch.
+            "weight": torch.as_tensor(float(vc.weight), dtype=dtype, device=device),
+            "scale": torch.as_tensor(float(vc.scale), dtype=dtype, device=device),
         }
 
     def _vdw_energy(self, active, prot_pos):
-        """Ligand-protein VdW repulsion. ``active`` (..., n_active, 3) is the
-        optimised tensor; ``prot_pos`` (..., n_prot, 3) is the fixed background.
-        All-pairs penalty ``weight * sum(clamp(d - scale*(r_i+r_j), max=0)**2)``;
-        non-clashing pairs contribute zero gradient, so this equals a radius-
-        limited contact sum without needing a neighbour search."""
+        """Ligand-protein VdW repulsion (delegates to the pure ``_vdw_pair_energy`` so the
+        all-pairs ``weight*sum(clamp(d - scale*(r_i+r_j), max=0)**2)`` maths lives once —
+        the compiled GPU energy folds in the same function). ``active`` (..., n_active, 3)
+        is the optimised tensor; ``prot_pos`` (..., n_prot, 3) the fixed background."""
+        from rgi_utils.optim._torch_cg_gpu import _vdw_pair_energy
+
         v = self._vdw
-        lig = active[..., v["lig_local"], :]  # (..., n_lig, 3)
-        diff = (
-            lig[..., :, None, :] - prot_pos[..., None, :, :]
-        )  # (..., n_lig, n_prot, 3)
-        dist = torch.sqrt(torch.sum(diff**2, dim=-1) + _EPS)  # (..., n_lig, n_prot)
-        r_min = v["scale"] * (
-            v["lig_r"][:, None] + v["prot_r"][None, :]
-        )  # (n_lig, n_prot)
-        delta = torch.clamp(dist - r_min, max=0.0)
-        return v["weight"] * torch.sum(delta**2)
+        return _vdw_pair_energy(
+            active, prot_pos, v["lig_local"], v["lig_r"], v["prot_r"],
+            v["scale"], v["weight"],
+        )
 
     def minimize(self, coords, sigma=None, start_sigma=None, max_iter=None):
         """Optimize ``coords`` (..., n_atom, 3) in-place. Each restraint is gated
@@ -141,6 +144,11 @@ class TorchRestraintOptimizer:
         skipped only when ``sigma`` exceeds every restraint's start_sigma."""
         if not self.spec.is_active():
             return coords
+        # sigma is the per-step scalar noise level. Coerce to a python float: the skip
+        # test below and the GPU pre-gate (which builds the rmsd-gate tuple from it) both
+        # assume a scalar; a stray multi-element tensor would otherwise fail GPU-only.
+        if sigma is not None:
+            sigma = float(sigma)
         if sigma is not None and sigma > self.spec.max_start_sigma():
             return coords
         self._ensure(coords.device, coords.dtype)
@@ -192,24 +200,17 @@ class TorchRestraintOptimizer:
                     return e
 
                 if self._is_cg() and active.is_cuda:
-                    # GPU: the same early-exit CG as the CPU path, but with a
-                    # torch.compile'd (CUDA-graph) energy+grad so the launch-bound eval
-                    # stops dominating (the eager _minimize_cg below is launch/sync-bound
-                    # on GPU). CPU keeps the early-exit _minimize_cg (already optimal).
+                    # GPU: the same early-exit CG as the CPU path, but with an
+                    # inductor-fused (NOT CUDA-graph) torch.compile'd energy+grad so the
+                    # launch-bound eval stops dominating (the eager _minimize_cg below is
+                    # launch/sync-bound on GPU). CPU keeps _minimize_cg (already optimal).
                     from rgi_utils.optim._torch_cg_gpu import gpu_cg
 
-                    # Pre-gate the masks so the compiled energy takes NO python-float
-                    # sigma (which would force a dynamo recompile every diffusion step):
-                    # fold the noise gate into the masks, then call total_energy with
-                    # sigma=None. Conformer terms share conf_start_sigma; rmsd has its own
-                    # per-restraint start_sigma; distance is excluded (closed-form above).
-                    cg = (
-                        1.0
-                        if sigma is None
-                        else float(sigma <= float(self.spec.conf_start_sigma))
-                    )
-                    # dynamic ligand-protein VdW (when active) is folded into the compiled
-                    # energy via gpu_cg's `vdw` tuple (prot_pos + the per-atom radii).
+                    # _gated_prepared pre-folds the noise gate into the masks (so the
+                    # compiled energy takes sigma=None and carries NO python-float scalar
+                    # leaf, which would make dynamo recompile per value) and caches a
+                    # stable dict per gate state for compile reuse. dynamic ligand-protein
+                    # VdW is folded in via gpu_cg's `vdw` tuple (prot_pos + radii/consts).
                     vdw = None
                     if prot_pos is not None:
                         v = self._vdw
@@ -221,7 +222,7 @@ class TorchRestraintOptimizer:
                             v["scale"],
                             v["weight"],
                         )
-                    prepared_g = self._gated_prepared(cg, sigma)
+                    prepared_g = self._gated_prepared(sigma)
                     opt = gpu_cg(prepared_g, active.detach(), mi, vdw=vdw)
                     with torch.no_grad():
                         active.copy_(opt)

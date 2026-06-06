@@ -46,7 +46,7 @@ def pack_spec(spec, to_int, to_float):
     prepared = {"conf_start_sigma": float(getattr(spec, "conf_start_sigma", -1.0))}
     for key, attr, fields in _SPEC_SCHEMA:
         arr = getattr(spec, attr, None)
-        if arr is None or arr.mask.sum() <= 0:
+        if arr is None or not (arr.mask.sum() > 0):  # same as old `> 0` include, NaN-safe
             continue
         prepared[key] = {f: conv[kind](getattr(arr, f)) for f, kind in fields}
     return prepared
@@ -99,3 +99,9 @@ def term_energies(fns, prepared, positions, cg, sigma_gate, include_distance):
 
 # the float keys energy_breakdown reports, in display order (all start at 0.0)
 BREAKDOWN_KEYS = ("bond", "angle", "chiral", "dihedral", "vdw", "distance", "rmsd")
+
+# the conformer-gated term keys (gate == "conf"): the single source of truth for which
+# terms the conformer noise gate (cg) applies to. The torch GPU pre-gate path imports this
+# instead of re-listing the keys, so adding a 7th conformer term to _TERMS can't silently
+# leave it ungated on the compiled path.
+CONF_KEYS = frozenset(key for key, _fn, _fields, gate in _TERMS if gate == "conf")
