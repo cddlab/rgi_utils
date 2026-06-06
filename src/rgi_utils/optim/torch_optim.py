@@ -208,15 +208,21 @@ class TorchRestraintOptimizer:
                         if sigma is None
                         else float(sigma <= float(self.spec.conf_start_sigma))
                     )
-                    # dynamic ligand-protein VdW (if any) is not part of the compiled
-                    # energy -> its presence routes gpu_cg to the eager functional CG.
-                    vdw_fn = (
-                        (lambda a: self._vdw_energy(a, prot_pos))
-                        if prot_pos is not None
-                        else None
-                    )
+                    # dynamic ligand-protein VdW (when active) is folded into the compiled
+                    # energy via gpu_cg's `vdw` tuple (prot_pos + the per-atom radii).
+                    vdw = None
+                    if prot_pos is not None:
+                        v = self._vdw
+                        vdw = (
+                            prot_pos,
+                            v["lig_local"],
+                            v["lig_r"],
+                            v["prot_r"],
+                            v["scale"],
+                            v["weight"],
+                        )
                     prepared_g = self._gated_prepared(cg, sigma)
-                    opt = gpu_cg(prepared_g, active.detach(), mi, vdw_fn=vdw_fn)
+                    opt = gpu_cg(prepared_g, active.detach(), mi, vdw=vdw)
                     with torch.no_grad():
                         active.copy_(opt)
                 elif self._is_cg():

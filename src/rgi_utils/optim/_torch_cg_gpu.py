@@ -27,9 +27,10 @@ NB: the default (inductor) compile mode is deliberate -- ``mode="reduce-overhead
 every line-search step, which makes the CUDA-graph tree re-record each call; plain
 inductor fusion has no such static-input requirement.
 
-Used only for CUDA coords; CPU keeps ``_minimize_cg``. Shared ``_cg_config`` constants
-keep the convergence contract identical to CPU/jax. Any compile failure, or a dynamic
-ligand-protein VdW term (which is not part of the compiled energy), degrades to the eager
+The dynamic ligand-protein VdW term (default boltz/protenix conformer) is folded into a
+second compiled energy (``_energy_vdw``) so that path is JIT-compiled too. Used only for
+CUDA coords; CPU keeps ``_minimize_cg``. Shared ``_cg_config`` constants keep the
+convergence contract identical to CPU/jax. Any compile failure degrades to the eager
 functional CG -- still the correct early-exit algorithm.
 """
 
@@ -57,7 +58,8 @@ logger = logging.getLogger(__name__)
 # set RGI_DISABLE_COMPILE=1 to force the eager functional CG (debugging / unsupported env)
 _COMPILE_DISABLED = os.environ.get("RGI_DISABLE_COMPILE", "") not in ("", "0", "false")
 _compile_failed = False  # flips True permanently on any compile/runtime failure
-_CVG = None  # the single compiled grad_and_value(_energy), built lazily
+_CVG = None  # compiled grad_and_value(_energy), built lazily
+_CVG_VDW = None  # compiled grad_and_value(_energy_vdw) (dynamic ligand-protein VdW)
 
 
 def _energy(a, prepared):
@@ -67,23 +69,50 @@ def _energy(a, prepared):
     return torch_energy.total_energy(a, prepared, sigma=None, include_distance=False)
 
 
-def _get_cvg():
-    """The compiled ``grad_and_value(_energy)`` (built once, reused). ``None`` if compile
-    is disabled or has failed -> caller uses the eager functional grad."""
-    global _CVG, _compile_failed
+def _vdw_pair_energy(active, prot_pos, lig_local, lig_r, prot_r, scale, weight):
+    """Dynamic ligand-protein VdW repulsion — a PURE copy of
+    ``TorchRestraintOptimizer._vdw_energy`` so it can live inside the compiled energy:
+    the moving ligand atoms (``active[lig_local]``) vs the FIXED protein background
+    ``prot_pos``. All-pairs ``weight * sum(clamp(d - scale*(r_i+r_j), max=0)^2)`` (zero
+    gradient beyond contact, so it equals a radius-limited contact sum)."""
+    lig = active[..., lig_local, :]
+    diff = lig[..., :, None, :] - prot_pos[..., None, :, :]
+    dist = torch.sqrt(torch.sum(diff**2, dim=-1) + EPS)
+    r_min = scale * (lig_r[:, None] + prot_r[None, :])
+    delta = torch.clamp(dist - r_min, max=0.0)
+    return weight * torch.sum(delta**2)
+
+
+def _energy_vdw(a, prepared, prot_pos, lig_local, lig_r, prot_r, scale, weight):
+    """``_energy`` + the dynamic ligand-protein VdW term, as one compiled energy so the
+    default boltz/protenix conformer (which uses the dynamic VdW) is JIT-compiled too."""
+    return _energy(a, prepared) + _vdw_pair_energy(
+        a, prot_pos, lig_local, lig_r, prot_r, scale, weight
+    )
+
+
+def _get_cvg(with_vdw=False):
+    """The compiled ``grad_and_value`` of the energy (vdw-augmented when ``with_vdw``),
+    built once and reused. ``None`` if compile is disabled or has failed -> eager."""
+    global _CVG, _CVG_VDW, _compile_failed
     if _COMPILE_DISABLED or _compile_failed:
         return None
-    if _CVG is None:
-        try:
+    try:
+        if with_vdw:
+            if _CVG_VDW is None:
+                _CVG_VDW = torch.compile(
+                    torch.func.grad_and_value(_energy_vdw, argnums=0), fullgraph=False
+                )
+            return _CVG_VDW
+        if _CVG is None:
             _CVG = torch.compile(
-                torch.func.grad_and_value(_energy, argnums=0),
-                fullgraph=False,
+                torch.func.grad_and_value(_energy, argnums=0), fullgraph=False
             )
-        except Exception as exc:
-            logger.warning("torch.compile of the GPU CG energy failed (%s); eager", exc)
-            _compile_failed = True
-            return None
-    return _CVG
+        return _CVG
+    except Exception as exc:
+        logger.warning("torch.compile of the GPU CG energy failed (%s); eager", exc)
+        _compile_failed = True
+        return None
 
 
 def _cg_minimize_torch(vg, x0, max_iter, max_ls=MAX_LS, gtol=GTOL, ftol=FTOL):
@@ -137,28 +166,29 @@ def _cg_minimize_torch(vg, x0, max_iter, max_ls=MAX_LS, gtol=GTOL, ftol=FTOL):
     return x
 
 
-def gpu_cg(prepared, x0, max_iter, vdw_fn=None, force_eager=False):
-    """Run the CG on CUDA coords. ``prepared`` is the (stable, pre-gated) backend energy
-    dict; ``x0`` the active coords; ``vdw_fn`` the optional dynamic ligand-protein VdW
-    term (a pure fn of ``a``). Uses the single compiled grad_and_value when there is no
-    dynamic VdW and ``force_eager`` is False (set it when ``prepared`` is not a stable
-    cached object, e.g. per-step rmsd gating, to avoid a recompile every call); otherwise
-    (or on any compile/runtime failure) the eager functional CG. Returns optimized coords."""
+def gpu_cg(prepared, x0, max_iter, vdw=None):
+    """Run the CG on CUDA coords. ``prepared`` is the (stable, pre-gated) energy dict;
+    ``x0`` the active coords; ``vdw`` an optional tuple ``(prot_pos, lig_local, lig_r,
+    prot_r, scale, weight)`` folding the dynamic ligand-protein VdW term into the compiled
+    energy. The energy+grad is inductor-compiled for CUDA coords (the non-GPU tests
+    exercise the eager functional CG, the same correct algorithm); any compile/runtime
+    failure degrades permanently to eager. Returns optimized coords."""
     global _compile_failed
-    # compile only for CUDA coords (the non-GPU tests exercise the eager functional CG,
-    # which is the same correct algorithm)
-    cvg = _get_cvg() if (vdw_fn is None and x0.is_cuda and not force_eager) else None
+    cvg = _get_cvg(with_vdw=vdw is not None) if x0.is_cuda else None
     if cvg is not None:
+        vg = (lambda x: cvg(x, prepared)) if vdw is None else (
+            lambda x: cvg(x, prepared, *vdw)
+        )
         try:
-            return _cg_minimize_torch(lambda x: cvg(x, prepared), x0, max_iter)
+            return _cg_minimize_torch(vg, x0, max_iter)
         except Exception as exc:  # compiled/runtime failure -> eager, permanently
             logger.warning("GPU CG (compiled) failed at runtime (%s); eager", exc)
             _compile_failed = True
 
     def e_of(a):
         e = _energy(a, prepared)
-        if vdw_fn is not None:
-            e = e + vdw_fn(a)
+        if vdw is not None:
+            e = e + _vdw_pair_energy(a, *vdw)
         return e
 
     return _cg_minimize_torch(torch.func.grad_and_value(e_of), x0, max_iter)

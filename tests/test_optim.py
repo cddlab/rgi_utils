@@ -277,6 +277,49 @@ def test_gpu_cg_converges_stiff_chiral():
     assert ch0 > 0.0 and ch1 < 0.1 * ch0, f"chiral not converged: {ch0} -> {ch1}"
 
 
+def test_dynamic_vdw_pair_energy_matches_optimizer():
+    """The pure _vdw_pair_energy (folded into the compiled GPU energy) must equal the
+    optimizer's _vdw_energy method (used on the CPU/eager path) — so compiling the
+    dynamic ligand-protein VdW conformer path doesn't change the energy."""
+    torch = pytest.importorskip("torch")
+    from rgi_utils.optim._torch_cg_gpu import _vdw_pair_energy
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+
+    m = Chem.MolFromSmiles("CC")
+    m = Chem.AddHs(m)
+    AllChem.EmbedMolecule(m, randomSeed=1)
+    c = np.asarray(m.GetConformer().GetPositions())
+    n = m.GetNumAtoms()
+    lc = LigandConf(
+        mol=m, conf_coords=c, global_indices=np.arange(n), conformer_restraints=True
+    )
+    n_atom = n + 1
+    elements = np.zeros(n_atom, dtype=np.int64)
+    for i, atom in enumerate(m.GetAtoms()):
+        elements[i] = atom.GetAtomicNum()
+    elements[n] = 6  # a heavy "protein" background atom
+    spec = build_spec([lc], [], {"vdw": {"weight": 1.0, "scale": 0.9}}, elements=elements)
+    assert spec.vdw_config is not None  # dynamic ligand-protein VdW
+
+    coords = torch.zeros((1, n_atom, 3), dtype=torch.float64)
+    coords[0, :n, :] = torch.tensor(c)
+    coords[0, n, :] = torch.tensor(c[0] + np.array([0.5, 0.0, 0.0]))  # a clash
+    opt = TorchRestraintOptimizer(spec, max_iter=10)
+    opt._ensure(coords.device, coords.dtype)  # builds opt._vdw
+    active = coords[0, opt._active_idx, :]
+    prot_pos = coords[0, opt._vdw["prot_global"], :]
+    v = opt._vdw
+
+    e_method = float(opt._vdw_energy(active, prot_pos))
+    e_pure = float(
+        _vdw_pair_energy(
+            active, prot_pos, v["lig_local"], v["lig_r"], v["prot_r"],
+            v["scale"], v["weight"],
+        )
+    )
+    assert e_method > 0.0 and abs(e_method - e_pure) < 1e-10, (e_method, e_pure)
+
+
 def test_sync_free_cg_nonfinite_guard():
     """A non-finite gradient/energy returns the input coords unchanged (on-device
     guard, mirroring the jax backend) — no NaN written into the structure."""
