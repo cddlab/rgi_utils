@@ -206,7 +206,7 @@ def test_sync_free_cg_reduces_conformer_energy():
         return torch_energy.total_energy(a, prepared, sigma=None, include_distance=False)
 
     e0 = float(e_of(a0))
-    a1 = gpu_cg(e_of, a0, 200)
+    a1 = gpu_cg(prepared, a0, 200)
     assert float(e_of(a1)) < 0.5 * e0
 
 
@@ -225,8 +225,56 @@ def test_sync_free_cg_reduces_rmsd_energy():
         return torch_energy.total_energy(a, prepared, sigma=None, include_distance=False)
 
     e0 = float(e_of(a0))
-    a1 = gpu_cg(e_of, a0, 500)
+    a1 = gpu_cg(prepared, a0, 500)
     assert float(e_of(a1)) < 0.1 * e0, f"{e0} -> {float(e_of(a1))}"
+
+
+def test_gpu_cg_converges_stiff_chiral():
+    """Regression: the GPU CG must drive a STIFF chiral term to ~0. A fixed-width vmap
+    line search (an earlier attempt) could not reach the fine backtracking steps a stiff
+    chiral needs and silently let it diverge; the sequential early-exit line search does.
+    Runs on CPU (eager functional CG, same algorithm as the CUDA path)."""
+    torch = pytest.importorskip("torch")
+    from rgi_utils.energy import torch_energy
+    from rgi_utils.optim._torch_cg_gpu import gpu_cg
+
+    m = Chem.MolFromSmiles("C[C@H](N)O")  # one tetrahedral stereocentre
+    m = Chem.AddHs(m)
+    AllChem.EmbedMolecule(m, randomSeed=1)
+    Chem.AssignStereochemistryFrom3D(m)
+    c = np.asarray(m.GetConformer().GetPositions())
+    n = m.GetNumAtoms()
+    lc = LigandConf(
+        mol=m, conf_coords=c, global_indices=np.arange(n), conformer_restraints=True
+    )
+    spec = build_spec(
+        [lc], [],
+        {"bond": {"weight": 1.0}, "angle": {"weight": 1.0}, "chiral": {"weight": 1.0}},
+        conf_start_sigma=1e30,
+    )
+    assert spec.chiral is not None and spec.chiral.mask.sum() > 0, "no chiral restraint"
+
+    prepared = torch_energy.prepare_spec(spec, dtype=torch.float64)
+    rng = np.random.default_rng(0)
+    a0 = torch.tensor(
+        c[spec.active_sites] + rng.standard_normal((spec.n_active, 3)) * 0.3,
+        dtype=torch.float64,
+    )
+
+    def e_of(a):
+        return torch_energy.total_energy(a, prepared, sigma=None, include_distance=False)
+
+    def chiral_e(a):
+        ch = prepared["chiral"]
+        return float(
+            torch_energy.chiral_energy(
+                a, ch["idx"], ch["vol0"], ch["slack"], ch["weight"], ch["mask"]
+            )
+        )
+
+    ch0 = chiral_e(a0)
+    ch1 = chiral_e(gpu_cg(prepared, a0, 300))
+    assert ch0 > 0.0 and ch1 < 0.1 * ch0, f"chiral not converged: {ch0} -> {ch1}"
 
 
 def test_sync_free_cg_nonfinite_guard():

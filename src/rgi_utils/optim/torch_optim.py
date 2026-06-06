@@ -45,6 +45,7 @@ class TorchRestraintOptimizer:
         self.max_iter = max_iter
         self.method = method
         self._prepared = None
+        self._prepared_g = {}  # cache {gate-state -> stable pre-gated prepared} (GPU CG)
         self._active_idx = None
         self._device = None
         self._vdw = None  # dict of device tensors for the ligand-protein VdW term
@@ -61,8 +62,42 @@ class TorchRestraintOptimizer:
             self._prepared = torch_energy.prepare_spec(
                 self.spec, device=device, dtype=dtype
             )
+            self._prepared_g = {}  # rebuilt lazily for the new device
             self._setup_vdw(device, dtype)
         self._device = device
+
+    def _gated_prepared(self, cg, sigma):
+        """Stable pre-gated ``prepared`` for the compiled GPU CG, cached by the discrete
+        GATE STATE — the conformer gate ``cg`` (0/1) plus the per-restraint rmsd gate
+        (``sigma <= start_sigma``). Stable object identity per state lets ``torch.compile``
+        reuse its artifact (a fresh dict of fresh tensors each step would re-trace). sigma
+        decreases monotonically, so each restraint's gate flips at most once -> only a
+        few states -> a few compiles, then reuse. distance is excluded (closed-form)."""
+        p = self._prepared
+        cg_key = 1.0 if cg >= 0.5 else 0.0
+        if "rmsd" in p and sigma is not None:
+            # one tiny sync per step; tuple of per-restraint on/off (sigma<=start_sigma)
+            rgate = tuple(bool(b) for b in (sigma <= p["rmsd"]["start_sigma"]).tolist())
+        else:
+            rgate = None
+        key = (cg_key, rgate)
+        cache = self._prepared_g
+        if key not in cache:
+            pg = {}
+            for k, v in p.items():
+                if not isinstance(v, dict):
+                    pg[k] = v
+                elif k in ("bond", "angle", "chiral", "dihedral", "vdw"):
+                    pg[k] = {**v, "mask": v["mask"] * cg_key}
+                elif k == "rmsd" and rgate is not None:
+                    rg = torch.tensor(
+                        rgate, dtype=v["mask"].dtype, device=v["mask"].device
+                    )
+                    pg[k] = {**v, "mask": v["mask"] * rg}
+                else:
+                    pg[k] = v
+            cache[key] = pg
+        return cache[key]
 
     def _setup_vdw(self, device, dtype) -> None:
         vc = getattr(self.spec, "vdw_config", None)
@@ -157,21 +192,31 @@ class TorchRestraintOptimizer:
                     return e
 
                 if self._is_cg() and active.is_cuda:
-                    # GPU: sync-free CG (functional grad + vmap line search) so the tiny
-                    # restraint kernels pipeline instead of stalling on a host sync every
-                    # iteration (the eager _minimize_cg below is sync-bound on GPU). CPU
-                    # keeps the early-exit _minimize_cg (syncs are free there).
+                    # GPU: the same early-exit CG as the CPU path, but with a
+                    # torch.compile'd (CUDA-graph) energy+grad so the launch-bound eval
+                    # stops dominating (the eager _minimize_cg below is launch/sync-bound
+                    # on GPU). CPU keeps the early-exit _minimize_cg (already optimal).
                     from rgi_utils.optim._torch_cg_gpu import gpu_cg
 
-                    def _e_of(a):
-                        e = torch_energy.total_energy(
-                            a, prepared, sigma, include_distance=False
-                        )
-                        if prot_pos is not None:
-                            e = e + self._vdw_energy(a, prot_pos)
-                        return e
-
-                    opt = gpu_cg(_e_of, active.detach(), mi)
+                    # Pre-gate the masks so the compiled energy takes NO python-float
+                    # sigma (which would force a dynamo recompile every diffusion step):
+                    # fold the noise gate into the masks, then call total_energy with
+                    # sigma=None. Conformer terms share conf_start_sigma; rmsd has its own
+                    # per-restraint start_sigma; distance is excluded (closed-form above).
+                    cg = (
+                        1.0
+                        if sigma is None
+                        else float(sigma <= float(self.spec.conf_start_sigma))
+                    )
+                    # dynamic ligand-protein VdW (if any) is not part of the compiled
+                    # energy -> its presence routes gpu_cg to the eager functional CG.
+                    vdw_fn = (
+                        (lambda a: self._vdw_energy(a, prot_pos))
+                        if prot_pos is not None
+                        else None
+                    )
+                    prepared_g = self._gated_prepared(cg, sigma)
+                    opt = gpu_cg(prepared_g, active.detach(), mi, vdw_fn=vdw_fn)
                     with torch.no_grad():
                         active.copy_(opt)
                 elif self._is_cg():
