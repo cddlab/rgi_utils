@@ -23,10 +23,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import numpy as np
-
-from rgi_utils.selection import AtomSelector
-
 
 @dataclass
 class PdbAtom:
@@ -101,27 +97,3 @@ def read_pdb_atoms(path: str) -> list[PdbAtom]:
     if not atoms:
         raise ValueError(f"rmsd ref_pdb has no ATOM/HETATM records: {path!r}")
     return atoms
-
-
-def select_ref_atoms(path: str, selection: str) -> list[PdbAtom]:
-    """Return the reference ``PdbAtom`` records matching ``selection`` (file order).
-
-    ``selection`` uses the same DSL as distance restraints (chain / resid / index),
-    evaluated against each parsed atom's ``{chain, resid, index}`` via
-    ``AtomSelector.matches``. Each record carries its atom ``name`` so the RMSD
-    restraint can pair against the diffusion structure by identity (chain, resid,
-    name) rather than by selection order.
-    """
-    atoms = read_pdb_atoms(path)
-    sel = AtomSelector(selection)
-    return [
-        a
-        for a in atoms
-        if sel.matches({"chain": a.chain, "resid": a.resid, "index": a.index})
-    ]
-
-
-def select_ref_coords(path: str, selection: str) -> np.ndarray:
-    """``(n_sel, 3)`` coords of the matched reference atoms, in file order."""
-    sel = select_ref_atoms(path, selection)
-    return np.asarray([(a.x, a.y, a.z) for a in sel], dtype=np.float64).reshape(-1, 3)

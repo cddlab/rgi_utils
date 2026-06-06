@@ -35,7 +35,6 @@ class LigandConf:
     conf_coords: "np.ndarray"  # (n_lig_atoms, 3) ideal conformer coordinates
     global_indices: "np.ndarray"  # (n_lig_atoms,) global padded atom index per mol atom
     invert_chirality: bool = False
-    atom_names: list[str] | None = None  # optional filter (e.g. CCD atom names)
     # per-ligand opt-in: conformer restraints (bond/angle/chiral/VdW) are built for
     # this ligand ONLY when this is True. Adapters with a per-ligand input flag
     # (boltz/protenix/openfold-3/af3) set it from ``conformer_restraints`` and default

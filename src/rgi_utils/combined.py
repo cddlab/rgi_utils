@@ -356,14 +356,6 @@ class CombinedRestraints:
             return torch_energy.energy_breakdown(active, prepared)
         raise ValueError(f"unknown backend: {b}")
 
-    def _restraint_energy(self, coords) -> float:
-        b = self._backend
-        if b == "jax":
-            from rgi_utils.optim.jax_optim import energy_of
-
-            return energy_of(self.spec, coords)
-        return self._optimizer.energy(coords)
-
     # --- Legacy parse-time builders (boltz schema.py back-compat) -------------
     # Ligand conformer restraints are now built from LigandConf via the
     # featurizer, so the ligand-path calls (make_bond/make_angle_restraints and

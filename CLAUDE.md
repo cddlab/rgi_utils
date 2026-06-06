@@ -23,7 +23,7 @@ GPU paths (real CUDA torch / jax devices) are exercised by the host tools via
 ## Architecture
 
 **rgi_utils** — Restraint-Guided Inference (RGI): inject distance + ligand
-conformer restraints into a structure-prediction diffusion loop via gradient
+conformer + RMSD restraints into a structure-prediction diffusion loop via gradient
 optimization. Shared by boltz / protenix / chai-lab / openfold-3 / esmfold2 (torch)
 and alphafold3 (jax). The end-to-end guide for integrating a new tool is the skill at
 `skills/implement-rgi/` (SKILL.md + references/).
@@ -38,8 +38,9 @@ Design = **3 layers + autodiff + static shapes + GPU-complete optimization**:
 
 2. **Energy layer** (`energy/{numpy,torch,jax}_energy.py`, differentiable pure
    functions): identical flat-bottomed maths in all three backends —
-   `bond/angle/chiral/dihedral/vdw/distance` (dihedral = periodicity-safe torsion
-   for cis/trans). `prepare_spec(spec)` → backend arrays;
+   `bond/angle/chiral/dihedral/vdw/distance/rmsd` (dihedral = periodicity-safe torsion
+   for cis/trans; rmsd = Kabsch-superposed RMSD toward a target, fit/calc separable).
+   `prepare_spec(spec)` → backend arrays;
    `total_energy(positions, prepared)` → scalar. Gradients come from autodiff
    (no hand-written grad). `numpy_energy` is the reference;
    `tests/test_backend_parity.py` checks energy+grad agreement across backends.
@@ -50,14 +51,18 @@ Design = **3 layers + autodiff + static shapes + GPU-complete optimization**:
    Armijo); jax = a pure-jax port of it (`lax.while_loop`, JIT-able inside `lax.scan`).
    `method='l-bfgs'` is opt-in (torch `LBFGS` strong-Wolfe / `jaxopt.LBFGS`, lazily
    imported). Distance restraints skip the solver — a COM-distance is 1-DOF and applied
-   closed-form in `distance_shift.py`. No `pure_callback`, no scipy. There is **no numpy
+   closed-form in `distance_shift.py`. No `pure_callback`, no scipy. On CUDA the torch CG
+   runs through `optim/_torch_cg_gpu.py` — the same early-exit CG but with a `torch.compile`
+   (inductor-fused, NOT cudagraph) energy+grad, so conformer/RMSD optimization is GPU-faster
+   than eager. RMSD needs the hand-rolled CG on BOTH backends (jaxopt NonlinearCG stalls on
+   RMSD's fixed-rotation `stop_gradient` gradient). There is **no numpy
    optimizer backend** (the old scipy path was removed); `numpy_energy` remains only as
    the pure-numpy energy reference for `tests/test_backend_parity.py`. Optimization
    requires torch or jax.
 
 Supporting modules:
-- **`featurizer.py`**: `build_spec(ligand_confs, distance_restraints,
-  conformer_config, elements)` — the single place RDKit mols become bond/angle/
+- **`featurizer.py`**: `build_spec(ligand_confs, distance_restraints, conformer_config,
+  elements, conf_start_sigma, rmsd_restraints)` — the single place RDKit mols become bond/angle/
   chiral/dihedral restraints (global indices, multi-ligand) and the dynamic
   ligand-protein `VdwConfig` is assembled. Dihedral (cis/trans) detection keys on
   acyclic, non-aromatic `BondType.DOUBLE` bonds and targets the reference-conformer
@@ -94,6 +99,12 @@ Supporting modules:
 - **Atom selection DSL** (`selection.py`): `AtomSelector` parses
   `"(chain A or chain B) and resid 1 to 10"`; used by `DistanceData`
   (`distance_restr_data.py`) to resolve COM-based distance groups.
+- **RMSD restraint** (`rmsd_restr_data.py` + `pdb_ref.py`): `RmsdData` resolves a moving
+  group against a reference PDB (parsed by the dependency-free `read_pdb_atoms`), driving the
+  Kabsch-superposed RMSD toward `target_rmsd`. The superposition ("fit") and measured ("calc")
+  atoms may use different selections. Atoms pair by IDENTITY (chain, resid, name);
+  `atom_selection` is OPTIONAL — omit it to fit+measure over the WHOLE structure best-effort
+  (atoms missing from the ref are skipped).
 
 ### VdW (two flavours)
 
@@ -117,8 +128,8 @@ The static `vdw_energy` (idx pairs) lives in the energy layer for parity across 
   `minimize`** (global flat index, after any reshape); `resid` is the **per-chain
   1-based residue/token ordinal** (resets at each chain) — not the author residue
   number, not a cumulative token index. These two conventions must match across tools.
-- `minimize` is gated on `sigma <= start_sigma`. `start_sigma` is set in exactly two
-  places — **per distance entry** (each `distance_restraints_config` entry) and **once
+- `minimize` is gated on `sigma <= start_sigma`. `start_sigma` is set **per distance/RMSD
+  entry** (each `distance_restraints_config` / `rmsd_restraints_config` entry) and **once
   for all conformer terms** (`conformer_restraints_config.start_sigma` ->
   `RestraintSpec.conf_start_sigma`). There is **no top-level/global `start_sigma`** (a
   top-level one raises `ValueError`); per restraint it is **optional** and defaults to
