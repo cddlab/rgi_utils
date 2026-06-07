@@ -94,7 +94,27 @@ class ESMFold2Adapter:
         self._asym_to_name = {
             int(c.asym_id): str(c.chain_id) for c in (chain_infos or [])
         }
+        # {asym_id -> [(atom_name1, atom_name2, order), ...]} CCD ligand bonds with the
+        # Kekulized bond order (prepare_input populates ChainInfo.ligand_bond_orders).
+        # Used to upgrade the binary token_bonds connectivity with real bond orders so
+        # build_ligand_mol can re-perceive aromaticity for the UFF-relaxed restraint
+        # target. Absent (SMILES ligand / older feats) -> orders default to single.
+        self._asym_to_bond_orders = {
+            int(c.asym_id): list(getattr(c, "ligand_bond_orders", None) or [])
+            for c in (chain_infos or [])
+        }
         self._tok_ordinal = self._compute_token_ordinals()
+
+    def _atom_name(self, i: int) -> str | None:
+        """Decoded atom name for atom row ``i`` (ref_atom_name_chars), or None."""
+        if self._ref_atom_name_chars is None:
+            return None
+        return (
+            "".join(
+                chr(int(x) + 32) for x in self._ref_atom_name_chars[i] if int(x) != 0
+            ).strip()
+            or None
+        )
 
     def _compute_token_ordinals(self) -> dict[int, int]:
         """Per-chain 1-based ordinal for each token (resets at each chain).
@@ -126,15 +146,11 @@ class ESMFold2Adapter:
             tok = int(a2t[i])
             asym = int(self._asym[tok])
             chain = self._asym_to_name.get(asym, str(asym))
-            nm = None
-            if self._ref_atom_name_chars is not None:
-                nm = "".join(
-                    chr(int(x) + 32)
-                    for x in self._ref_atom_name_chars[i]
-                    if int(x) != 0
-                ).strip() or None
             yield AtomRecord(
-                chain=chain, resid=int(self._tok_ordinal[tok]), index=int(i), name=nm
+                chain=chain,
+                resid=int(self._tok_ordinal[tok]),
+                index=int(i),
+                name=self._atom_name(i),
             )
 
     # --- ConformerAdapter -----------------------------------------------------
@@ -164,15 +180,31 @@ class ESMFold2Adapter:
         for i in lig_atoms:
             by_chain.setdefault(int(self._asym[int(a2t[i])]), []).append(int(i))
 
-        for idxs in by_chain.values():
+        for asym, idxs in by_chain.items():
             idxs = np.array(sorted(idxs), dtype=np.int64)
             elements = self._ref_element[idxs]
             coords = self._ref_pos[idxs]
-            # intra-ligand bonds from token_bonds (binary -> order 1); 1 token/atom
-            # means token_bonds between two ligand atom-tokens is their atom bond.
+            # Connectivity comes from token_bonds (binary, reliable). Bond ORDERS, when
+            # available, come from ChainInfo.ligand_bond_orders (CCD, Kekulized) matched by
+            # atom name -> local index; pairs without a recorded order default to single.
+            # Real orders let build_ligand_mol re-perceive aromaticity so the UFF-relaxed
+            # bond/angle target keeps aromatic rings planar (a flat single-bond ring would
+            # otherwise pucker to sp3). 1 token/atom -> a token pair is an atom bond.
+            order_by_pair: dict[tuple[int, int], int] = {}
+            name_orders = self._asym_to_bond_orders.get(int(asym))
+            if name_orders:
+                namemap: dict[str, int] = {}
+                for li, g in enumerate(idxs):
+                    nm = self._atom_name(int(g))
+                    if nm is not None:
+                        namemap[nm] = li
+                for n1, n2, o in name_orders:
+                    if n1 in namemap and n2 in namemap:
+                        a, b = namemap[n1], namemap[n2]
+                        order_by_pair[(min(a, b), max(a, b))] = int(o)
             toks = [int(a2t[int(g)]) for g in idxs]
             bonds_local = [
-                (li, lj, 1)
+                (li, lj, order_by_pair.get((li, lj), 1))
                 for li in range(len(idxs))
                 for lj in range(li + 1, len(idxs))
                 if self._token_bonds[toks[li], toks[lj]] > 0

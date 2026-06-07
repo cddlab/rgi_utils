@@ -42,9 +42,14 @@ class ChaiStructureAdapter:
     flat index matches the ``atom_pos`` tensor exactly.
     """
 
-    def __init__(self, structure_context, num_atoms: int) -> None:
+    def __init__(self, structure_context, num_atoms: int, smiles_by_subchain=None) -> None:
         self.sc = structure_context
         self._n_atom = int(num_atoms)
+        # {subchain_id -> SMILES} for ligand chains (chai drops bond ORDERS at every layer,
+        # so the conformer mol is otherwise perceived all-single and can't be UFF-relaxed to
+        # the aromatic-ideal target). The structure_context ligand atoms are in MolFromSmiles
+        # heavy-atom order, so a fresh MolFromSmiles maps its bonds back by index.
+        self._smiles_by_subchain = dict(smiles_by_subchain or {})
 
     def _token_chains(self) -> list[str]:
         """Per-token chain id string decoded from the subchain_id tensorcode."""
@@ -97,6 +102,54 @@ class ChaiStructureAdapter:
             elements[:n] = np.where(exists[:n], z[:n], 0)
         return elements
 
+    def _mol_from_smiles(self, smiles, idxs, elements, coords):
+        """Build the ligand mol from the source SMILES so it carries real bond ORDERS
+        (chai drops them at every layer). chai names a SMILES ligand's atoms
+        ``element+counter`` over the AddHs atom order, uppercased; we replicate that naming
+        on a fresh ``MolFromSmiles`` and map its bonds to chai's atoms BY NAME -- chai
+        reorders ligand atoms, so a positional map is wrong (verified: by-order RMS came out
+        WORSE than perceive). Aromatic bonds are passed as order 4 (AROMATIC in
+        build_ligand_mol's order_map) so SanitizeMol re-perceives aromaticity for the
+        featurizer's UFF-relax. Returns None on any incomplete match -> caller falls back
+        to perceive_bonds, so a naming-convention drift degrades gracefully rather than
+        corrupting the restraint.
+        """
+        from collections import defaultdict
+
+        from rdkit import Chem
+
+        base = Chem.MolFromSmiles(smiles)
+        if base is None or base.GetNumAtoms() != len(idxs):
+            return None
+        nbase = base.GetNumAtoms()
+        cnt: dict = defaultdict(int)
+        base_name: dict[int, str] = {}
+        for i, atom in enumerate(Chem.AddHs(base).GetAtoms()):
+            s = atom.GetSymbol()
+            cnt[s] += 1
+            if i < nbase:  # heavy atoms come first (AddHs appends H)
+                base_name[i] = (s + str(cnt[s])).upper()
+        names = getattr(self.sc, "atom_ref_name", None)
+        if names is None:
+            return None
+        name_to_local = {
+            str(names[int(g)]).strip().upper(): li for li, g in enumerate(idxs)
+        }
+        base_to_local = {
+            bi: name_to_local[nm] for bi, nm in base_name.items() if nm in name_to_local
+        }
+        if len(base_to_local) != nbase:
+            return None  # incomplete name match -> safe fallback
+        bonds_local = [
+            (
+                base_to_local[b.GetBeginAtomIdx()],
+                base_to_local[b.GetEndAtomIdx()],
+                4 if b.GetIsAromatic() else int(b.GetBondTypeAsDouble()),
+            )
+            for b in base.GetBonds()
+        ]
+        return _build_ligand_mol(elements, coords, bonds_local)
+
     def iter_ligand_confs(self) -> Iterator[LigandConf]:
         sc = self.sc
         if sc is None:
@@ -125,9 +178,21 @@ class ChaiStructureAdapter:
         for ch in np.unique(per_atom_chain[lig_mask]):
             idxs = np.where((per_atom_chain == ch) & lig_mask)[0]
             coords = ref_pos[idxs]
-            mol = _build_ligand_mol(
-                ref_elem[idxs], coords, [], perceive_bonds=True
-            )
+            # Prefer the source SMILES (real bond orders) over geometry-perceived
+            # connectivity: with orders, build_ligand_mol re-perceives aromaticity so the
+            # featurizer's UFF-relax can idealise the bond/angle target (aromatic -> 4,
+            # the AROMATIC code in build_ligand_mol's order_map). The structure_context
+            # ligand atoms are in MolFromSmiles heavy-atom order, so smol bond indices are
+            # the local indices here. Fall back to perceive_bonds if SMILES is absent or
+            # its heavy-atom count doesn't line up (a safety check against any reordering).
+            smiles = self._smiles_by_subchain.get(str(ch))
+            mol = None
+            if smiles is not None:
+                mol = self._mol_from_smiles(smiles, idxs, ref_elem[idxs], coords)
+            if mol is None:
+                mol = _build_ligand_mol(
+                    ref_elem[idxs], coords, [], perceive_bonds=True
+                )
             yield LigandConf(
                 mol=mol,
                 conf_coords=coords,

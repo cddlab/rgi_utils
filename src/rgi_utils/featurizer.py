@@ -20,6 +20,7 @@ import logging
 import numpy as np
 from rdkit import Chem
 
+from rgi_utils._mol_build import uff_relax
 from rgi_utils.atom_context import LigandConf
 from rgi_utils.spec import (
     DIST_TYPE_CODES,
@@ -95,6 +96,26 @@ def _extract_conformer(ligand_confs: list[LigandConf]):
         mol = lc.mol
         crds = np.asarray(lc.conf_coords, dtype=np.float64)
         gidx = np.asarray(lc.global_indices, dtype=np.int64)
+        # Derive the bond/angle/chiral/dihedral TARGETS from a UFF-relaxed copy of the
+        # tool's conformer. Each tool's cached conformer carries its own idiosyncrasies
+        # (the boltz v2 ~/.boltz/mols cache Kekule-localizes aromatic rings to ~1.34/1.48;
+        # other tools' ref_pos has non-ideal bond/angle lengths), so without this the
+        # restraint just reproduces them and is a no-op vs the force-field-ideal the emb
+        # metric measures against. uff_relax KEEPS the fold (local minimisation from the
+        # existing conformer) -- unlike a from-scratch ETKDG embed, which mis-folds
+        # big/flexible/phosphate ligands -- and brings bonds/angles onto the shared
+        # force-field ideal. Falls back to the cached coords if UFF fails.
+        # Guard: only when the mol carries REAL bond orders (an aromatic or double bond).
+        # chai/esmfold2 expose no bond orders -> their mol is all-single, so UFF would
+        # localize an aromatic ring to single-bond lengths (~1.5) and corrupt the target;
+        # for those tools the cached conformer already holds the real reference geometry.
+        if any(
+            b.GetIsAromatic() or b.GetBondType() == Chem.BondType.DOUBLE
+            for b in mol.GetBonds()
+        ):
+            _relaxed = uff_relax(mol, crds)
+            if _relaxed is not None and len(_relaxed) == len(crds):
+                crds = _relaxed
 
         for b in mol.GetBonds():
             ai, aj = b.GetBeginAtomIdx(), b.GetEndAtomIdx()

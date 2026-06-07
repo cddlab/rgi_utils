@@ -30,6 +30,9 @@ class ProtenixAdapter:
     def __init__(self, input_feature_dict: dict) -> None:
         self.feats = input_feature_dict
         self.atom_array = input_feature_dict.get("atom_array")
+        # {label_asym_id -> SMILES} for SMILES ligands (set by json_to_feature); used to
+        # build a stereo-correct ideal conformer as the restraint target.
+        self._smiles_by_chain = input_feature_dict.get("smiles_by_chain", {}) or {}
         # padded atom count = coordinate length in the diffusion loop
         self._n_atom = int(input_feature_dict["atom_to_token_idx"].shape[-1])
 
@@ -114,6 +117,31 @@ class ProtenixAdapter:
             ]
             coords = coords_all[idxs]
             mol = _build_ligand_mol(elements_all[idxs], coords, bonds_local)
+            # SMILES ligand: replace the target with a stereo-correct ETKDG ideal
+            # conformer (atom_array.coord may be the wrong isomer, e.g. maleate predicted
+            # trans -> the restraint would converge to trans). The atom_array atom order
+            # equals the SMILES mol's RDKit order (json_parser builds it from
+            # mol.GetAtoms()), so the ideal coords line up with idxs.
+            smiles = self._smiles_by_chain.get(str(chain_id))
+            if smiles is not None:
+                from rdkit import Chem
+
+                from rgi_utils._mol_build import generate_ideal_conformer
+
+                smol = Chem.MolFromSmiles(smiles)  # carries the SMILES stereo
+                # target_mol=mol fixes the atom order to atom_array (global_indices) order.
+                ideal = (
+                    generate_ideal_conformer(smol, target_mol=mol)
+                    if smol is not None else None
+                )
+                if ideal is not None and len(ideal) == len(idxs):
+                    coords = ideal
+                    mol = _build_ligand_mol(elements_all[idxs], ideal, bonds_local)
+                else:
+                    logger.warning(
+                        "protenix chain %s: SMILES ETKDG failed; using model coords "
+                        "as the restraint target", chain_id,
+                    )
             conf_rest = False  # per-ligand opt-in; absent annotation -> off
             if conf_rest_annot is not None:
                 conf_rest = bool(conf_rest_annot[idxs].any())

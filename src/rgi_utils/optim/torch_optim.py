@@ -151,7 +151,18 @@ class TorchRestraintOptimizer:
             sigma = float(sigma)
         if sigma is not None and sigma > self.spec.max_start_sigma():
             return coords
-        self._ensure(coords.device, coords.dtype)
+        # Optimize in fp32 even when the model runs the diffusion in bf16/fp16: a
+        # half-precision CG line search + autograd gradient is too coarse, so the
+        # restraint could silently fail to converge. Work in fp32 and cast the result
+        # back to the coord dtype. fp32/fp64 tools are unaffected (work_dtype ==
+        # coords.dtype), so this is a safe no-op for them.
+        out_dtype = coords.dtype
+        work_dtype = (
+            torch.float32
+            if coords.dtype in (torch.float16, torch.bfloat16)
+            else coords.dtype
+        )
+        self._ensure(coords.device, work_dtype)
         mi = max_iter if max_iter is not None else self.max_iter
         # VdW is a conformer restraint -> gated by conf_start_sigma
         vdw_active = self._vdw is not None and (
@@ -167,8 +178,11 @@ class TorchRestraintOptimizer:
         # tensors cannot require grad. Re-enable autograd and copy the active sites
         # into a normal tensor we can mutate / attach a graph to.
         with torch.inference_mode(False), torch.enable_grad():
-            active = torch.empty_like(coords[..., self._active_idx, :])
-            active.copy_(coords[..., self._active_idx, :])
+            active = torch.empty(
+                coords[..., self._active_idx, :].shape,
+                dtype=work_dtype, device=coords.device,
+            )
+            active.copy_(coords[..., self._active_idx, :])  # casts bf16/fp16 -> fp32
 
             # 1) Distance restraints: closed-form rigid COM translation (no solver, no
             #    autograd) -- a COM-distance restraint is a 1-DOF problem, so iterating
@@ -188,7 +202,10 @@ class TorchRestraintOptimizer:
                 active.requires_grad_(True)
                 prot_pos = None
                 if vdw_active:
-                    prot_pos = torch.empty_like(coords[..., self._vdw["prot_global"], :])
+                    prot_pos = torch.empty(
+                        coords[..., self._vdw["prot_global"], :].shape,
+                        dtype=work_dtype, device=coords.device,
+                    )
                     prot_pos.copy_(coords[..., self._vdw["prot_global"], :])
 
                 def energy_fn():
@@ -249,7 +266,7 @@ class TorchRestraintOptimizer:
             logger.warning("restraint step produced non-finite coords; skipping update")
             return coords
         # back in the ambient (inference) context: in-place write is allowed
-        coords[..., self._active_idx, :] = new_active
+        coords[..., self._active_idx, :] = new_active.to(out_dtype)
         return coords
 
     def _is_cg(self) -> bool:
