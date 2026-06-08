@@ -106,6 +106,44 @@ def test_vdw_config_protein_background():
     assert spec0.vdw_config is None
 
 
+def test_chiral_skips_bridgehead_stereocentres():
+    """Bridgehead/fused-ring stereocentres (atom in >=2 rings) cannot be inverted by
+    continuous deformation, so a chiral restraint on them only fights bond/angle and
+    distorts bonds. build_spec skips them but keeps single-ring stereocentres."""
+    # C[C@H]1CC2CC1C(=O)C2: atom 1 is a single-ring stereocentre (keep), atoms 3 and 5
+    # are bicyclo[2.2.1] bridgeheads in 2 rings each (skip).
+    m = Chem.MolFromSmiles("C[C@H]1CC2CC1C(=O)C2")
+    m = Chem.AddHs(m)
+    assert AllChem.EmbedMolecule(m, randomSeed=1) == 0
+    m = Chem.RemoveHs(m)
+    Chem.AssignStereochemistryFrom3D(m)
+    ri = m.GetRingInfo()
+    stereo = [
+        (a.GetIdx(), ri.NumAtomRings(a.GetIdx()))
+        for a in m.GetAtoms()
+        if a.GetChiralTag() != Chem.ChiralType.CHI_UNSPECIFIED
+    ]
+    bridge = {i for i, nr in stereo if nr >= 2}
+    normal = {i for i, nr in stereo if nr < 2}
+    # fixture sanity: exactly one single-ring centre and two bridgeheads
+    assert normal == {1} and bridge == {3, 5}
+
+    n = m.GetNumAtoms()
+    c = np.asarray(m.GetConformer().GetPositions())
+    lc = LigandConf(
+        mol=m, conf_coords=c, global_indices=np.arange(n), conformer_restraints=True
+    )
+    spec = build_spec([lc], [], {"chiral": {"weight": 1.0}})
+
+    # only the single-ring stereocentre contributes (3 heavy nbrs -> 1 restraint);
+    # both bridgeheads are skipped
+    assert spec.chiral is not None
+    assert spec.chiral.idx.shape[0] == 1
+    assert int(spec.chiral.idx[0, 0]) == 1  # centred on the single-ring atom
+    # the skip is surgical: bonds/angles are still built for the whole ligand
+    assert spec.bond is not None and spec.bond.idx.shape[0] == m.GetNumBonds()
+
+
 def test_intramolecular_vdw_static_arrays():
     """vdw mode=intramolecular builds a static spec.vdw (works in jax/numpy too),
     not the dynamic ligand-protein vdw_config."""

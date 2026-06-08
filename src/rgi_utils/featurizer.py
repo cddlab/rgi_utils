@@ -98,17 +98,17 @@ def _extract_conformer(ligand_confs: list[LigandConf]):
         gidx = np.asarray(lc.global_indices, dtype=np.int64)
         # Derive the bond/angle/chiral/dihedral TARGETS from a UFF-relaxed copy of the
         # tool's conformer. Each tool's cached conformer carries its own idiosyncrasies
-        # (the boltz v2 ~/.boltz/mols cache Kekule-localizes aromatic rings to ~1.34/1.48;
+        # (the boltz v2 ~/.boltz/mols cache Kekule-localizes aromatic rings ~1.34/1.48;
         # other tools' ref_pos has non-ideal bond/angle lengths), so without this the
         # restraint just reproduces them and is a no-op vs the force-field-ideal the emb
         # metric measures against. uff_relax KEEPS the fold (local minimisation from the
         # existing conformer) -- unlike a from-scratch ETKDG embed, which mis-folds
         # big/flexible/phosphate ligands -- and brings bonds/angles onto the shared
         # force-field ideal. Falls back to the cached coords if UFF fails.
-        # Guard: only when the mol carries REAL bond orders (an aromatic or double bond).
+        # Guard: only when the mol has REAL bond orders (an aromatic or double bond).
         # chai/esmfold2 expose no bond orders -> their mol is all-single, so UFF would
-        # localize an aromatic ring to single-bond lengths (~1.5) and corrupt the target;
-        # for those tools the cached conformer already holds the real reference geometry.
+        # localize aromatic rings to single-bond lengths (~1.5), corrupting the target;
+        # for those tools the cached conformer holds the real reference geometry.
         if any(
             b.GetIsAromatic() or b.GetBondType() == Chem.BondType.DOUBLE
             for b in mol.GetBonds()
@@ -131,10 +131,27 @@ def _extract_conformer(ligand_confs: list[LigandConf]):
                 )
             )
 
+        # Ring info for the chiral guard below. chai/esmfold2 mols come from
+        # DetermineConnectivity and may not have rings perceived yet, so initialise
+        # before NumAtomRings (which raises on an uninitialised RingInfo).
+        try:
+            Chem.FastFindRings(mol)
+        except Exception:
+            pass
+        ri = mol.GetRingInfo()
+
         for atom in mol.GetAtoms():
             if atom.GetChiralTag() not in _CHIRAL_TAGS:
                 continue
             ci = atom.GetIdx()
+            # Bridgehead / fused-ring / spiro stereocentres (atom in >=2 rings) cannot
+            # be inverted by continuous deformation. When the predicted pose has the
+            # wrong sign, a chiral restraint toward the correct volume can never flip
+            # them -- it only fights the bond/angle terms and distorts bonds (bicyclo
+            # bridgeheads driven to 1.24/1.67 A vs a 1.53 target). bond+angle already
+            # lock their geometry, so restraining chirality here is harmful-at-best.
+            if ri.NumAtomRings(ci) >= 2:
+                continue
             nei = [b.GetOtherAtom(atom).GetIdx() for b in atom.GetBonds()]
             for cand in itertools.combinations(nei, 3):
                 vol = _chiral_vol(crds, ci, cand[0], cand[1], cand[2])
