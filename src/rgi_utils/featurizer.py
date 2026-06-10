@@ -131,27 +131,10 @@ def _extract_conformer(ligand_confs: list[LigandConf]):
                 )
             )
 
-        # Ring info for the chiral guard below. chai/esmfold2 mols come from
-        # DetermineConnectivity and may not have rings perceived yet, so initialise
-        # before NumAtomRings (which raises on an uninitialised RingInfo).
-        try:
-            Chem.FastFindRings(mol)
-        except Exception:
-            pass
-        ri = mol.GetRingInfo()
-
         for atom in mol.GetAtoms():
             if atom.GetChiralTag() not in _CHIRAL_TAGS:
                 continue
             ci = atom.GetIdx()
-            # Bridgehead / fused-ring / spiro stereocentres (atom in >=2 rings) cannot
-            # be inverted by continuous deformation. When the predicted pose has the
-            # wrong sign, a chiral restraint toward the correct volume can never flip
-            # them -- it only fights the bond/angle terms and distorts bonds (bicyclo
-            # bridgeheads driven to 1.24/1.67 A vs a 1.53 target). bond+angle already
-            # lock their geometry, so restraining chirality here is harmful-at-best.
-            if ri.NumAtomRings(ci) >= 2:
-                continue
             nei = [b.GetOtherAtom(atom).GetIdx() for b in atom.GetBonds()]
             for cand in itertools.combinations(nei, 3):
                 vol = _chiral_vol(crds, ci, cand[0], cand[1], cand[2])
