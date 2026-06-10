@@ -138,8 +138,10 @@ class BoltzFeatsAdapter:
 
         Uses ``feats['ligand_mols']`` (asym_id -> CCD RDKit mol, populated by
         boltz inferencev2). The structure's atoms for a ligand follow the CCD
-        mol's heavy-atom order, so ``RemoveHs(mol)`` is aligned to the chain's
-        atom sites; an element-order check guards against any mismatch.
+        mol's heavy-atom order, so ``RemoveAllHs(mol)`` is aligned to the chain's
+        atom sites; an element-order check guards against any mismatch. (Use
+        RemoveAllHs, not RemoveHs: a CCD mol may carry an explicit N-H that
+        RemoveHs keeps, inflating the atom count past the heavy-only sites.)
         """
         feats = self.feats
         ligand_mols = feats.get("ligand_mols")
@@ -165,10 +167,15 @@ class BoltzFeatsAdapter:
             if mol is None:
                 continue
             try:
-                mol = Chem.RemoveHs(mol)
+                # RemoveAllHs, NOT RemoveHs: boltz CCD mols can carry an explicit
+                # H (e.g. an N-H drawn in the component) that RemoveHs PRESERVES, so
+                # GetNumAtoms() would then exceed the heavy-only structure sites and
+                # the count guard below would silently skip the whole conformer
+                # (n_active=0). RemoveAllHs strips every H, restoring heavy==sites.
+                mol = Chem.RemoveAllHs(mol)
             except Exception as exc:  # keep the run alive; just skip this ligand
                 logger.warning(
-                    "ligand %s: RemoveHs failed (%s); skip", chain.chain_name, exc
+                    "ligand %s: RemoveAllHs failed (%s); skip", chain.chain_name, exc
                 )
                 continue
             if mol.GetNumConformers() == 0:
