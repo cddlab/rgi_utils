@@ -40,6 +40,9 @@ from rgi_utils.atom_context import AtomRecord, LigandConf
 logger = logging.getLogger(__name__)
 
 _MOL_TYPE_NONPOLYMER = 3  # esmfold2 constants.MOL_TYPE_NONPOLYMER (ligand)
+# esmfold2 constants: PROTEIN=0, DNA=1, RNA=2, NONPOLYMER=3 (same order as boltz;
+# OPPOSITE of chai/openfold RNA=1/DNA=2). Normalize to the shared string.
+_ESM_MOLTYPE = {0: "protein", 1: "dna", 2: "rna", 3: "ligand"}
 
 
 def _to_numpy(t):
@@ -151,6 +154,7 @@ class ESMFold2Adapter:
                 resid=int(self._tok_ordinal[tok]),
                 index=int(i),
                 name=self._atom_name(i),
+                mol_type=_ESM_MOLTYPE.get(int(self._mol_type[tok])),
             )
 
     # --- ConformerAdapter -----------------------------------------------------

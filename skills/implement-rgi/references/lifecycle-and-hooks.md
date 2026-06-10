@@ -110,5 +110,12 @@ with no bonds, so its perceived topology is all-single and `dihedral` finds
 nothing there (graceful: `dihedrals=0`).
 
 The selection DSL (`selection.py`) supports `chain`, `resid N`, `resid A to B`,
-`index`, and `and`/`or`/`not`/`( )`. `resid` is the per-chain 1-based ordinal the
-adapter yields in `AtomRecord.resid`.
+`index`, the molecule-type keywords `protein` / `dna` / `rna`, and
+`and`/`or`/`not`/`( )`. `resid` is the per-chain 1-based ordinal the adapter yields
+in `AtomRecord.resid`. `protein`/`dna`/`rna` match on `AtomRecord.mol_type`, the
+adapter-normalized molecule type: every adapter MUST map its framework's
+molecule-type enum to the shared strings `"protein"/"dna"/"rna"/"ligand"` (raw enum
+ints differ across tools — boltz/esm DNA=1/RNA=2 vs chai/openfold RNA=1/DNA=2 — so
+the string is the only safe cross-tool currency). A ligand / water / untyped atom
+(`mol_type=None`) matches none of the three. Compose freely, e.g.
+`protein and chain A`, `not protein`, `(protein or rna) and resid 5 to 84`.

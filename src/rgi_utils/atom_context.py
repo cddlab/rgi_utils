@@ -18,6 +18,12 @@ class AtomRecord:
     name: str | None = None  # atom name (e.g. "CA"); enables identity-based RMSD
     # pairing (chain, resid, name) instead of selection-order. None = unavailable
     # (RMSD then falls back to selection-order pairing).
+    mol_type: str | None = None  # NORMALIZED molecule type: "protein"/"dna"/"rna"/
+    # "ligand", or None (water/unknown). Set by each adapter from its framework's
+    # entity/molecule-type enum, normalized to these strings — raw enum ints DIFFER
+    # across tools (boltz/esm DNA=1,RNA=2 vs chai/openfold RNA=1,DNA=2), so the
+    # string is the only safe cross-tool currency. Powers the protein/dna/rna
+    # selectors; None never matches them.
 
 
 @dataclass

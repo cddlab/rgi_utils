@@ -10,6 +10,11 @@ from rgi_utils.atom_context import AtomRecord, LigandConf
 
 logger = logging.getLogger(__name__)
 
+# boltz const.chain_types order: PROTEIN=0, DNA=1, RNA=2, NONPOLYMER=3. NOTE the
+# DNA/RNA order is the OPPOSITE of chai/openfold (RNA=1, DNA=2) — normalize to the
+# shared string so one `dna`/`rna` selector means the same atom in every tool.
+_BOLTZ_MOLTYPE = {0: "protein", 1: "dna", 2: "rna", 3: "ligand"}
+
 
 class BoltzFeatsAdapter:
     """Adapter from a boltz feats dict to the rgi_utils adapter protocols.
@@ -62,6 +67,12 @@ class BoltzFeatsAdapter:
         asym_id_atom_b0, atom_to_token_b0 = self._per_atom()
         record = self.feats["record"]
         name_of = self._atom_name_lookup()
+        # per-token molecule type (batch 0) -> normalized string; absent -> None
+        mt_tok = self.feats.get("mol_type")
+        if mt_tok is not None:
+            mt0 = (mt_tok[0] if mt_tok.dim() > 1 else mt_tok).detach().cpu().numpy()
+        else:
+            mt0 = None
         for chain in record[0].chains:
             chain_id = chain.chain_id
             # exclude padding atoms (else they surface as chain-0 / resid 1)
@@ -82,6 +93,7 @@ class BoltzFeatsAdapter:
                     resid=tok2resid[t],
                     index=int(gidx),
                     name=name_of(int(gidx)),
+                    mol_type=(None if mt0 is None else _BOLTZ_MOLTYPE.get(int(mt0[t]))),
                 )
 
     def _atom_name_lookup(self):
