@@ -23,6 +23,7 @@ class DistanceData:
     calc_method: str  # ["unfixed-absolute"]
     run_restr: bool
     start_sigma: float  # apply this restraint only when noise level <= start_sigma
+    stop_sigma: float  # RELEASE this restraint when noise level < stop_sigma (-1=never)
 
     def __init__(self):
         self.atom_selection1 = None
@@ -38,7 +39,10 @@ class DistanceData:
         self.target_sites2 = None
         self.calc_method = None
         self.run_restr = None
-        self.start_sigma = None  # per-restraint; optional (from_dict defaults None -> +inf)
+        self.start_sigma = (
+            None  # per-restraint; optional (from_dict defaults None -> +inf)
+        )
+        self.stop_sigma = -1.0  # per-restraint lower bound; -1 = never released (off)
 
     def set_config(self, config: dict):
         self.atom_selection1 = config.get("atom_selection1", None)
@@ -50,6 +54,12 @@ class DistanceData:
         _ss = config.get("start_sigma")
         if _ss is not None:
             self.start_sigma = float(_ss)
+        # per-distance stop_sigma (OPTIONAL; default -1 = never released). Releasing a
+        # distance restraint late lets the model relax the COM-driven pull in its final
+        # steps; off by default like rmsd/conformer.
+        _stop = config.get("stop_sigma")
+        if _stop is not None:
+            self.stop_sigma = float(_stop)
         if "harmonic" in config:
             self.target_distance = config["harmonic"].get("target_distance", None)
             if self.target_distance is not None:
@@ -123,6 +133,9 @@ class DistanceData:
                 "chain": atom.chain,
                 "resid": atom.resid,
                 "index": atom.index,
+                "name": atom.name,
+                "mol_type": atom.mol_type,
+                "resname": atom.resname,
             }
             if atom_selector1.eval(candidate):
                 self.target_sites1.append(atom.index)

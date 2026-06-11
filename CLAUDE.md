@@ -97,27 +97,64 @@ Supporting modules:
   `AssignStereochemistryFrom3D`, else stereocentres read as 3-coordinate and every
   chiral restraint silently vanishes.
 - **Atom selection DSL** (`selection.py`): `AtomSelector` parses
-  `"(chain A or chain B) and resid 1 to 10"`; used by `DistanceData`
-  (`distance_restr_data.py`) to resolve COM-based distance groups.
+  `"(chain A or chain B) and resid 1 to 10"`; tokens are
+  `chain`/`resid`/`index`/`name`/`protein`/`dna`/`rna`/`backbone`/`sidechain` +
+  `and`/`or`/`not`/`()`. Used by `DistanceData` (`distance_restr_data.py`) for COM
+  groups and `RmsdData` for fit/calc; `name CA` (atom-name, case-insensitive,
+  alnum-only — a nucleic-acid `C1'` is not selectable but fails loudly) restricts an
+  RMSD superposition to backbone. `backbone`/`sidechain` are PyMOL-like POLYMER
+  selectors (name-based but gated on polymer type via `_moltype.polymer_type`, which
+  prefers `AtomRecord.mol_type` and falls back to `resname` — so both flow through the
+  candidate dict); a ligand atom named "C"/"N"/"O" never matches them.
 - **RMSD restraint** (`rmsd_restr_data.py` + `pdb_ref.py`): `RmsdData` resolves a moving
   group against a reference PDB (parsed by the dependency-free `read_pdb_atoms`), driving the
   Kabsch-superposed RMSD toward `target_rmsd`. The superposition ("fit") and measured ("calc")
-  atoms may use different selections. Atoms pair by IDENTITY (chain, resid, name);
-  `atom_selection` is OPTIONAL — omit it to fit+measure over the WHOLE structure best-effort
-  (atoms missing from the ref are skipped).
+  atoms are selected INDEPENDENTLY by four keys — `atom_selection_target_fit`,
+  `atom_selection_ref_fit`, `atom_selection_target_calc`, `atom_selection_ref_calc`
+  (`atom_selection_target` / `atom_selection_ref` are a both-sides shorthand for the
+  fit+calc pair). **There is NO bare `atom_selection` key** — passing one is silently
+  ignored (a footgun), so use the suffixed keys. All four omitted ⇒ fit+measure over the
+  WHOLE structure best-effort (atoms missing from the ref are skipped). `pairing`
+  **defaults to `align`** (sequence-align polymer chains so a homolog ref maps on by
+  residue; ligands + structures with no polymer fall back to ordinal identity, so the
+  default is safe everywhere) — set `pairing: identity` to force pure (chain, resid, name)
+  ordinal pairing. A `name CA` or `backbone` selection superposes on backbone only, which
+  under align keeps a substituted homolog's side chain from being pinned.
+  Each RMSD entry takes a `start_sigma` (active once `sigma <= start_sigma`) **and** a
+  `stop_sigma` (released once `sigma < stop_sigma`; default **-1** = never released): the
+  active window is `stop_sigma <= sigma <= start_sigma`. `stop_sigma > 0` releases the
+  restraint for the final low-sigma steps so the model re-idealises geometry the restraint
+  held distorted — the fix for a **broken peptide bond between a restrained residue and a
+  FREE unmodeled tail** (`target_rmsd=0` drives the restrained residue onto the ref every
+  step while the free tail lags and the bond snaps in length AND omega; releasing late lets
+  the model repair it without losing the global ref bias set over the earlier steps). The
+  CG fully converges each step, so a per-atom RMSD weight only changes convergence RATE not
+  the fixed point — it can NOT keep the terminus off the ref; releasing (stop_sigma) is what
+  works. **Validated on boltz2: `stop_sigma: 1.0` fully heals the bond (ref Cα-RMSD ~0.3 Å);
+  the same knob is available on distance + conformer restraints** (see the start_sigma note
+  below). All tools share sigma_data=16, so the value transfers.
 
 ### VdW (two flavours)
 
-- **Intramolecular** (`conformer vdw: {mode: intramolecular}`): static non-bonded
-  ligand-internal pairs (topo distance > 2, within `dmax`), built in `featurizer.py`
-  and carried in `spec.vdw` (`VdwArrays`). Works in **all backends** — prefer this.
-- **Dynamic ligand-protein** (torch only): lives in `optim/torch_optim.py`. The
-  ligand moves (it is in `active_sites`); the protein is a **fixed background** read
-  from the full coordinate tensor (`VdwConfig.protein_global`), so only the ligand is
-  pushed out of contacts. Penalty `weight * clamp(d - scale*(r_i+r_j), max=0)**2`,
-  all-pairs (zero gradient beyond contact) — same maths as boltz's radius search.
+- **Intramolecular** (`mode: intramolecular`): static non-bonded ligand-internal pairs
+  (topo distance > 2, within `dmax`), built in `featurizer.py` and carried in `spec.vdw`
+  (`VdwArrays`). Scored in the **energy layer → all backends**.
+- **Dynamic ligand-protein** (`mode: ligand_protein`): lives in the optimizers
+  (`optim/torch_optim.py` AND `optim/jax_optim.py` — `_vdw_pair_energy` is the shared
+  formula, ported to jnp). The ligand moves (it is in `active_sites`); the protein is a
+  **fixed background** read from the full coordinate tensor (`VdwConfig.protein_global`)
+  at minimize time, so only the ligand is pushed out of contacts. Penalty
+  `weight * clamp(d - scale*(r_i+r_j), max=0)**2`, all-pairs (zero gradient beyond
+  contact) — same maths as boltz's radius search. Works on **torch + jax** (numpy is the
+  energy reference only, so it does not run this optimizer term).
 
-The static `vdw_energy` (idx pairs) lives in the energy layer for parity across backends.
+`mode` defaults to **`both`** (`ligand_protein` / `intramolecular` pick one). "both"
+builds `spec.vdw` AND `spec.vdw_config` from the one `vdw` block (shared weight/scale/
+dmax); they sit in separate spec fields scored independently, so they compose. An
+unknown mode raises. Both halves run on torch and jax (so AF3 gets the full VdW — it no
+longer force-downgrades to intramolecular). VdW `weight` defaults to **0** (off) — set
+it > 0 to activate. The static `vdw_energy` (idx pairs) lives in the energy layer for
+parity across backends.
 
 ### Key design points
 
@@ -135,6 +172,15 @@ The static `vdw_energy` (idx pairs) lives in the energy layer for parity across 
   top-level one raises `ValueError`); per restraint it is **optional** and defaults to
   `+inf` when omitted — i.e. active at **every** step (set it, e.g. `1.0`, to act only
   late). When `sigma` exceeds every restraint's `start_sigma` the whole step is skipped.
+  **Every** restraint type additionally takes a `stop_sigma` LOWER bound (default **-1** =
+  never released, any value `<= 0` is off): the restraint is released for `sigma <
+  stop_sigma`, so its active window is `stop_sigma <= sigma <= start_sigma`. It is
+  per-distance / per-rmsd entry, and **once for all conformer terms**
+  (`conformer_restraints_config.stop_sigma` -> `RestraintSpec.conf_stop_sigma`). The gate
+  lives in the shared `_terms.sigma_gate` (per-restraint distance/rmsd) and the conformer
+  `cg` in each backend's `_gates` (eager), plus `torch_optim._gated_prepared` /
+  `distance_shift` (compiled GPU / closed-form). `stop_sigma > start_sigma` (empty window)
+  is flagged by `_warn_never_active`.
 - Distance restraints: `harmonic`, `flat-bottomed`, `flat-bottomed1`,
   `flat-bottomed2`; only `calc_method=unfixed-absolute` (COM-based).
 - Top-level `import rgi_utils` must work with numpy only (no torch/jax) — keep

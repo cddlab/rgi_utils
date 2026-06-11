@@ -23,6 +23,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from rgi_utils._moltype import moltype_from_resname
+
 
 @dataclass
 class PdbAtom:
@@ -34,6 +36,10 @@ class PdbAtom:
     x: float
     y: float
     z: float
+    mol_type: str | None = None  # "protein"/"dna"/"rna"/None from res_name (cols
+    # 18-20); powers the protein/dna/rna selectors on the RMSD reference side.
+    res_name: str | None = None  # 3-letter residue/CCD code (cols 18-20); feeds the
+    # sequence aligner for PyMOL-align-like (pairing="align") RMSD correspondence.
 
 
 def read_pdb_atoms(path: str) -> list[PdbAtom]:
@@ -61,6 +67,7 @@ def read_pdb_atoms(path: str) -> list[PdbAtom]:
         res_seq = ln[22:26].strip()
         icode = ln[26] if len(ln) > 26 else " "
         name = ln[12:16].strip() if len(ln) > 15 else ""
+        res_name = ln[17:20].strip() if len(ln) > 19 else ""
         try:
             x = float(ln[30:38])
             y = float(ln[38:46])
@@ -90,6 +97,8 @@ def read_pdb_atoms(path: str) -> list[PdbAtom]:
                 x=x,
                 y=y,
                 z=z,
+                mol_type=moltype_from_resname(res_name),
+                res_name=res_name,
             )
         )
         idx += 1

@@ -24,6 +24,7 @@ class RestraintsConfig:
     method: str = "CG"
     max_iter: int = 100
     conf_start_sigma: float = -1.0  # one value for all conformer (ligand) restraints
+    conf_stop_sigma: float = -1.0  # shared conformer lower bound; -1 = never released
     conformer_config: dict = field(default_factory=dict)
     distance_data: list = field(default_factory=list)
     rmsd_data: list = field(default_factory=list)
@@ -46,6 +47,10 @@ class RestraintsConfig:
         conformer_config = config.get("conformer_restraints_config", {}) or {}
         _css = conformer_config.get("start_sigma")
         conf_start_sigma = float(_css) if _css is not None else _ALWAYS_ON
+        # shared conformer lower bound: release conformer terms below this noise level
+        # (omitted -> -1 = off). Window: conf_stop <= sigma <= conf_start
+        _csstop = conformer_config.get("stop_sigma")
+        conf_stop_sigma = float(_csstop) if _csstop is not None else -1.0
         # Coerce gpu to a real bool: a quoted/string value (e.g. "false"/"no"/"off"/
         # "0") is truthy in Python and would otherwise pick the torch (GPU) backend
         # for a CPU-intended run.
@@ -82,6 +87,7 @@ class RestraintsConfig:
             max_iter=config.get("max_iter", 100),
             # one start_sigma for all conformer terms (omitted -> +inf = every step)
             conf_start_sigma=conf_start_sigma,
+            conf_stop_sigma=conf_stop_sigma,
             conformer_config=conformer_config,
         )
         for entry in config.get("distance_restraints_config", []) or []:

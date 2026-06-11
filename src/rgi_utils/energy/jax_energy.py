@@ -209,12 +209,19 @@ def _gates(prepared, positions, sigma):
     """The conformer gate ``cg`` and a per-restraint ``sigma_gate``. jnp comparisons
     (tracer-safe inside ``lax.scan``); identity when ``sigma is None``."""
     if sigma is None:
-        return 1.0, (lambda start_sigma, mask: mask)
+        return 1.0, (lambda start_sigma, stop_sigma, mask: mask)
     s = jnp.asarray(sigma)
-    cg = (s <= prepared.get("conf_start_sigma", 1e30)).astype(positions.dtype)
+    # conformer window conf_stop <= sigma <= conf_start (conf_stop=-1 -> never)
+    cg = (
+        (s <= prepared.get("conf_start_sigma", 1e30))
+        & (s >= prepared.get("conf_stop_sigma", -1.0))
+    ).astype(positions.dtype)
 
-    def sigma_gate(start_sigma, mask):
-        return mask * (s <= start_sigma).astype(mask.dtype)
+    def sigma_gate(start_sigma, stop_sigma, mask):
+        g = mask * (s <= start_sigma).astype(mask.dtype)
+        if stop_sigma is not None:  # released below stop_sigma (e.g. rmsd terminus fix)
+            g = g * (s >= stop_sigma).astype(mask.dtype)
+        return g
 
     return cg, sigma_gate
 

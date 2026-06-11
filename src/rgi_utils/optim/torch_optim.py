@@ -77,10 +77,23 @@ class TorchRestraintOptimizer:
         a few compiles, then reuse. distance is excluded (closed-form). The conformer-gated
         key set comes from ``_terms.CONF_KEYS`` (not a literal) so it tracks ``_TERMS``."""
         p = self._prepared
-        cg_key = 1.0 if sigma is None else float(sigma <= float(self.spec.conf_start_sigma))
+        # conformer gate over the window conf_stop <= sigma <= conf_start (conf_stop=-1
+        # -> never released, so this reduces to the old sigma<=conf_start gate).
+        cg_key = (
+            1.0
+            if sigma is None
+            else float(
+                (sigma <= float(self.spec.conf_start_sigma))
+                and (sigma >= float(self.spec.conf_stop_sigma))
+            )
+        )
         if "rmsd" in p and sigma is not None:
-            # one tiny sync per step; tuple of per-restraint on/off (sigma<=start_sigma)
-            rgate = tuple(bool(b) for b in (sigma <= p["rmsd"]["start_sigma"]).tolist())
+            # one tiny sync per step; per-restraint on/off over the active window
+            # stop_sigma <= sigma <= start_sigma (released below stop_sigma so the
+            # model's final low-sigma steps re-idealise the boundary geometry).
+            pr = p["rmsd"]
+            on = (sigma <= pr["start_sigma"]) & (sigma >= pr["stop_sigma"])
+            rgate = tuple(bool(b) for b in on.tolist())
         else:
             rgate = None
         key = (cg_key, rgate)
@@ -164,9 +177,14 @@ class TorchRestraintOptimizer:
         )
         self._ensure(coords.device, work_dtype)
         mi = max_iter if max_iter is not None else self.max_iter
-        # VdW is a conformer restraint -> gated by conf_start_sigma
+        # VdW is a conformer restraint -> gated by the conformer window
+        # conf_stop <= sigma <= conf_start (conf_stop=-1 -> never released)
         vdw_active = self._vdw is not None and (
-            sigma is None or sigma <= float(self.spec.conf_start_sigma)
+            sigma is None
+            or (
+                sigma <= float(self.spec.conf_start_sigma)
+                and sigma >= float(self.spec.conf_stop_sigma)
+            )
         )
 
         has_dist = self.spec.has_distance()

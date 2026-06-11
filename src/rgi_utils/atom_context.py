@@ -24,6 +24,9 @@ class AtomRecord:
     # across tools (boltz/esm DNA=1,RNA=2 vs chai/openfold RNA=1,DNA=2), so the
     # string is the only safe cross-tool currency. Powers the protein/dna/rna
     # selectors; None never matches them.
+    resname: str | None = None  # 3-letter residue/CCD code (e.g. "ALA"); OPTIONAL,
+    # enables the PyMOL-align-like (pairing="align") RMSD correspondence. None =
+    # unavailable (that adapter has not been plumbed; align pairing then errors loudly).
 
 
 @dataclass

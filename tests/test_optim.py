@@ -111,6 +111,57 @@ def test_torch_vdw_pushes_ligand_off_fixed_protein():
     assert torch.allclose(coords[0, n], prot_before, atol=1e-9)
 
 
+def test_jax_vdw_pushes_ligand_off_fixed_protein():
+    """The JAX port of the dynamic ligand-protein VdW: the jax minimizer pushes a
+    clashing ligand atom off a FIXED protein atom (not in active_sites), same as the
+    torch optimizer. This is what makes `ligand_protein` / `both` work on AF3."""
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.optim.jax_optim import make_minimizer
+
+    m = Chem.MolFromSmiles("CC")
+    m = Chem.AddHs(m)
+    AllChem.EmbedMolecule(m, randomSeed=1)
+    c = np.asarray(m.GetConformer().GetPositions())
+    n = m.GetNumAtoms()
+    lc = LigandConf(
+        mol=m, conf_coords=c, global_indices=np.arange(n), conformer_restraints=True
+    )
+    n_atom = n + 1  # one fixed "protein" atom after the ligand
+    elements = np.zeros(n_atom, dtype=np.int64)
+    for i, atom in enumerate(m.GetAtoms()):
+        elements[i] = atom.GetAtomicNum()
+    elements[n] = 6  # heavy -> VdW background
+
+    # conf_start_sigma high so sigma=0 passes the gate (the config path defaults it to
+    # +inf; a direct build_spec call defaults it to -1.0, which gates everything off)
+    spec = build_spec(
+        [lc],
+        [],
+        {"vdw": {"weight": 1.0, "scale": 0.9}},
+        elements=elements,
+        conf_start_sigma=1e30,
+    )
+    assert spec.vdw_config is not None
+
+    coords_np = np.zeros((1, n_atom, 3))
+    coords_np[0, :n, :] = c
+    coords_np[0, n, :] = c[0] + np.array([0.5, 0.0, 0.0])  # severe clash
+    coords = jnp.asarray(coords_np)
+    prot_before = np.asarray(coords[0, n])
+    d0 = float(np.linalg.norm(np.asarray(coords[0, 0]) - np.asarray(coords[0, n])))
+
+    minimize = make_minimizer(spec, max_iter=200)
+    coords = minimize(coords, 0.0)
+    d1 = float(np.linalg.norm(np.asarray(coords[0, 0]) - np.asarray(coords[0, n])))
+
+    assert d1 > d0, f"ligand not pushed away: {d0} -> {d1}"
+    # the fixed protein atom must not move (it is not in active_sites)
+    assert np.allclose(np.asarray(coords[0, n]), prot_before, atol=1e-9)
+
+
 # --- sync-free GPU CG (optim/_torch_cg_gpu.py) -----------------------------------
 
 
@@ -129,7 +180,8 @@ def _rmsd_spec(n=6, seed=3):
             fit_idx=idx, fit_mask=np.ones((1, n)), fit_ref=ref.reshape(1, n, 3),
             calc_idx=idx, calc_mask=np.ones((1, n)), calc_ref=ref.reshape(1, n, 3),
             target_rmsd=np.array([0.0]), weight=np.array([1.0]),
-            start_sigma=np.array([1e30]), mask=np.array([1.0]),
+            start_sigma=np.array([1e30]), stop_sigma=np.array([0.0]),
+            mask=np.array([1.0]),
         ),
         conf_start_sigma=1e30,
     )
@@ -301,7 +353,8 @@ def test_gated_prepared_matches_energy_gate():
             fit_idx=idx, fit_mask=np.ones((1, n)), fit_ref=ref.reshape(1, n, 3),
             calc_idx=idx, calc_mask=np.ones((1, n)), calc_ref=ref.reshape(1, n, 3),
             target_rmsd=np.array([0.0]), weight=np.array([1.0]),
-            start_sigma=np.array([5.0]), mask=np.array([1.0]),
+            start_sigma=np.array([5.0]), stop_sigma=np.array([0.0]),
+            mask=np.array([1.0]),
         ),
         conf_start_sigma=10.0,
     )

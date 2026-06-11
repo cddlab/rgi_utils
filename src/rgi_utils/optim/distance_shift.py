@@ -48,7 +48,10 @@ def apply_distance_shift_numpy(active, d, sigma=None):
     denom = n1 + n2 + _EPS
     gate = d["mask"].astype(np.float64)
     if sigma is not None:
-        gate = gate * (float(sigma) <= d["start_sigma"]).astype(np.float64)
+        s = float(sigma)
+        gate = gate * (s <= d["start_sigma"]).astype(np.float64)
+        # release below stop_sigma (-1 default -> s>=-1 always true -> never released)
+        gate = gate * (s >= d["stop_sigma"]).astype(np.float64)
     passes = 1 if idx1.shape[0] <= 1 else _COUPLED_PASSES
     for _ in range(passes):
         g1 = active[..., idx1, :]
@@ -117,7 +120,10 @@ def apply_distance_shift_torch(active, d, sigma=None):
     denom = n1 + n2 + _EPS
     gate = d["mask"].to(m1.dtype)
     if sigma is not None:
-        gate = gate * (float(sigma) <= d["start_sigma"]).to(m1.dtype)
+        s = float(sigma)
+        gate = gate * (s <= d["start_sigma"]).to(m1.dtype)
+        # release below stop_sigma (-1 default -> s>=-1 always true -> never released)
+        gate = gate * (s >= d["stop_sigma"]).to(m1.dtype)
     fidx1, fidx2 = idx1.reshape(-1), idx2.reshape(-1)
     passes = 1 if idx1.shape[0] <= 1 else _COUPLED_PASSES
     for _ in range(passes):
@@ -151,7 +157,10 @@ def apply_distance_shift_jax(active, d, sigma):
     denom = n1 + n2 + _EPS
     gate = d["mask"]
     if sigma is not None:
-        gate = gate * (jnp.asarray(sigma) <= d["start_sigma"]).astype(gate.dtype)
+        s = jnp.asarray(sigma)
+        gate = gate * (s <= d["start_sigma"]).astype(gate.dtype)
+        # release below stop_sigma (-1 default -> s>=-1 always true -> never released)
+        gate = gate * (s >= d["stop_sigma"]).astype(gate.dtype)
     fidx1, fidx2 = idx1.reshape(-1), idx2.reshape(-1)
     passes = 1 if idx1.shape[0] <= 1 else _COUPLED_PASSES
     for _ in range(passes):

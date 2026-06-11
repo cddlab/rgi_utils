@@ -28,6 +28,8 @@ PROTEIN_RESIDUES = frozenset(
 DNA_RESIDUES = frozenset({"DA", "DC", "DG", "DT"})
 RNA_RESIDUES = frozenset({"A", "C", "G", "U"})
 
+POLYMER_TYPES = ("protein", "dna", "rna")
+
 
 def moltype_from_resname(resname: str | None) -> str | None:
     """Map a PDB residue name to "protein"/"dna"/"rna", else None (ligand / water /
@@ -43,3 +45,26 @@ def moltype_from_resname(resname: str | None) -> str | None:
     if r in RNA_RESIDUES:
         return "rna"
     return None
+
+
+def polymer_type(mol_type: str | None, resname: str | None) -> str | None:
+    """Effective polymer type of an atom, "protein"/"dna"/"rna" or None. Shared by the
+    backbone/sidechain selectors (selection.py) and RMSD align pairing
+    (rmsd_restr_data.py) so they classify polymers IDENTICALLY across tools.
+
+    Three-way, order matters:
+    1. an explicit polymer ``mol_type`` (boltz/esm/AF3 set it) is trusted as-is;
+    2. any OTHER explicitly-set ``mol_type`` (e.g. "ligand") returns None -- a typed
+       non-polymer is never re-derived from its residue name;
+    3. only when ``mol_type`` is absent (chai/of3/protenix don't set it) is the type
+       derived from the residue name via ``moltype_from_resname``.
+
+    Consequence (an accepted cross-tool divergence, NOT a bug): a MODIFIED residue
+    such as MSE gets mol_type="protein" from the framework enum in boltz/esm/AF3 but
+    is unannotated + resname="MSE" -> None in chai/of3/protenix. This mirrors the
+    `protein`/`dna`/`rna` selectors' deliberate "never silently widen protein" rule."""
+    if mol_type in POLYMER_TYPES:
+        return mol_type
+    if mol_type is not None:
+        return None
+    return moltype_from_resname(resname) if resname else None

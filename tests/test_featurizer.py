@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
@@ -130,6 +131,51 @@ def test_intramolecular_vdw_static_arrays():
     assert float(spec.vdw.weight[0]) == 1.0
     assert int(spec.vdw.idx.max()) < spec.n_active  # valid local indices
 
-    # default mode keeps the dynamic path (no static vdw; needs elements)
-    spec_dyn = build_spec([lc], [], {"vdw": {"weight": 1.0}})
+    # explicit mode=ligand_protein keeps ONLY the dynamic path (no static vdw); the
+    # default is now "both", so request ligand_protein to isolate it
+    spec_dyn = build_spec([lc], [], {"vdw": {"weight": 1.0, "mode": "ligand_protein"}})
     assert spec_dyn.vdw is None
+
+
+def test_vdw_both_modes_compose():
+    """vdw mode='both' builds the static intramolecular spec.vdw AND the dynamic
+    ligand-protein vdw_config together (separate spec fields, scored independently)."""
+    m = Chem.MolFromSmiles("CCCC")  # butane: one non-bonded heavy pair (C1-C4)
+    m = Chem.AddHs(m)
+    AllChem.EmbedMolecule(m, randomSeed=1)
+    m = Chem.RemoveHs(m)
+    n = m.GetNumAtoms()
+    c = np.asarray(m.GetConformer().GetPositions())
+    lc = LigandConf(
+        mol=m, conf_coords=c, global_indices=np.arange(n), conformer_restraints=True
+    )
+    elements = np.zeros(n + 2, dtype=np.int64)
+    for i, atom in enumerate(m.GetAtoms()):
+        elements[i] = atom.GetAtomicNum()
+    elements[n] = 6  # protein heavy background atoms (not in active_sites)
+    elements[n + 1] = 7
+
+    spec = build_spec(
+        [lc],
+        [],
+        {"vdw": {"weight": 1.0, "mode": "both", "dmax": 10.0}},
+        elements=elements,
+    )
+    # BOTH flavours present and independent
+    assert spec.vdw is not None  # static intramolecular (all backends)
+    assert spec.vdw.idx.shape == (1, 2)  # butane C1-C4
+    assert spec.vdw_config is not None  # dynamic ligand-protein (torch)
+    assert {int(x) for x in spec.vdw_config.protein_global} == {n, n + 1}
+
+
+def test_vdw_unknown_mode_raises():
+    """An unknown vdw mode raises, not a silent fallback to ligand_protein."""
+    m, c = _ethane()
+    lc = LigandConf(
+        mol=m,
+        conf_coords=c,
+        global_indices=np.arange(m.GetNumAtoms()),
+        conformer_restraints=True,
+    )
+    with pytest.raises(ValueError, match="vdw mode must be"):
+        build_spec([lc], [], {"vdw": {"weight": 1.0, "mode": "typo"}})

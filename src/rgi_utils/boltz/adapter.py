@@ -28,8 +28,12 @@ class BoltzFeatsAdapter:
     multiplicity dimension, so batch 0 is representative).
     """
 
-    def __init__(self, feats: dict) -> None:
+    def __init__(self, feats: dict, token_names: list | None = None) -> None:
         self.feats = feats
+        # boltz const.tokens (token-id -> 3-letter CCD name), passed in by the boltz
+        # caller so the adapter stays framework-free. Enables AtomRecord.resname (and
+        # thus pairing="align" RMSD restraints); None -> resname unavailable.
+        self.token_names = token_names
         self._asym_id_atom = None
         self._atom_to_token = None
         self._pad0 = None  # per-atom real-atom mask (True=real), batch 0
@@ -73,6 +77,14 @@ class BoltzFeatsAdapter:
             mt0 = (mt_tok[0] if mt_tok.dim() > 1 else mt_tok).detach().cpu().numpy()
         else:
             mt0 = None
+        # per-token residue 3-letter name via res_type (one-hot [B, N_tok, num_tokens])
+        # + the passed-in const.tokens vocab; powers AtomRecord.resname (align RMSD).
+        rt = self.feats.get("res_type")
+        if rt is not None and self.token_names is not None:
+            rt0 = rt[0] if rt.dim() > 2 else rt
+            res_type_idx = torch.argmax(rt0, dim=-1).detach().cpu().numpy()
+        else:
+            res_type_idx = None
         for chain in record[0].chains:
             chain_id = chain.chain_id
             # exclude padding atoms (else they surface as chain-0 / resid 1)
@@ -94,6 +106,10 @@ class BoltzFeatsAdapter:
                     index=int(gidx),
                     name=name_of(int(gidx)),
                     mol_type=(None if mt0 is None else _BOLTZ_MOLTYPE.get(int(mt0[t]))),
+                    resname=(
+                        None if res_type_idx is None
+                        else self.token_names[int(res_type_idx[t])]
+                    ),
                 )
 
     def _atom_name_lookup(self):

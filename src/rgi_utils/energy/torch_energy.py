@@ -215,10 +215,20 @@ _LEAF_FNS = {
 def _gates(prepared, sigma):
     """The conformer gate ``cg`` (a python scalar) and a per-restraint ``sigma_gate``
     (casting the comparison to the mask dtype); identity when ``sigma is None``."""
-    cg = 1.0 if sigma is None else (sigma <= prepared.get("conf_start_sigma", 1e30))
+    if sigma is None:
+        cg = 1.0
+    else:  # conformer window conf_stop <= sigma <= conf_start (conf_stop=-1 -> never)
+        cg = (sigma <= prepared.get("conf_start_sigma", 1e30)) and (
+            sigma >= prepared.get("conf_stop_sigma", -1.0)
+        )
 
-    def sigma_gate(start_sigma, mask):
-        return mask if sigma is None else mask * (sigma <= start_sigma).to(mask.dtype)
+    def sigma_gate(start_sigma, stop_sigma, mask):
+        if sigma is None:
+            return mask
+        g = mask * (sigma <= start_sigma).to(mask.dtype)
+        if stop_sigma is not None:  # released below stop_sigma (e.g. rmsd terminus fix)
+            g = g * (sigma >= stop_sigma).to(mask.dtype)
+        return g
 
     return cg, sigma_gate
 

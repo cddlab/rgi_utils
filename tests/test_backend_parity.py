@@ -67,6 +67,7 @@ def _make_spec() -> RestraintSpec:
         dist_type=np.array([0, 1], dtype=np.int64),  # harmonic + flat-bottomed
         mask=np.array([1.0, 1.0]),
         start_sigma=np.array([100.0, 5.0]),  # different per-distance start_sigma
+        stop_sigma=np.array([-1.0, -1.0]),  # -1 = never released (off)
     )
     # large r_min so these pairs are "clashing" (non-zero VdW energy) for the
     # random positions; the third pair is masked out (padding).
@@ -291,6 +292,7 @@ def test_distance_closed_form_backend_parity():
         dist_type=np.array([0]),
         mask=np.array([1.0]),
         start_sigma=np.array([1e30]),
+        stop_sigma=np.array([-1.0]),
     )
     active = np.zeros((4, 3))
     active[2:, 0] = 20.0  # COM1 at x=0, COM2 at x=20 -> dist 20
@@ -313,6 +315,58 @@ def test_distance_closed_form_backend_parity():
     assert np.allclose(a_np, a_j, atol=1e-5)
 
 
+def test_distance_closed_form_stop_sigma_release():
+    """The closed-form distance shift honours stop_sigma (lower noise bound) across all
+    three backends: below stop the COM shift is RELEASED (coords untouched), inside the
+    window [stop, start] it lands on target. Covers the PRODUCTION closed-form path
+    (apply_distance_shift_*) with stop ON -- the other closed-form tests use -1."""
+    torch = pytest.importorskip("torch")
+    jnp = pytest.importorskip("jax.numpy")
+    from rgi_utils.optim import distance_shift as ds
+
+    d_np = dict(
+        grp1_idx=np.array([[0, 1]]),
+        grp2_idx=np.array([[2, 3]]),
+        grp1_mask=np.array([[1.0, 1.0]]),
+        grp2_mask=np.array([[1.0, 1.0]]),
+        target1=np.array([5.0]),
+        target2=np.array([0.0]),
+        dist_type=np.array([0]),
+        mask=np.array([1.0]),
+        start_sigma=np.array([10.0]),
+        stop_sigma=np.array([2.0]),  # released below sigma=2
+    )
+    active = np.zeros((4, 3))
+    active[2:, 0] = 20.0  # COM1 at x=0, COM2 at x=20 -> gap 20, target 5
+
+    def shift_all(sigma):
+        a_np = ds.apply_distance_shift_numpy(active, d_np, sigma)
+        a_t = ds.apply_distance_shift_torch(
+            torch.as_tensor(active),
+            {k: torch.as_tensor(v) for k, v in d_np.items()},
+            sigma,
+        ).numpy()
+        a_j = np.asarray(
+            ds.apply_distance_shift_jax(
+                jnp.asarray(active),
+                {k: jnp.asarray(v) for k, v in d_np.items()},
+                sigma,
+            )
+        )
+        return a_np, a_t, a_j
+
+    def com_dist(a):
+        return np.linalg.norm(a[2:].mean(0) - a[:2].mean(0))
+
+    # below stop_sigma -> released: every backend leaves the coords untouched (gap 20)
+    for name, a in zip(("numpy", "torch", "jax"), shift_all(1.0)):
+        assert np.allclose(a, active, atol=1e-6), name
+        assert abs(com_dist(a) - 20.0) < 1e-6, name
+    # inside [stop, start] -> applied: every backend lands the COM gap on target 5
+    for name, a in zip(("numpy", "torch", "jax"), shift_all(5.0)):
+        assert abs(com_dist(a) - 5.0) < 1e-6, name
+
+
 def test_distance_closed_form_coupled_restraints():
     """Two distance restraints that SHARE an atom converge via the Jacobi iteration
     (a single pass would satisfy neither); numpy/torch/jax agree."""
@@ -330,6 +384,7 @@ def test_distance_closed_form_coupled_restraints():
         dist_type=np.array([0, 0]),
         mask=np.array([1.0, 1.0]),
         start_sigma=np.array([1e30, 1e30]),
+        stop_sigma=np.array([-1.0, -1.0]),
     )
     a = np.zeros((3, 3))
     a[1, 0] = 10.0
@@ -512,6 +567,96 @@ def test_rmsd_known_value_and_target():
     assert abs(e - 1.5 * 2.0**2) < 1e-5
 
 
+def test_rmsd_stop_sigma_release_window():
+    """stop_sigma RELEASES the rmsd restraint below it: the term is gated to 0 for
+    sigma < stop_sigma (the model's final low-sigma steps run restraint-free so they can
+    re-idealise the boundary geometry), is active in [stop_sigma, start_sigma], and is 0
+    above start_sigma. The same window holds across numpy/torch/jax (the gate lives in
+    the shared sigma_gate). Regression for the RMSD dangling-terminus bond fix."""
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.energy import jax_energy, torch_energy
+    from rgi_utils.spec import RestraintSpec, RmsdArrays
+
+    n = 4
+    rng = np.random.default_rng(1)
+    ref = rng.standard_normal((n, 3)) * 2.0
+    pos = ref + rng.standard_normal((n, 3)) * 0.5  # nonzero rmsd -> nonzero energy
+    idx = np.arange(n).reshape(1, n)
+    spec = RestraintSpec(
+        n_active=n, active_sites=np.arange(n),
+        rmsd=RmsdArrays(
+            fit_idx=idx, fit_mask=np.ones((1, n)), fit_ref=ref.reshape(1, n, 3),
+            calc_idx=idx, calc_mask=np.ones((1, n)), calc_ref=ref.reshape(1, n, 3),
+            target_rmsd=np.array([0.0]), weight=np.array([1.0]),
+            start_sigma=np.array([10.0]), stop_sigma=np.array([2.0]),
+            mask=np.array([1.0]),
+        ),
+        conf_start_sigma=-1.0,
+    )
+    for name, mod, p, prep in (
+        ("numpy", numpy_energy, pos, numpy_energy.prepare_spec(spec)),
+        ("torch", torch_energy, torch.tensor(pos),
+         torch_energy.prepare_spec(spec, dtype=torch.float64)),
+        ("jax", jax_energy, jnp.asarray(pos), jax_energy.prepare_spec(spec)),
+    ):
+        e_below = float(mod.total_energy(p, prep, sigma=1.0))   # < stop -> released
+        e_in = float(mod.total_energy(p, prep, sigma=5.0))      # in window -> active
+        e_above = float(mod.total_energy(p, prep, sigma=20.0))  # > start -> not on yet
+        assert e_below == pytest.approx(0.0, abs=1e-9), (name, e_below)
+        assert e_in > 1e-3, (name, e_in)
+        assert e_above == pytest.approx(0.0, abs=1e-9), (name, e_above)
+
+
+def test_conformer_distance_stop_sigma_window():
+    """stop_sigma releases the CONFORMER terms (shared conf_stop_sigma) and the DISTANCE
+    terms (per-restraint stop_sigma) below it, exactly like rmsd: the energy is 0 for
+    sigma < stop, active in [stop, start], 0 above start — identical across the backends
+    (the conformer cg + distance sigma_gate share one window). -1 = never released."""
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.energy import jax_energy, torch_energy
+    from rgi_utils.spec import BondArrays, DistanceArrays, RestraintSpec
+
+    # bond 0-1 stretched (3 vs r0 1.5) and dist groups off target (COM gap 8 vs 2)
+    pos = np.array([[0.0, 0, 0], [3.0, 0, 0], [0, 5.0, 0], [0, 8.0, 0]])
+    spec = RestraintSpec(
+        n_active=4, active_sites=np.arange(4),
+        bond=BondArrays(
+            idx=np.array([[0, 1]], dtype=np.int64), r0=np.array([1.5]),
+            slack=np.array([0.0]), weight=np.array([1.0]), half=np.array([0.0]),
+            mask=np.array([1.0]),
+        ),
+        distance=DistanceArrays(
+            grp1_idx=np.array([[0, 1]], dtype=np.int64),
+            grp2_idx=np.array([[2, 3]], dtype=np.int64),
+            grp1_mask=np.array([[1.0, 1.0]]), grp2_mask=np.array([[1.0, 1.0]]),
+            target1=np.array([2.0]), target2=np.array([0.0]),
+            dist_type=np.array([0], dtype=np.int64), mask=np.array([1.0]),
+            start_sigma=np.array([10.0]), stop_sigma=np.array([2.0]),
+        ),
+        conf_start_sigma=10.0, conf_stop_sigma=2.0,
+    )
+    for name, mod, p, prep in (
+        ("numpy", numpy_energy, pos, numpy_energy.prepare_spec(spec)),
+        ("torch", torch_energy, torch.tensor(pos),
+         torch_energy.prepare_spec(spec, dtype=torch.float64)),
+        ("jax", jax_energy, jnp.asarray(pos), jax_energy.prepare_spec(spec)),
+    ):
+        e_below = float(mod.total_energy(p, prep, sigma=1.0))   # < stop -> released
+        e_in = float(mod.total_energy(p, prep, sigma=5.0))      # in window -> active
+        e_above = float(mod.total_energy(p, prep, sigma=20.0))  # > start -> off
+        assert e_below == pytest.approx(0.0, abs=1e-9), (name, e_below)
+        assert e_in > 1e-3, (name, e_in)
+        assert e_above == pytest.approx(0.0, abs=1e-9), (name, e_above)
+
+
 def test_chiral_flat_bottom_zero_at_reference():
     """chiral_energy is flat-bottomed around vol0: ZERO within ±slack (so the
     reference geometry has zero energy), quadratic outside, equal across backends.
@@ -579,3 +724,56 @@ def test_rmsd_fit_calc_separation():
         )
     )
     assert e < 1e-6, e
+
+
+def test_vdw_ligand_protein_torch_jax_parity():
+    """The dynamic ligand-protein VdW lives in the OPTIMIZERS (not the energy layer that
+    the numpy reference covers), so the jnp port is otherwise unguarded. Here torch and
+    jax must agree on value AND gradient w.r.t. the moving active coords."""
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.optim._torch_cg_gpu import _vdw_pair_energy as t_vdw
+    from rgi_utils.optim.jax_optim import _vdw_pair_energy as j_vdw
+
+    rng = np.random.default_rng(0)
+    n_active, n_prot = 6, 5
+    active = rng.standard_normal((n_active, 3))
+    prot = rng.standard_normal((n_prot, 3))  # same cluster -> guaranteed contacts
+    lig_local = np.array([0, 2, 4], dtype=np.int64)  # 3 of 6 active atoms are ligand
+    lig_r = np.array([1.7, 1.5, 1.6])
+    prot_r = np.array([1.7, 1.5, 1.6, 1.55, 1.8])
+    scale, weight = 0.9, 2.0
+
+    at = torch.tensor(active, requires_grad=True)
+    e_t = t_vdw(
+        at,
+        torch.tensor(prot),
+        torch.tensor(lig_local),
+        torch.tensor(lig_r),
+        torch.tensor(prot_r),
+        scale,
+        weight,
+    )
+    e_t.backward()
+    g_t = at.grad.numpy()
+
+    def jf(a):
+        return j_vdw(
+            a,
+            jnp.asarray(prot),
+            jnp.asarray(lig_local),
+            jnp.asarray(lig_r),
+            jnp.asarray(prot_r),
+            scale,
+            weight,
+        )
+
+    e_j, g_j = jax.value_and_grad(jf)(jnp.asarray(active))
+    assert float(e_t.detach()) > 0.0  # the case actually exercises the repulsion
+    assert abs(float(e_t.detach()) - float(e_j)) < 1e-8
+    assert np.allclose(g_t, np.asarray(g_j), atol=1e-8), (
+        f"max|d|={np.abs(g_t - np.asarray(g_j)).max()}"
+    )

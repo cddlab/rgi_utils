@@ -109,6 +109,7 @@ class CombinedRestraints:
             cfg.conformer_config,
             elements=elements,
             conf_start_sigma=cfg.conf_start_sigma,
+            conf_stop_sigma=cfg.conf_stop_sigma,
             rmsd_restraints=cfg.rmsd_data,
         )
         self._backend = cfg.resolve_backend()
@@ -173,21 +174,47 @@ class CombinedRestraints:
                 f"(gate is sigma <= start_sigma) — set "
                 f"conformer_restraints_config.start_sigma to a positive value"
             )
+        if spec.has_conformer() and float(
+            getattr(spec, "conf_stop_sigma", -1.0)
+        ) > float(spec.conf_start_sigma):
+            msgs.append(
+                "conformer conf_stop_sigma > conf_start_sigma, so the active window "
+                "(conf_stop_sigma <= sigma <= conf_start_sigma) is EMPTY and the "
+                "conformer terms NEVER activate — set conf_stop_sigma below it"
+            )
         d = spec.distance
         if d is not None and d.mask.sum() > 0:
-            ss = np.asarray(d.start_sigma)[np.asarray(d.mask) > 0]
+            active = np.asarray(d.mask) > 0
+            ss = np.asarray(d.start_sigma)[active]
             if ss.size and float(ss.min()) < 0:
                 msgs.append(
                     "one or more distance restraints have start_sigma < 0, so they "
                     "will NEVER activate (gate is sigma <= start_sigma)"
                 )
+            stop = np.asarray(d.stop_sigma)[active]
+            if stop.size and np.any(stop > ss):
+                msgs.append(
+                    "one or more distance restraints have stop_sigma > start_sigma, so "
+                    "their active window is EMPTY and they NEVER activate"
+                )
         rm = spec.rmsd
         if rm is not None and rm.mask.sum() > 0:
-            ss = np.asarray(rm.start_sigma)[np.asarray(rm.mask) > 0]
+            active = np.asarray(rm.mask) > 0
+            ss = np.asarray(rm.start_sigma)[active]
             if ss.size and float(ss.min()) < 0:
                 msgs.append(
                     "one or more RMSD restraints have start_sigma < 0, so they "
                     "will NEVER activate (gate is sigma <= start_sigma)"
+                )
+            # stop_sigma > start_sigma inverts the window stop_sigma<=sigma<=start_sigma
+            # to EMPTY -> the restraint is silently a no-op (counts/finalize still read
+            # non-zero), so flag the likely config error loudly like start_sigma < 0.
+            stop = np.asarray(rm.stop_sigma)[active]
+            if stop.size and np.any(stop > ss):
+                msgs.append(
+                    "one or more RMSD restraints have stop_sigma > start_sigma, so the "
+                    "active window (stop_sigma <= sigma <= start_sigma) is EMPTY and "
+                    "they NEVER activate — set stop_sigma below start_sigma"
                 )
         for m in msgs:
             logger.warning(m)

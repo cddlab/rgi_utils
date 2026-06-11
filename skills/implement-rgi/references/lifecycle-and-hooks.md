@@ -110,12 +110,31 @@ with no bonds, so its perceived topology is all-single and `dihedral` finds
 nothing there (graceful: `dihedrals=0`).
 
 The selection DSL (`selection.py`) supports `chain`, `resid N`, `resid A to B`,
-`index`, the molecule-type keywords `protein` / `dna` / `rna`, and
-`and`/`or`/`not`/`( )`. `resid` is the per-chain 1-based ordinal the adapter yields
-in `AtomRecord.resid`. `protein`/`dna`/`rna` match on `AtomRecord.mol_type`, the
+`index`, `name` (atom name, e.g. `name CA` / `name N CA C O`), the molecule-type
+keywords `protein` / `dna` / `rna`, the polymer-substructure keywords `backbone` /
+`sidechain`, and `and`/`or`/`not`/`( )`. `resid` is the
+per-chain 1-based ordinal the adapter yields in `AtomRecord.resid`. `name` matches
+`AtomRecord.name` case-insensitively (alphanumeric only — a nucleic-acid `C1'` is not
+selectable but fails loudly, never silently); it is one way to restrict an RMSD
+superposition to backbone (`name CA`) so a substituted homolog side chain is not
+pinned. `protein`/`dna`/`rna` match on `AtomRecord.mol_type`, the
 adapter-normalized molecule type: every adapter MUST map its framework's
 molecule-type enum to the shared strings `"protein"/"dna"/"rna"/"ligand"` (raw enum
 ints differ across tools — boltz/esm DNA=1/RNA=2 vs chai/openfold RNA=1/DNA=2 — so
 the string is the only safe cross-tool currency). A ligand / water / untyped atom
-(`mol_type=None`) matches none of the three. Compose freely, e.g.
-`protein and chain A`, `not protein`, `(protein or rna) and resid 5 to 84`.
+(`mol_type=None`) matches none of the three.
+
+`backbone`/`sidechain` are PyMOL-like polymer selectors, matched by atom name but
+GATED on polymer type: `backbone` = protein N/CA/C/O(/OXT) or the nucleic
+sugar-phosphate; `sidechain` = the polymer complement (so glycine has no sidechain
+heavy atom, and a ligand atom merely named "C"/"N"/"O"/"P" never matches either). The
+polymer type is `AtomRecord.mol_type` where the adapter sets it (boltz/esm/AF3) else
+derived from `AtomRecord.resname` (chai/of3/protenix don't set `mol_type`) — so BOTH
+`mol_type` and `resname` flow through the selection candidate dict, and a modified
+residue (e.g. MSE) counts as polymer only where the framework typed it (the same
+accepted cross-tool divergence as `protein`). `backbone` is the register-stable way to
+limit an RMSD fit to the main chain; `name CA` is the narrower CA-only variant. Note
+`not backbone` is NOT `sidechain` — `not backbone` also matches non-polymer atoms,
+`sidechain` is polymer-gated. Compose freely, e.g.
+`protein and chain A`, `not protein`, `(protein or rna) and resid 5 to 84`,
+`name CA and resid 5 to 84`, `backbone and chain A`, `sidechain and resid 5 to 84`.

@@ -69,10 +69,17 @@ class ESMFold2Adapter:
     """
 
     def __init__(
-        self, features: dict, chain_infos=None, num_atoms: int | None = None
+        self, features: dict, chain_infos=None, num_atoms: int | None = None,
+        res_type_names: dict | None = None,
     ) -> None:
         self._asym = _batch0(features["asym_id"]).astype(np.int64)  # (n_tok,)
         self._mol_type = _batch0(features["mol_type"]).astype(np.int64)  # (n_tok,)
+        # per-token residue-type int + the {int -> 3-letter} vocab passed in by the
+        # esm caller (adapter stays framework-free); powers AtomRecord.resname ->
+        # pairing="align" RMSD. None -> resname unavailable.
+        rt = features.get("res_type")
+        self._res_type = _batch0(rt).astype(np.int64) if rt is not None else None
+        self._res_type_names = res_type_names
         self._atom_to_token = _batch0(features["atom_to_token"]).astype(
             np.int64
         )  # (n_atom,)
@@ -149,12 +156,16 @@ class ESMFold2Adapter:
             tok = int(a2t[i])
             asym = int(self._asym[tok])
             chain = self._asym_to_name.get(asym, str(asym))
+            rnm = None
+            if self._res_type is not None and self._res_type_names is not None:
+                rnm = self._res_type_names.get(int(self._res_type[tok]))
             yield AtomRecord(
                 chain=chain,
                 resid=int(self._tok_ordinal[tok]),
                 index=int(i),
                 name=self._atom_name(i),
                 mol_type=_ESM_MOLTYPE.get(int(self._mol_type[tok])),
+                resname=rnm,
             )
 
     # --- ConformerAdapter -----------------------------------------------------

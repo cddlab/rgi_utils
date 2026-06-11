@@ -59,7 +59,14 @@ def _cg_minimize(energy_fn, x0, max_iter, max_ls=MAX_LS, gtol=GTOL, ftol=FTOL):
             ok = ft <= f + ARMIJO_C1 * step * slope  # Armijo sufficient decrease
             return (jnp.where(ok, step, step * BACKTRACK), ok, xt, ft, gt, i + 1)
 
-        init = (jnp.asarray(1.0), jnp.asarray(False), x_base, f, g_proto, jnp.asarray(0))
+        init = (
+            jnp.asarray(1.0),
+            jnp.asarray(False),
+            x_base,
+            f,
+            g_proto,
+            jnp.asarray(0),
+        )
         _s, accepted, xt, ft, gt, _i = jax.lax.while_loop(cond, body, init)
         return xt, ft, gt, accepted
 
@@ -100,6 +107,20 @@ def _cg_minimize(energy_fn, x0, max_iter, max_ls=MAX_LS, gtol=GTOL, ftol=FTOL):
     return x
 
 
+def _vdw_pair_energy(active, prot_pos, lig_local, lig_r, prot_r, scale, weight):
+    """jnp port of the torch dynamic ligand-protein VdW (``optim/_torch_cg_gpu.py``):
+    the moving ligand atoms (``active[lig_local]``) vs the FIXED protein background
+    ``prot_pos``, all-pairs ``weight * sum(clamp(d - scale*(r_i+r_j), max=0)^2)`` (zero
+    gradient beyond contact). Pure jnp so it composes into the scan/vmap energy. Same
+    formula + ``EPS`` as the torch impl, so the two agree on value and gradient."""
+    lig = active[..., lig_local, :]
+    diff = lig[..., :, None, :] - prot_pos[..., None, :, :]
+    dist = jnp.sqrt(jnp.sum(diff**2, axis=-1) + EPS)
+    r_min = scale * (lig_r[:, None] + prot_r[None, :])
+    delta = jnp.minimum(dist - r_min, 0.0)  # torch clamp(max=0.0)
+    return weight * jnp.sum(delta**2)
+
+
 def make_minimizer(
     spec,
     max_iter: int = 100,
@@ -122,6 +143,21 @@ def make_minimizer(
     has_conf = spec.has_conformer()
     has_rmsd = spec.has_rmsd()
     dist_prepared = prepared.get("distance")
+    # dynamic ligand-protein VdW (formerly torch-only; now jax too). The protein
+    # background is read from the FULL coords at minimize time (it moves per diffusion
+    # step), so it is NOT baked into the spec -- only the indices/radii are. Gated on
+    # conf_start_sigma like the other conformer terms.
+    _vc = getattr(spec, "vdw_config", None)
+    has_vdw = _vc is not None and _vc.weight > 0
+    if has_vdw:
+        vdw_lig_local = jnp.asarray(_vc.ligand_local, dtype=jnp.int32)
+        vdw_lig_r = jnp.asarray(_vc.ligand_radii)
+        vdw_prot_global = jnp.asarray(_vc.protein_global, dtype=jnp.int32)
+        vdw_prot_r = jnp.asarray(_vc.protein_radii)
+        vdw_scale = jnp.asarray(float(_vc.scale))
+        vdw_weight = jnp.asarray(float(_vc.weight))
+        conf_ss = jnp.asarray(float(spec.conf_start_sigma))
+        conf_stop = jnp.asarray(float(getattr(spec, "conf_stop_sigma", -1.0)))
 
     def _descend(coords, sigma):
         active = coords[..., active_idx, :]
@@ -131,11 +167,30 @@ def make_minimizer(
             active = apply_distance_shift_jax(active, dist_prepared, sigma)
         # 2) Conformer + RMSD restraints: jaxopt on the non-distance energy (distance is
         #    applied above; total_energy(include_distance=False) covers conformer AND
-        #    RMSD). Skipped entirely for a distance-only spec.
-        if has_conf or has_rmsd:
+        #    RMSD), plus the ligand-protein VdW term (gated on conf_start_sigma -- the
+        #    `jnp.where` zeroes its weight AND gradient above the gate). Skipped for a
+        #    distance-only spec. has_conf is already True when vdw_config is set.
+        if has_conf or has_rmsd or has_vdw:
+            if has_vdw:
+                prot_pos = coords[..., vdw_prot_global, :]
+                # conformer window conf_stop <= sigma <= conf_start (conf_stop=-1 = off)
+                _s = jnp.asarray(sigma)
+                in_win = (_s <= conf_ss) & (_s >= conf_stop)
+                vdw_w = jnp.where(in_win, vdw_weight, 0.0)
 
             def energy_fn(a):
-                return jax_energy.total_energy(a, prepared, sigma, include_distance=False)
+                e = jax_energy.total_energy(a, prepared, sigma, include_distance=False)
+                if has_vdw:
+                    e = e + _vdw_pair_energy(
+                        a,
+                        prot_pos,
+                        vdw_lig_local,
+                        vdw_lig_r,
+                        vdw_prot_r,
+                        vdw_scale,
+                        vdw_w,
+                    )
+                return e
 
             if is_cg:
                 # the custom CG matches torch and converges the RMSD energy (jaxopt's
@@ -146,7 +201,9 @@ def make_minimizer(
 
                 opt = (
                     jaxopt.LBFGS(
-                        fun=energy_fn, maxiter=max_iter, linesearch="backtracking",
+                        fun=energy_fn,
+                        maxiter=max_iter,
+                        linesearch="backtracking",
                         implicit_diff=False,
                     )
                     .run(active)

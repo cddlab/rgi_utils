@@ -30,11 +30,11 @@ _SPEC_SCHEMA = [
     ("distance", "distance",
      [("grp1_idx", "i"), ("grp2_idx", "i"), ("grp1_mask", "f"), ("grp2_mask", "f"),
       ("target1", "f"), ("target2", "f"), ("dist_type", "i"), ("mask", "f"),
-      ("start_sigma", "f")]),
+      ("start_sigma", "f"), ("stop_sigma", "f")]),
     ("rmsd", "rmsd",
      [("fit_idx", "i"), ("fit_mask", "f"), ("fit_ref", "f"), ("calc_idx", "i"),
       ("calc_mask", "f"), ("calc_ref", "f"), ("target_rmsd", "f"), ("weight", "f"),
-      ("mask", "f"), ("start_sigma", "f")]),
+      ("mask", "f"), ("start_sigma", "f"), ("stop_sigma", "f")]),
 ]
 
 
@@ -43,7 +43,10 @@ def pack_spec(spec, to_int, to_float):
     converters (numpy array -> backend array). Only sub-arrays with a non-empty mask
     are included, matching the original per-backend ``prepare_spec`` gating."""
     conv = {"i": to_int, "f": to_float}
-    prepared = {"conf_start_sigma": float(getattr(spec, "conf_start_sigma", -1.0))}
+    prepared = {
+        "conf_start_sigma": float(getattr(spec, "conf_start_sigma", -1.0)),
+        "conf_stop_sigma": float(getattr(spec, "conf_stop_sigma", -1.0)),
+    }
     for key, attr, fields in _SPEC_SCHEMA:
         arr = getattr(spec, attr, None)
         if arr is None or not (arr.mask.sum() > 0):  # same as old `> 0` include, NaN-safe
@@ -78,7 +81,8 @@ def term_energies(fns, prepared, positions, cg, sigma_gate, include_distance):
     gate folded into each term's mask. Shared by all three backends' total_energy and
     energy_breakdown — only ``fns`` (the backend leaf functions), ``cg`` (the
     conformer gate multiplier) and ``sigma_gate`` (a per-restraint
-    ``(start_sigma, mask) -> gated_mask`` callable) vary per backend / noise level.
+    ``(start_sigma, stop_sigma, mask) -> gated_mask`` callable; ``stop_sigma`` may be
+    ``None`` for a term with no lower bound) vary per backend / noise level.
 
     ``cg``/``sigma_gate`` are precomputed by the caller so the backend-specific casts
     (numpy bool, torch ``.to``, jax tracer-safe ``.astype``) stay out of this loop.
@@ -90,8 +94,12 @@ def term_energies(fns, prepared, positions, cg, sigma_gate, include_distance):
         if gate == "dist" and not include_distance:
             continue
         p = prepared[key]
+        # rmsd carries a lower noise bound (stop_sigma -> released for sigma below it);
+        # distance has none (p.get -> None == no lower bound).
         mask = (
-            p["mask"] * cg if gate == "conf" else sigma_gate(p["start_sigma"], p["mask"])
+            p["mask"] * cg
+            if gate == "conf"
+            else sigma_gate(p["start_sigma"], p.get("stop_sigma"), p["mask"])
         )
         out[key] = fns[fn_name](positions, *[p[f] for f in fields], mask)
     return out

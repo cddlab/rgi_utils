@@ -45,6 +45,7 @@ class ProtenixAdapter:
         resids = np.asarray(aa.res_id)
         hetero = np.asarray(aa.hetero, dtype=bool)
         names = np.asarray(aa.atom_name) if hasattr(aa, "atom_name") else None
+        resnames = np.asarray(aa.res_name) if hasattr(aa, "res_name") else None
         # Per-chain 1-based residue/token ordinal, matching boltz/AF3 so one
         # selection string means the same atom in every tool. protenix tokenizes a
         # ligand per atom but sets res_id=1 for ALL atoms of a single-CCD ligand,
@@ -65,7 +66,10 @@ class ProtenixAdapter:
                     seen[rid] = chain_counter[ch]
                 ordinal = seen[rid]
             nm = str(names[i]).strip() if names is not None else None
-            yield AtomRecord(chain=ch, resid=ordinal, index=int(i), name=nm)
+            rnm = str(resnames[i]).strip() if resnames is not None else None
+            yield AtomRecord(
+                chain=ch, resid=ordinal, index=int(i), name=nm, resname=rnm
+            )
 
     # --- ConformerAdapter -----------------------------------------------------
     def num_atoms(self) -> int:

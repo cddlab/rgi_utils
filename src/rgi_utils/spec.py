@@ -141,6 +141,7 @@ class DistanceArrays:
     dist_type: np.ndarray  # (n_dist,) int code (see DIST_* above)
     mask: np.ndarray  # (n_dist,)
     start_sigma: np.ndarray  # (n_dist,) per-restraint; active when sigma<=start_sigma
+    stop_sigma: np.ndarray  # (n_dist,) released when sigma<stop_sigma (-1=never)
 
 
 @dataclass
@@ -150,11 +151,11 @@ class RmsdArrays:
     The optimal rotation is computed from the FIT atoms (``fit_*``) and the RMSD is
     measured over the CALC atoms (``calc_*``); both reference groups are paired
     atom-for-atom to the moving target. When fit==calc this is the plain superposed
-    RMSD. Energy ``weight * (rmsd - target_rmsd)**2``, active when
-    ``sigma <= start_sigma``. Optimised by the CG solver (NOT closed-form), so the
-    fit+calc target atoms join active_sites. The rotation is recomputed (and treated
-    as constant) each evaluation — see ``energy.*_energy.rmsd_energy``. All ``*_idx``
-    are local indices into active_sites.
+    RMSD. Energy ``weight * (rmsd - target_rmsd)**2``, active in the noise window
+    ``stop_sigma <= sigma <= start_sigma``. Optimised by the CG solver, so the fit+calc
+    target atoms join active_sites. The rotation is recomputed (and
+    treated as constant) each evaluation — see ``energy.*_energy.rmsd_energy``. All
+    ``*_idx`` are local indices into active_sites.
     """
 
     fit_idx: np.ndarray  # (n_rmsd, max_fit) int local indices (superposition atoms)
@@ -166,6 +167,12 @@ class RmsdArrays:
     target_rmsd: np.ndarray  # (n_rmsd,) target RMSD value
     weight: np.ndarray  # (n_rmsd,)
     start_sigma: np.ndarray  # (n_rmsd,) per-restraint; active when sigma<=start_sigma
+    # per-restraint LOWER noise bound: the restraint is RELEASED for sigma < stop_sigma,
+    # so the model's final low-sigma denoising steps re-idealise geometry the restraint
+    # would otherwise hold distorted (e.g. the peptide bond between a restrained residue
+    # and a free unmodeled tail). -1 = never released (active down to sigma=0 = old
+    # behaviour). The active window is stop_sigma <= sigma <= start_sigma.
+    stop_sigma: np.ndarray  # (n_rmsd,) per-restraint; active when sigma>=stop_sigma
     mask: np.ndarray  # (n_rmsd,) float {0,1}: 1 = valid, 0 = padding
 
 
@@ -190,6 +197,9 @@ class RestraintSpec:
     # one start_sigma for ALL conformer (bond/angle/chiral/vdw) restraints; each
     # distance restraint carries its own in DistanceArrays.start_sigma.
     conf_start_sigma: float = -1.0
+    # shared conformer LOWER bound (mirrors conf_start_sigma): conformer terms are
+    # released for sigma < conf_stop_sigma. -1 (default) = never released (off).
+    conf_stop_sigma: float = -1.0
 
     def has_conformer(self) -> bool:
         """True if any conformer (bond/angle/chiral/dihedral/vdw) restraint exists."""
