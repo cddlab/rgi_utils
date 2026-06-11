@@ -182,7 +182,16 @@ parity across backends.
   `distance_shift` (compiled GPU / closed-form). `stop_sigma > start_sigma` (empty window)
   is flagged by `_warn_never_active`.
 - Distance restraints: `harmonic`, `flat-bottomed`, `flat-bottomed1`,
-  `flat-bottomed2`; only `calc_method=unfixed-absolute` (COM-based).
+  `flat-bottomed2`; only `calc_method=unfixed-absolute` (COM-based). The per-entry `move`
+  key picks which group the closed-form COM shift moves: `both` (default = minimal-
+  displacement split, both move) / `1` (only `atom_selection1`'s group) / `2` (only
+  `atom_selection2`'s) — `1`/`2` PIN the other group (e.g. move only a ligand toward a
+  fixed pocket). It is a per-restraint `move_mode` int (0/1/2) parallel to `dist_type`,
+  wired ONLY in `optim/distance_shift.py` (`_split`); the energy layer ignores it
+  (COM-distance is move-agnostic). All modes change the COM separation by the same `delta`,
+  so for a single restraint (or disjoint groups) convergence is identical — only the
+  distribution differs (coupled restraints moving a SHARED atom can reach a different fixed
+  point under `1`/`2` vs `both`).
 - Top-level `import rgi_utils` must work with numpy only (no torch/jax) — keep
   heavy imports lazy inside the backend modules.
 - GPU tests are marked `@pytest.mark.gpu` and excluded in CI.

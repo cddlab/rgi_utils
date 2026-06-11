@@ -32,6 +32,16 @@ DIST_TYPE_CODES = {
     "flat-bottomed2": DIST_UPPER_BOUND,
 }
 
+# Which group(s) the closed-form COM shift moves (the `move` config key). The minimal-
+# displacement split ("both") distributes the correction over both groups; move-1/move-2
+# concentrate the full shift on group1 / group2 so the OTHER group is held fixed (e.g.
+# pull only a ligand toward a fixed pocket). The code equals the config value: 1 ->
+# group1, 2 -> group2 (atom_selection1 / atom_selection2); "both" -> 0. Used by
+# optim/distance_shift.py.
+MOVE_BOTH = 0
+MOVE_GROUP1 = 1
+MOVE_GROUP2 = 2
+
 
 @dataclass
 class BondArrays:
@@ -139,6 +149,7 @@ class DistanceArrays:
     target1: np.ndarray  # (n_dist,) lower / harmonic target
     target2: np.ndarray  # (n_dist,) upper target
     dist_type: np.ndarray  # (n_dist,) int code (see DIST_* above)
+    move_mode: np.ndarray  # (n_dist,) int 0=both / 1=grp1 only / 2=grp2 only (MOVE_*)
     mask: np.ndarray  # (n_dist,)
     start_sigma: np.ndarray  # (n_dist,) per-restraint; active when sigma<=start_sigma
     stop_sigma: np.ndarray  # (n_dist,) released when sigma<stop_sigma (-1=never)

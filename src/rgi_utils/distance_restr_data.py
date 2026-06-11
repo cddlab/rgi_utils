@@ -24,6 +24,7 @@ class DistanceData:
     run_restr: bool
     start_sigma: float  # apply this restraint only when noise level <= start_sigma
     stop_sigma: float  # RELEASE this restraint when noise level < stop_sigma (-1=never)
+    move_mode: int  # 0=both / 1=grp1 only / 2=grp2 only (the 'move' config key)
 
     def __init__(self):
         self.atom_selection1 = None
@@ -43,6 +44,7 @@ class DistanceData:
             None  # per-restraint; optional (from_dict defaults None -> +inf)
         )
         self.stop_sigma = -1.0  # per-restraint lower bound; -1 = never released (off)
+        self.move_mode = 0  # which group moves: 0=both (default) / 1=grp1 / 2=grp2
 
     def set_config(self, config: dict):
         self.atom_selection1 = config.get("atom_selection1", None)
@@ -60,6 +62,23 @@ class DistanceData:
         _stop = config.get("stop_sigma")
         if _stop is not None:
             self.stop_sigma = float(_stop)
+        # per-distance move mode (OPTIONAL; default "both"): which group(s) the closed-
+        # form COM shift moves. both/omitted -> 0 (split, both move); 1 -> only
+        # atom_selection1's group; 2 -> only atom_selection2's group. Accepts int or str
+        # (1 / "1"); unknown value raises (silent fallback would move wrong groups).
+        _mv = config.get("move")
+        if _mv is not None:
+            _mv_s = str(_mv).strip().lower()
+            if _mv_s == "both":
+                self.move_mode = 0
+            elif _mv_s == "1":
+                self.move_mode = 1
+            elif _mv_s == "2":
+                self.move_mode = 2
+            else:
+                raise ValueError(
+                    f"distance 'move' must be 'both', 1, or 2 (got {_mv!r})"
+                )
         if "harmonic" in config:
             self.target_distance = config["harmonic"].get("target_distance", None)
             if self.target_distance is not None:

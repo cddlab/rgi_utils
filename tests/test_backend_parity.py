@@ -65,6 +65,7 @@ def _make_spec() -> RestraintSpec:
         target1=np.array([3.0, 2.0]),
         target2=np.array([6.0, 5.0]),
         dist_type=np.array([0, 1], dtype=np.int64),  # harmonic + flat-bottomed
+        move_mode=np.array([0, 0], dtype=np.int64),  # both groups move (default)
         mask=np.array([1.0, 1.0]),
         start_sigma=np.array([100.0, 5.0]),  # different per-distance start_sigma
         stop_sigma=np.array([-1.0, -1.0]),  # -1 = never released (off)
@@ -405,6 +406,113 @@ def test_distance_closed_form_coupled_restraints():
     assert np.allclose(a_np, a_j, atol=1e-5)
 
 
+def test_distance_closed_form_move_modes():
+    """The `move` key picks which group the closed-form shift moves: 0=both (minimal-
+    displacement split), 1=only group1 (atom_selection1), 2=only group2. All three reach
+    the target COM separation; 1/2 leave the OTHER group's atoms EXACTLY fixed. numpy/
+    torch/jax agree."""
+    torch = pytest.importorskip("torch")
+    jnp = pytest.importorskip("jax.numpy")
+    from rgi_utils.optim import distance_shift as ds
+
+    def base_d(move):
+        return dict(
+            grp1_idx=np.array([[0, 1]]),
+            grp2_idx=np.array([[2, 3]]),
+            grp1_mask=np.array([[1.0, 1.0]]),
+            grp2_mask=np.array([[1.0, 1.0]]),
+            target1=np.array([5.0]),
+            target2=np.array([0.0]),
+            dist_type=np.array([0]),
+            move_mode=np.array([move]),
+            mask=np.array([1.0]),
+            start_sigma=np.array([1e30]),
+            stop_sigma=np.array([-1.0]),
+        )
+
+    active = np.zeros((4, 3))
+    active[2:, 0] = 20.0  # COM1 at x=0, COM2 at x=20 -> gap 20, target 5
+
+    def shift_all(move):
+        d = base_d(move)
+        a_np = ds.apply_distance_shift_numpy(active, d, 0.0)
+        a_t = ds.apply_distance_shift_torch(
+            torch.as_tensor(active),
+            {k: torch.as_tensor(v) for k, v in d.items()},
+            0.0,
+        ).numpy()
+        a_j = np.asarray(
+            ds.apply_distance_shift_jax(
+                jnp.asarray(active),
+                {k: jnp.asarray(v) for k, v in d.items()},
+                0.0,
+            )
+        )
+        assert np.allclose(a_np, a_t, atol=1e-6), move
+        assert np.allclose(a_np, a_j, atol=1e-5), move
+        return a_np
+
+    def com_dist(a):
+        return np.linalg.norm(a[2:].mean(0) - a[:2].mean(0))
+
+    a_both, a_m1, a_m2 = shift_all(0), shift_all(1), shift_all(2)
+    # every mode lands the COM gap on the target
+    for a in (a_both, a_m1, a_m2):
+        assert abs(com_dist(a) - 5.0) < 1e-6
+    # move=1 -> only group1 (atoms 0,1) moves; group2 (2,3) EXACTLY fixed
+    assert np.allclose(a_m1[2:], active[2:], atol=1e-9)
+    assert not np.allclose(a_m1[:2], active[:2], atol=1e-6)
+    # move=2 -> only group2 moves; group1 EXACTLY fixed
+    assert np.allclose(a_m2[:2], active[:2], atol=1e-9)
+    assert not np.allclose(a_m2[2:], active[2:], atol=1e-6)
+    # both -> neither group stays fixed
+    assert not np.allclose(a_both[:2], active[:2], atol=1e-6)
+    assert not np.allclose(a_both[2:], active[2:], atol=1e-6)
+
+
+def test_distance_closed_form_coupled_move_modes():
+    """Two distance restraints SHARING an atom, each with a move mode, under the Jacobi
+    iteration. move-1/move-2 here make the MOVING atom sets disjoint (r1 moves only A,
+    r2 moves only C, the shared B stays), so it still converges to both targets; numpy/
+    torch/jax agree. (When two restraints move the SAME shared atom the fixed point can
+    differ from 'both' -- that is the intended semantics, not a bug.)"""
+    torch = pytest.importorskip("torch")
+    jnp = pytest.importorskip("jax.numpy")
+    from rgi_utils.optim import distance_shift as ds
+
+    d = dict(
+        grp1_idx=np.array([[0], [1]]),
+        grp2_idx=np.array([[1], [2]]),  # A-B and B-C share atom 1 (B)
+        grp1_mask=np.array([[1.0], [1.0]]),
+        grp2_mask=np.array([[1.0], [1.0]]),
+        target1=np.array([5.0, 5.0]),
+        target2=np.array([0.0, 0.0]),
+        dist_type=np.array([0, 0]),
+        move_mode=np.array([1, 2]),  # r1 moves only A (grp1); r2 moves only C (grp2)
+        mask=np.array([1.0, 1.0]),
+        start_sigma=np.array([1e30, 1e30]),
+        stop_sigma=np.array([-1.0, -1.0]),
+    )
+    a = np.zeros((3, 3))
+    a[1, 0] = 10.0
+    a[2, 0] = 20.0  # A=0, B=10, C=20 -> both gaps 10, target 5
+
+    a_np = ds.apply_distance_shift_numpy(a, d, 0.0)
+    assert abs(np.linalg.norm(a_np[1] - a_np[0]) - 5.0) < 1e-3  # A-B gap 5
+    assert abs(np.linalg.norm(a_np[2] - a_np[1]) - 5.0) < 1e-3  # B-C gap 5
+    assert np.allclose(a_np[1], a[1], atol=1e-9)  # shared B held fixed
+    a_t = ds.apply_distance_shift_torch(
+        torch.as_tensor(a), {k: torch.as_tensor(v) for k, v in d.items()}, 0.0
+    ).numpy()
+    a_j = np.asarray(
+        ds.apply_distance_shift_jax(
+            jnp.asarray(a), {k: jnp.asarray(v) for k, v in d.items()}, 0.0
+        )
+    )
+    assert np.allclose(a_np, a_t, atol=1e-6)
+    assert np.allclose(a_np, a_j, atol=1e-5)
+
+
 def _rmsd_case(seed=3, n=6):
     """One RMSD restraint over n atoms: reference + a rotated/translated/noised target."""
     rng = np.random.default_rng(seed)
@@ -638,7 +746,8 @@ def test_conformer_distance_stop_sigma_window():
             grp2_idx=np.array([[2, 3]], dtype=np.int64),
             grp1_mask=np.array([[1.0, 1.0]]), grp2_mask=np.array([[1.0, 1.0]]),
             target1=np.array([2.0]), target2=np.array([0.0]),
-            dist_type=np.array([0], dtype=np.int64), mask=np.array([1.0]),
+            dist_type=np.array([0], dtype=np.int64),
+            move_mode=np.array([0], dtype=np.int64), mask=np.array([1.0]),
             start_sigma=np.array([10.0]), stop_sigma=np.array([2.0]),
         ),
         conf_start_sigma=10.0, conf_stop_sigma=2.0,

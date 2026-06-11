@@ -91,6 +91,8 @@ restraints_config:
     - atom_selection1: "resid 5 to 84"
       atom_selection2: "chain B and resid 90 to 180"
       # start_sigma:  optional; omitted -> active at every step (set e.g. 1.0 for late-only)
+      # move:  optional; both (default, split) | 1 (only atom_selection1) | 2 (only
+      #        atom_selection2). 1/2 pin the OTHER group (e.g. move only a ligand to a pocket).
       harmonic: {target_distance: 25.0}
       # alternatives: flat-bottomed {target_distance1, target_distance2},
       #               flat-bottomed1 {target_distance1}, flat-bottomed2 {target_distance2}

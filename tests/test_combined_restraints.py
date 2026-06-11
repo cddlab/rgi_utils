@@ -209,6 +209,46 @@ def test_distance_closed_form_hits_target_exactly():
     assert abs(coords[0, 2:].mean(0)[0] - 13.5) < 1e-6
 
 
+def test_distance_move_mode_end_to_end():
+    """End-to-end (config -> DistanceData.move_mode -> featurizer -> DistanceArrays ->
+    pack_spec -> closed-form apply): `move: 2` moves ONLY atom_selection2's group, so
+    chain A (group1) stays put while chain B lands the COM gap on target. Guards the
+    middle wiring that the parity tests (move_mode=0) and the hand-built-dict tests both
+    skip -- a dropped schema field / wrong featurizer attr would silently fall back to 0
+    (both) and chain A would move."""
+    cr = CombinedRestraints.get_instance()
+    cr.set_config(
+        {
+            "backend": "torch",
+            "distance_restraints_config": [
+                {
+                    "atom_selection1": "chain A",
+                    "atom_selection2": "chain B",
+                    "start_sigma": 1e30,
+                    "move": 2,  # only chain B (atom_selection2) moves
+                    "harmonic": {"target_distance": 7.0},
+                }
+            ],
+        }
+    )
+    atoms = [
+        AtomRecord("A", 1, 0),
+        AtomRecord("A", 2, 1),
+        AtomRecord("B", 1, 2),
+        AtomRecord("B", 2, 3),
+    ]
+    cr.setup(MockAdapter(atoms))
+    assert cr.config.distance_data[0].move_mode == 2  # parsed onto the DistanceData
+    coords = np.zeros((1, 4, 3))
+    coords[0, 2:, 0] = 20.0  # COM1 (A) at x=0, COM2 (B) at x=20 -> dist 20
+    a_before = coords[0, :2].copy()
+    cr.minimize(coords, 0, sigma=0.0)
+    d = np.linalg.norm(coords[0, 2:].mean(0) - coords[0, :2].mean(0))
+    assert abs(d - 7.0) < 1e-6  # COM gap lands on target
+    assert np.allclose(coords[0, :2], a_before)  # group1 (chain A) EXACTLY fixed
+    assert abs(coords[0, 2:].mean(0)[0] - 7.0) < 1e-6  # only group2 moved (to x=7)
+
+
 def test_distance_name_ca_selects_backbone_only():
     """`name CA` inside a distance selection filters the COM group to CA atoms only
     (the user-facing 'name CA' for distance restraints). Each residue here carries a CA
@@ -516,6 +556,33 @@ def test_rmsd_stop_sigma_above_start_warns(tmp_path, caplog):
     with caplog.at_level(logging.WARNING):
         cr.setup(MockAdapter(atoms))
     assert any("stop_sigma > start_sigma" in r.message for r in caplog.records)
+
+
+def test_distance_move_mode_parsing():
+    """The distance `move` key parses to move_mode 0/1/2 (both / 1 / 2), accepts int or
+    string, defaults to 0 (both) when omitted, and raises on an unknown value."""
+    from rgi_utils.distance_restr_data import DistanceData
+
+    def mode(move):
+        dd = DistanceData()
+        cfg = {
+            "atom_selection1": "chain A and resid 1",
+            "atom_selection2": "chain A and resid 2",
+            "harmonic": {"target_distance": 5.0},
+        }
+        if move is not None:
+            cfg["move"] = move
+        dd.set_config(cfg)
+        return dd.move_mode
+
+    assert mode(None) == 0  # omitted -> both
+    assert mode("both") == 0
+    assert mode(1) == 1 and mode("1") == 1  # int or string form
+    assert mode(2) == 2 and mode("2") == 2
+    with pytest.raises(ValueError, match="move"):
+        mode("group1")  # unknown value raises (no silent fallback)
+    with pytest.raises(ValueError, match="move"):
+        mode(3)
 
 
 def test_distance_stop_sigma_releases_below():

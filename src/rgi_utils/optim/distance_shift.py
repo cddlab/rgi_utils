@@ -11,7 +11,9 @@ For each restraint d (applied only when ``sigma <= start_sigma[d]``):
   COM1, COM2  -> dist = |COM2-COM1|, unit axis u
   delta (type): harmonic -> target1-dist; flat-bottomed -> nearest-bound gap;
                 lower(2) -> max(0,target1-dist); upper(3) -> min(0,target2-dist)
-  minimal-displacement split: s1 = -delta*N2/(N1+N2), s2 = +delta*N1/(N1+N2)
+  split by move_mode (the `move` config key): both(0) = minimal-displacement
+                s1 = -delta*N2/(N1+N2), s2 = +delta*N1/(N1+N2); move 1 = -delta,0
+                (only G1 moves); move 2 = 0,+delta (only G2 moves) -- see _split
   shift every G1 atom by s1*u and every G2 atom by s2*u (masked, scatter-add).
 
 A SINGLE restraint (or several with DISJOINT groups) is solved exactly in one
@@ -25,7 +27,8 @@ restraints reach the fixed point on pass 1, so later passes are no-ops).
 The three backends share the maths; only the gather/scatter primitives differ.
 ``prepared`` is the ``distance`` dict that ``energy.*_energy.prepare_spec`` already
 builds (grp1_idx/grp2_idx local indices, grp1_mask/grp2_mask, target1/target2,
-dist_type, mask, start_sigma).
+dist_type, move_mode, mask, start_sigma, stop_sigma). ``move_mode`` may be absent in a
+hand-built dict -> treated as 0 (both).
 """
 
 from __future__ import annotations
@@ -46,6 +49,9 @@ def apply_distance_shift_numpy(active, d, sigma=None):
     n1 = m1.sum(-1)
     n2 = m2.sum(-1)
     denom = n1 + n2 + _EPS
+    mm = d.get("move_mode")  # 0=both / 1=grp1 only / 2=grp2 only (absent -> both)
+    mm = np.zeros_like(dt) if mm is None else mm
+    c1, c2 = _split(mm, n1, n2, denom)  # constant across passes (no coord dependence)
     gate = d["mask"].astype(np.float64)
     if sigma is not None:
         s = float(sigma)
@@ -62,8 +68,8 @@ def apply_distance_shift_numpy(active, d, sigma=None):
         dist = np.sqrt((diff * diff).sum(-1) + _EPS)
         u = diff / (dist[..., None] + _EPS)
         delta = _delta(dist, t1, t2, dt, np.where, np.zeros_like) * gate
-        com1_shift = (-delta * (n2 / denom))[..., None] * u
-        com2_shift = (delta * (n1 / denom))[..., None] * u
+        com1_shift = (-delta * c1)[..., None] * u
+        com2_shift = (delta * c2)[..., None] * u
         pa1 = _per_atom_shift(com1_shift, m1)
         pa2 = _per_atom_shift(com2_shift, m2)
         _scatter_add_numpy(active, idx1.reshape(-1), pa1)
@@ -81,6 +87,21 @@ def _delta(dist, t1, t2, dt, where, zeros_like):
     dl = where(dist < t1, t1 - dist, zero)
     du = where(dist > t2, t2 - dist, zero)
     return where(dt == 0, dh, where(dt == 1, df, where(dt == 2, dl, du)))
+
+
+def _split(mm, n1, n2, denom):
+    """Per-restraint shift-distribution coefficients ``(c1, c2)`` for the move mode
+    ``mm`` (0=both, 1=group1 only, 2=group2 only): ``com1_shift = -delta*c1*u``,
+    ``com2_shift = +delta*c2*u``. "both" is the minimal-displacement split (each group
+    moves inversely to its size); 1/2 put the WHOLE shift on group1 / group2 so the
+    other group stays fixed (e.g. pull only a ligand toward a fixed pocket). EVERY mode
+    changes the COM separation by ``delta`` (only the distribution differs), so the
+    target is reached in every mode. Pure arithmetic (``==``/``*``/``+``) on the masks
+    (bool -> float), so one helper serves numpy/torch/jax with no backend ``where``."""
+    both = mm == 0
+    c1 = (mm == 1) + both * (n2 / denom)  # 1 when move==1, n2/denom when both, else 0
+    c2 = (mm == 2) + both * (n1 / denom)  # 1 when move==2, n1/denom when both, else 0
+    return c1, c2
 
 
 def _per_atom_shift(com_shift, m):
@@ -118,6 +139,9 @@ def apply_distance_shift_torch(active, d, sigma=None):
     n1 = m1.sum(-1)
     n2 = m2.sum(-1)
     denom = n1 + n2 + _EPS
+    mm = d.get("move_mode")  # 0=both / 1=grp1 only / 2=grp2 only (absent -> both)
+    mm = torch.zeros_like(dt) if mm is None else mm
+    c1, c2 = _split(mm, n1, n2, denom)  # constant across passes (no coord dependence)
     gate = d["mask"].to(m1.dtype)
     if sigma is not None:
         s = float(sigma)
@@ -135,8 +159,8 @@ def apply_distance_shift_torch(active, d, sigma=None):
         dist = torch.sqrt((diff * diff).sum(-1) + _EPS)
         u = diff / (dist[..., None] + _EPS)
         delta = _delta(dist, t1, t2, dt, torch.where, torch.zeros_like) * gate
-        com1_shift = (-delta * (n2 / denom))[..., None] * u
-        com2_shift = (delta * (n1 / denom))[..., None] * u
+        com1_shift = (-delta * c1)[..., None] * u
+        com2_shift = (delta * c2)[..., None] * u
         pa1 = _per_atom_shift(com1_shift, m1)
         pa2 = _per_atom_shift(com2_shift, m2)
         active = active.index_add(-2, fidx1, pa1.to(active.dtype))
@@ -155,6 +179,9 @@ def apply_distance_shift_jax(active, d, sigma):
     n1 = m1.sum(-1)
     n2 = m2.sum(-1)
     denom = n1 + n2 + _EPS
+    mm = d.get("move_mode")  # 0=both / 1=grp1 only / 2=grp2 only (absent -> both)
+    mm = jnp.zeros_like(dt) if mm is None else mm
+    c1, c2 = _split(mm, n1, n2, denom)  # constant across passes (no coord dependence)
     gate = d["mask"]
     if sigma is not None:
         s = jnp.asarray(sigma)
@@ -172,8 +199,8 @@ def apply_distance_shift_jax(active, d, sigma):
         dist = jnp.sqrt((diff * diff).sum(-1) + _EPS)
         u = diff / (dist[..., None] + _EPS)
         delta = _delta(dist, t1, t2, dt, jnp.where, jnp.zeros_like) * gate
-        com1_shift = (-delta * (n2 / denom))[..., None] * u
-        com2_shift = (delta * (n1 / denom))[..., None] * u
+        com1_shift = (-delta * c1)[..., None] * u
+        com2_shift = (delta * c2)[..., None] * u
         pa1 = _per_atom_shift(com1_shift, m1)
         pa2 = _per_atom_shift(com2_shift, m2)
         active = active.at[..., fidx1, :].add(pa1)

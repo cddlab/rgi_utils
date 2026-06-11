@@ -64,6 +64,45 @@ def test_jax_minimize_reduces_energy():
     assert e1 < 0.5 * e0, f"{e0} -> {e1}"
 
 
+def test_jax_minimizer_move_mode_end_to_end():
+    """jax E2E (build_spec -> jax_energy.prepare_spec -> pack_spec -> make_minimizer ->
+    apply_distance_shift_jax): move_mode=2 moves ONLY group2; group1 stays fixed while
+    group2 lands the COM gap on target. Confirms move_mode flows via the featurizer and
+    the SHARED pack_spec into the jax prepared dict, then through the jax minimizer (the
+    AF3 closure path) -- not just the directly-tested apply_distance_shift_jax."""
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.distance_restr_data import DistanceData
+    from rgi_utils.optim.jax_optim import make_minimizer
+
+    dd = DistanceData()
+    dd.target_sites1 = [0, 1]
+    dd.target_sites2 = [2, 3]
+    dd.distance_restraint_type = "harmonic"
+    dd.target_distance = 7.0
+    dd.move_mode = 2  # only group2 (atom_selection2) moves
+    dd.run_restr = True
+    dd.start_sigma = 1e30
+    spec = build_spec(
+        [], [dd], {}, elements=np.zeros(4, dtype=np.int64), conf_start_sigma=1e30
+    )
+    assert list(spec.distance.move_mode) == [2]  # flowed into the spec via featurizer
+
+    coords_np = np.zeros((1, 4, 3))
+    coords_np[0, 2:, 0] = 20.0  # COM1 (group1) x=0, COM2 (group2) x=20 -> dist 20
+    coords = jnp.asarray(coords_np)
+    g1_before = np.asarray(coords[0, :2])
+    minimize = make_minimizer(spec, max_iter=100)
+    coords = minimize(coords, 0.0)
+    a = np.asarray(coords)
+    gap = np.linalg.norm(a[0, 2:].mean(0) - a[0, :2].mean(0))
+    assert abs(gap - 7.0) < 1e-5  # COM gap on target
+    assert np.allclose(a[0, :2], g1_before, atol=1e-9)  # group1 EXACTLY fixed
+    assert abs(a[0, 2:].mean(0)[0] - 7.0) < 1e-5  # only group2 moved (to x=7)
+
+
 def test_torch_vdw_pushes_ligand_off_fixed_protein():
     """Dynamic ligand-protein VdW: a ligand atom clashing with a fixed protein
     atom is pushed away, while the protein atom (not in active_sites) stays put."""

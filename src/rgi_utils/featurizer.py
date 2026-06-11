@@ -495,6 +495,7 @@ def build_spec(
         target1 = np.zeros(n)
         target2 = np.zeros(n)
         dist_type = np.zeros(n, dtype=np.int64)
+        move_mode = np.zeros(n, dtype=np.int64)  # 0=both / 1=grp1 only / 2=grp2 only
         dist_start_sigma = np.full(n, -1.0)
         dist_stop_sigma = np.full(n, -1.0)  # -1 = never released (off)
         for di, dr in enumerate(distance_restraints):
@@ -506,6 +507,7 @@ def build_spec(
             grp2_mask[di, : len(s2)] = 1.0
             code, t1, t2 = _dist_params(dr)
             dist_type[di] = code
+            move_mode[di] = int(getattr(dr, "move_mode", 0))
             target1[di] = t1
             target2[di] = t2
             ss = getattr(dr, "start_sigma", None)
@@ -519,6 +521,7 @@ def build_spec(
             target1=target1,
             target2=target2,
             dist_type=dist_type,
+            move_mode=move_mode,
             mask=np.ones(n),
             start_sigma=dist_start_sigma,
             stop_sigma=dist_stop_sigma,
