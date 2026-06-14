@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 from rdkit import Chem
@@ -9,6 +11,7 @@ from rdkit.Chem import AllChem
 
 from rgi_utils.atom_context import LigandConf
 from rgi_utils.featurizer import build_spec
+from rgi_utils.group_geom_restr_data import AngleRestraintData, DihedralRestraintData
 
 
 def _distorted_ethane():
@@ -101,6 +104,236 @@ def test_jax_minimizer_move_mode_end_to_end():
     assert abs(gap - 7.0) < 1e-5  # COM gap on target
     assert np.allclose(a[0, :2], g1_before, atol=1e-9)  # group1 EXACTLY fixed
     assert abs(a[0, 2:].mean(0)[0] - 7.0) < 1e-5  # only group2 moved (to x=7)
+
+
+# --- group-COM angle / dihedral restraints ---------------------------------------
+
+
+def _angle_deg(p1, p2, p3):
+    """Angle (degrees) at vertex p2 of the points p1-p2-p3."""
+    v1, v3 = p1 - p2, p3 - p2
+    cos = np.dot(v1, v3) / (np.linalg.norm(v1) * np.linalg.norm(v3))
+    return float(np.degrees(np.arccos(np.clip(cos, -1.0, 1.0))))
+
+
+def _dihedral_deg(p0, p1, p2, p3):
+    """Dihedral (degrees) about the p1-p2 axis."""
+    b1, b2, b3 = p1 - p0, p2 - p1, p3 - p2
+    n1, n2 = np.cross(b1, b2), np.cross(b2, b3)
+    b2n = b2 / np.linalg.norm(b2)
+    m = np.cross(n1, b2n)
+    return float(np.degrees(np.arctan2(np.dot(m, n2), np.dot(n1, n2))))
+
+
+def _wrap180(x):
+    return (x + 180.0) % 360.0 - 180.0
+
+
+def _group_angle_spec(target_deg, start_sigma=1e30, move_free=(True, True, True)):
+    """Spec with one harmonic group-COM angle restraint: groups {0,1}/{2,3}/{4,5}
+    (vertex=2). ``move_free`` is the per-group free mask (default all free)."""
+    ad = AngleRestraintData()
+    ad.target_sites1, ad.target_sites2, ad.target_sites3 = [0, 1], [2, 3], [4, 5]
+    ad.geom_type, ad.target1, ad.target2 = "harmonic", math.radians(target_deg), 0.0
+    ad.move_free, ad.weight, ad.run_restr = move_free, 1.0, True
+    ad.start_sigma, ad.stop_sigma = start_sigma, -1.0
+    return build_spec(angle_restraints=[ad], conf_start_sigma=1e30)
+
+
+def _group_angle_coords():
+    """group1 COM (8,0,0), vertex COM (0,0,0), group3 COM (0,8,0) -> initial 90 deg."""
+    coords = np.zeros((1, 6, 3))
+    coords[0, 0], coords[0, 1] = [8.0, 0.5, 0.0], [8.0, -0.5, 0.0]
+    coords[0, 2], coords[0, 3] = [0.0, 0.5, 0.0], [0.0, -0.5, 0.0]
+    coords[0, 4], coords[0, 5] = [0.5, 8.0, 0.0], [-0.5, 8.0, 0.0]
+    return coords
+
+
+def _coms(a):
+    return a[[0, 1]].mean(0), a[[2, 3]].mean(0), a[[4, 5]].mean(0)
+
+
+def _group_dihedral_spec(target_deg, move_free=(True, True, True, True)):
+    """Spec with one group-COM dihedral restraint over single-atom groups 0-1-2-3.
+    ``move_free`` is the per-group free mask (default all free)."""
+    dd = DihedralRestraintData()
+    dd.target_sites1, dd.target_sites2 = [0], [1]
+    dd.target_sites3, dd.target_sites4 = [2], [3]
+    dd.geom_type, dd.target1, dd.target2 = "harmonic", math.radians(target_deg), 0.0
+    dd.move_free, dd.weight, dd.run_restr = move_free, 1.0, True
+    dd.start_sigma, dd.stop_sigma = 1e30, -1.0
+    return build_spec(dihedral_restraints=[dd], conf_start_sigma=1e30)
+
+
+def _group_dihedral_coords():
+    """p0(0,1,0)-p1(0,0,0)-p2(1,0,0)-p3(1,1,0): planar, initial dihedral 0 deg."""
+    coords = np.zeros((1, 4, 3))
+    coords[0, 0] = [0.0, 1.0, 0.0]
+    coords[0, 1] = [0.0, 0.0, 0.0]
+    coords[0, 2] = [1.0, 0.0, 0.0]
+    coords[0, 3] = [1.0, 1.0, 0.0]
+    return coords
+
+
+def test_torch_group_angle_converges():
+    """The torch CG bends the COM1-COM2-COM3 angle from 90 deg onto a 120 deg target,
+    moving each group rigidly (the COM-only energy gives a group's atoms equal grad)."""
+    torch = pytest.importorskip("torch")
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+
+    spec = _group_angle_spec(120.0)
+    coords = torch.tensor(_group_angle_coords(), dtype=torch.float64)
+    c1, c2, c3 = _coms(coords.numpy()[0])
+    assert abs(_angle_deg(c1, c2, c3) - 90.0) < 1e-6  # initial
+    TorchRestraintOptimizer(spec, max_iter=500).minimize(coords)
+    c1, c2, c3 = _coms(coords.numpy()[0])
+    assert abs(_angle_deg(c1, c2, c3) - 120.0) < 1.0
+
+
+def test_jax_group_angle_converges():
+    """Same group-COM angle convergence on the jax minimizer (the AF3 path)."""
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.optim.jax_optim import make_minimizer
+
+    spec = _group_angle_spec(120.0)
+    coords = make_minimizer(spec, max_iter=500)(jnp.asarray(_group_angle_coords()), 0.0)
+    c1, c2, c3 = _coms(np.asarray(coords)[0])
+    assert abs(_angle_deg(c1, c2, c3) - 120.0) < 1.0
+
+
+def test_torch_group_dihedral_converges():
+    """The torch CG drives the COM dihedral from 0 deg onto a 90 deg target (90 deg is
+    mid-range, away from the +-180 wrap boundary, so convergence is unambiguous)."""
+    torch = pytest.importorskip("torch")
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+
+    spec = _group_dihedral_spec(90.0)
+    coords = torch.tensor(_group_dihedral_coords(), dtype=torch.float64)
+    a = coords.numpy()[0]
+    assert abs(_dihedral_deg(a[0], a[1], a[2], a[3])) < 1e-6  # initial 0 deg
+    TorchRestraintOptimizer(spec, max_iter=500).minimize(coords)
+    a = coords.numpy()[0]
+    assert abs(_wrap180(_dihedral_deg(a[0], a[1], a[2], a[3]) - 90.0)) < 1.0
+
+
+def test_torch_group_angle_gating_noop_above_start_sigma():
+    """A step at sigma above the restraint's start_sigma leaves coords unchanged
+    (the per-restraint gate); below it the restraint activates and converges."""
+    torch = pytest.importorskip("torch")
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+
+    spec = _group_angle_spec(120.0, start_sigma=1.0)
+    coords = torch.tensor(_group_angle_coords(), dtype=torch.float64)
+    before = coords.clone()
+    TorchRestraintOptimizer(spec, max_iter=500).minimize(coords, sigma=5.0)  # 5 > 1
+    assert torch.allclose(coords, before, atol=1e-12)  # gated off -> no change
+    TorchRestraintOptimizer(spec, max_iter=500).minimize(coords, sigma=0.5)  # 0.5 <= 1
+    c1, c2, c3 = _coms(coords.numpy()[0])
+    assert abs(_angle_deg(c1, c2, c3) - 120.0) < 1.0  # now active -> converged
+
+
+def test_torch_group_angle_move_pins_other_groups():
+    """move:1 moves ONLY group 1; groups 2 and 3 stay EXACTLY fixed (atol=1e-9) while
+    the angle still reaches target — the group analogue of the distance move E2E."""
+    torch = pytest.importorskip("torch")
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+
+    spec = _group_angle_spec(120.0, move_free=(True, False, False))  # only group 1 free
+    coords = torch.tensor(_group_angle_coords(), dtype=torch.float64)  # initial 90 deg
+    pinned_before = coords[0, [2, 3, 4, 5], :].clone()  # groups 2 + 3 atoms
+    TorchRestraintOptimizer(spec, max_iter=500).minimize(coords)
+    c1, c2, c3 = _coms(coords.numpy()[0])
+    assert abs(_angle_deg(c1, c2, c3) - 120.0) < 1.0  # target reached
+    assert torch.allclose(coords[0, [2, 3, 4, 5], :], pinned_before, atol=1e-9)
+
+
+def test_torch_group_angle_default_move_converges():
+    """The DEFAULT angle move (groups 1+3 free, vertex group 2 pinned — what a bare
+    angle_restraints_config entry gets) reaches target while the vertex stays put."""
+    torch = pytest.importorskip("torch")
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+
+    spec = _group_angle_spec(120.0, move_free=(True, False, True))  # the default
+    coords = torch.tensor(_group_angle_coords(), dtype=torch.float64)  # initial 90 deg
+    pinned_before = coords[0, [2, 3], :].clone()  # vertex group (atoms 2,3)
+    TorchRestraintOptimizer(spec, max_iter=500).minimize(coords)
+    c1, c2, c3 = _coms(coords.numpy()[0])
+    assert abs(_angle_deg(c1, c2, c3) - 120.0) < 1.0
+    assert torch.allclose(coords[0, [2, 3], :], pinned_before, atol=1e-9)
+
+
+def test_group_move_grad_parity_torch_jax():
+    """For move!=both the pinned groups are stop-gradient'd, so the gradient diverges
+    from a numpy finite-difference (which moves every atom) — but torch and jax must
+    AGREE (both detach identically). The rmsd-style parity carve-out, plus a check that
+    the pinned groups really get zero gradient."""
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.energy import jax_energy, torch_energy
+
+    spec = _group_angle_spec(120.0, move_free=(False, True, False))  # only group 2 free
+    pos = np.random.default_rng(0).standard_normal((spec.n_active, 3)) * 3.0
+    pt = torch.tensor(pos, dtype=torch.float64, requires_grad=True)
+    torch_energy.total_energy(
+        pt, torch_energy.prepare_spec(spec, dtype=torch.float64)
+    ).backward()
+    g_t = pt.grad.numpy()
+    g_j = np.asarray(
+        jax.grad(lambda x: jax_energy.total_energy(x, jax_energy.prepare_spec(spec)))(
+            jnp.asarray(pos)
+        )
+    )
+    assert np.allclose(g_t, g_j, atol=1e-6), np.abs(g_t - g_j).max()
+    # groups 1 (atoms 0,1) and 3 (atoms 4,5) are pinned -> exactly zero gradient
+    assert np.linalg.norm(g_t[[0, 1, 4, 5]]) < 1e-12
+    assert np.linalg.norm(g_t[[2, 3]]) > 1e-6  # group 2 (free) moves
+
+
+def test_torch_group_dihedral_multi_move():
+    """`move` can free SEVERAL groups at once (the user's `move: 1,4`): a dihedral with
+    groups 1+4 free and 2+3 pinned. The two pinned axis atoms stay EXACTLY put
+    (atol=1e-9) while the dihedral still reaches target."""
+    torch = pytest.importorskip("torch")
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+
+    # single-atom groups 0,1,2,3; free groups 1 and 4 -> atoms 0 and 3 move
+    spec = _group_dihedral_spec(90.0, move_free=(True, False, False, True))
+    coords = torch.tensor(_group_dihedral_coords(), dtype=torch.float64)  # init 0 deg
+    pinned_before = coords[0, [1, 2], :].clone()  # groups 2,3 (the axis atoms)
+    TorchRestraintOptimizer(spec, max_iter=500).minimize(coords)
+    a = coords.numpy()[0]
+    assert abs(_wrap180(_dihedral_deg(a[0], a[1], a[2], a[3]) - 90.0)) < 1.0
+    assert torch.allclose(coords[0, [1, 2], :], pinned_before, atol=1e-9)
+
+
+def test_gated_prepared_folds_group_gate_cpu():
+    """The GPU pre-gate (_gated_prepared) must fold each group restraint's per-entry
+    gate into its mask. CPU runs this directly (only torch.compile EXECUTION needs CUDA;
+    the mask folding is pure torch). Regression for a per-entry term (group_angle/
+    dihedral) silently going UNGATED on the compiled path (the `else: pg[k]=v` branch),
+    which the eager CPU CG cannot reveal because it gates live via sigma."""
+    torch = pytest.importorskip("torch")
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+
+    spec = _group_angle_spec(120.0, start_sigma=1.0)  # stop_sigma defaults -1 (never)
+    opt = TorchRestraintOptimizer(spec, max_iter=10)
+    opt._ensure(torch.device("cpu"), torch.float64)
+    base = opt._prepared["group_angle"]["mask"].clone()
+    assert float(base.sum()) > 0
+    # sigma ABOVE start_sigma -> the gate must zero the mask (term off)
+    off = opt._gated_prepared(5.0)["group_angle"]["mask"]
+    assert float(off.sum()) == 0.0, "group gate not folded: active above start_sigma"
+    # sigma INSIDE the window -> mask unchanged (term active)
+    on = opt._gated_prepared(0.5)["group_angle"]["mask"]
+    assert torch.allclose(on, base), "group term wrongly gated inside its active window"
+    # distinct gate states must NOT collide in the compile cache
+    assert opt._gated_prepared(5.0) is not opt._gated_prepared(0.5)
 
 
 def test_torch_vdw_pushes_ligand_off_fixed_protein():
@@ -416,12 +649,36 @@ def test_gated_prepared_matches_energy_gate():
 def test_compiled_energy_matches_eager():
     """torch.compile of the GPU energy+grad must equal eager grad_and_value (compiling
     fuses kernels; it must NOT change the maths), incl. the detached Kabsch SVD in the
-    RMSD term. Runs on CPU (inductor, no CUDA graph) so it guards the invariant in CI."""
+    RMSD term AND the group-COM angle/dihedral terms (gather + masked centroid + cross +
+    atan2 wrap). Runs on CPU (inductor, no CUDA graph) so CI guards the invariant;
+    otherwise the compiled group energy is only ever exercised by an sbatch GPU run."""
     torch = pytest.importorskip("torch")
     from rgi_utils.energy import torch_energy
     from rgi_utils.optim import _torch_cg_gpu as g
+    from rgi_utils.spec import GroupAngleArrays, GroupDihedralArrays
 
-    spec, pos_np = _rmsd_spec()
+    spec, pos_np = _rmsd_spec()  # active_sites = arange(6); add group terms over those
+    # a pinned group on the angle (move_free col 0) exercises the detach-select
+    # (torch.where + .detach) UNDER torch.compile — the one inductor path the rmsd
+    # precedent doesn't cover.
+    spec.group_angle = GroupAngleArrays(
+        grp1_idx=np.array([[0, 1]]), grp2_idx=np.array([[2, 3]]),
+        grp3_idx=np.array([[4, 5]]), grp1_mask=np.array([[1.0, 1.0]]),
+        grp2_mask=np.array([[1.0, 1.0]]), grp3_mask=np.array([[1.0, 1.0]]),
+        target1=np.array([1.3]), target2=np.array([0.0]),
+        geom_type=np.array([0]), move_free=np.array([[0.0, 1.0, 0.0]]),
+        weight=np.array([1.0]),
+        mask=np.array([1.0]), start_sigma=np.array([1e30]), stop_sigma=np.array([-1.0]),
+    )
+    spec.group_dihedral = GroupDihedralArrays(
+        grp1_idx=np.array([[0]]), grp2_idx=np.array([[1]]), grp3_idx=np.array([[2]]),
+        grp4_idx=np.array([[3]]), grp1_mask=np.array([[1.0]]),
+        grp2_mask=np.array([[1.0]]), grp3_mask=np.array([[1.0]]),
+        grp4_mask=np.array([[1.0]]), target1=np.array([0.5]), target2=np.array([0.0]),
+        geom_type=np.array([0]), move_free=np.array([[1.0, 1.0, 1.0, 1.0]]),
+        weight=np.array([1.0]),
+        mask=np.array([1.0]), start_sigma=np.array([1e30]), stop_sigma=np.array([-1.0]),
+    )
     prepared = torch_energy.prepare_spec(spec, dtype=torch.float64)
     pos = torch.tensor(pos_np[0], dtype=torch.float64)
     eager_vg = torch.func.grad_and_value(g._energy, argnums=0)

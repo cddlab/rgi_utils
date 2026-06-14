@@ -188,6 +188,75 @@ class RmsdArrays:
 
 
 @dataclass
+class GroupAngleArrays:
+    """COM angle restraints between three atom groups (padded).
+
+    The angle is formed by the three groups' centres of mass with group 2 as the
+    vertex (``COM1 - COM2 - COM3``), mirroring ``AngleArrays`` (column-1 vertex) but
+    on group COMs. The penalty mirrors the distance restraint's four ``geom_type``
+    codes (harmonic / flat-bottomed / lower / upper) on the angle value, with
+    ``target1``/``target2`` the bound(s) in radians. ``move_free`` is a per-group mask
+    (1 = free, 0 = pinned): a pinned group's COM is stop-gradient'd so the CG holds it
+    fixed for this term. Optimised by the CG solver (NOT closed-form like
+    distance), so the group atoms join active_sites; the COM-only energy gradient is
+    uniform across each free group, so the solver translates it rigidly. Active window
+    ``stop_sigma <= sigma <= start_sigma``. All ``*_idx`` are local indices into
+    active_sites; padding columns are neutralised by ``grp*_mask``.
+    """
+
+    grp1_idx: np.ndarray  # (n_grp_angle, max_grp) int local indices
+    grp2_idx: np.ndarray  # (n_grp_angle, max_grp) int (vertex group)
+    grp3_idx: np.ndarray  # (n_grp_angle, max_grp) int
+    grp1_mask: np.ndarray  # (n_grp_angle, max_grp) float {0,1}
+    grp2_mask: np.ndarray  # (n_grp_angle, max_grp)
+    grp3_mask: np.ndarray  # (n_grp_angle, max_grp)
+    target1: np.ndarray  # (n_grp_angle,) radians; harmonic target / flat-bottomed lower
+    target2: np.ndarray  # (n_grp_angle,) radians; flat-bottomed upper (0 if unused)
+    geom_type: np.ndarray  # (n_grp_angle,) int code (DIST_* : 0=harmonic..3=upper)
+    move_free: np.ndarray  # (n_grp_angle, 3) {0,1}: 1 = group free to move
+    weight: np.ndarray  # (n_grp_angle,)
+    mask: np.ndarray  # (n_grp_angle,) float {0,1}: 1 = valid restraint, 0 = padding
+    start_sigma: np.ndarray  # (n_grp_angle,) per-restraint; active when sigma<=start
+    stop_sigma: np.ndarray  # (n_grp_angle,) released when sigma<stop_sigma (-1=never)
+
+
+@dataclass
+class GroupDihedralArrays:
+    """COM dihedral restraints between four atom groups (padded).
+
+    The dihedral is formed by the four groups' centres of mass with the ``COM2-COM3``
+    line as the rotatable axis (``COM1-COM2-COM3-COM4``), mirroring ``DihedralArrays``
+    (i-j-k-l) but on group COMs. The penalty mirrors the distance restraint's four
+    ``geom_type`` codes with ``target1``/``target2`` in radians. The ``harmonic`` code
+    is periodicity-safe (the deviation ``phi - target1`` is wrapped to [-pi, pi] before
+    the square, so +179 deg and -179 deg read as 2 deg apart); the flat-bottomed / lower
+    / upper codes use the raw angle with ``target1 < target2`` enforced, so a window
+    cannot straddle +-180 deg (use ``harmonic`` for a target near +-180). ``move_free``
+    is a per-group mask as in ``GroupAngleArrays`` (1 = free, 0 = pinned via
+    stop-gradient). CG-solved (rigid per free group); active window
+    ``stop_sigma <= sigma <= start_sigma``. All ``*_idx`` are local indices into
+    active_sites; padding columns are neutralised by ``grp*_mask``.
+    """
+
+    grp1_idx: np.ndarray  # (n_grp_dih, max_grp) int local indices
+    grp2_idx: np.ndarray  # (n_grp_dih, max_grp) int (axis atom 1)
+    grp3_idx: np.ndarray  # (n_grp_dih, max_grp) int (axis atom 2)
+    grp4_idx: np.ndarray  # (n_grp_dih, max_grp) int
+    grp1_mask: np.ndarray  # (n_grp_dih, max_grp) float {0,1}
+    grp2_mask: np.ndarray  # (n_grp_dih, max_grp)
+    grp3_mask: np.ndarray  # (n_grp_dih, max_grp)
+    grp4_mask: np.ndarray  # (n_grp_dih, max_grp)
+    target1: np.ndarray  # (n_grp_dih,) radians; harmonic target / flat-bottomed lower
+    target2: np.ndarray  # (n_grp_dih,) radians; flat-bottomed upper (0 if unused)
+    geom_type: np.ndarray  # (n_grp_dih,) int code (DIST_* : 0=harmonic..3=upper)
+    move_free: np.ndarray  # (n_grp_dih, 4) {0,1}: 1 = group free to move
+    weight: np.ndarray  # (n_grp_dih,)
+    mask: np.ndarray  # (n_grp_dih,) float {0,1}: 1 = valid restraint, 0 = padding
+    start_sigma: np.ndarray  # (n_grp_dih,) per-restraint; active when sigma<=start
+    stop_sigma: np.ndarray  # (n_grp_dih,) released when sigma<stop_sigma (-1=never)
+
+
+@dataclass
 class RestraintSpec:
     """Backend-agnostic restraint definition.
 
@@ -205,6 +274,11 @@ class RestraintSpec:
     vdw_config: VdwConfig | None = None
     distance: DistanceArrays | None = None
     rmsd: RmsdArrays | None = None
+    # COM angle/dihedral restraints between atom GROUPS (distinct from the conformer
+    # angle/dihedral above, which act on single ligand atoms). Each carries its own
+    # per-restraint start_sigma/stop_sigma like distance/rmsd.
+    group_angle: GroupAngleArrays | None = None
+    group_dihedral: GroupDihedralArrays | None = None
     # one start_sigma for ALL conformer (bond/angle/chiral/vdw) restraints; each
     # distance restraint carries its own in DistanceArrays.start_sigma.
     conf_start_sigma: float = -1.0
@@ -230,10 +304,24 @@ class RestraintSpec:
         the CG solver (not closed-form), so the solver must run when this is True."""
         return self.rmsd is not None and self.rmsd.mask.sum() > 0
 
+    def has_group_angle(self) -> bool:
+        """True if any group-COM angle restraint exists. CG-solved (not closed-form),
+        so the solver must run when this is True."""
+        return self.group_angle is not None and self.group_angle.mask.sum() > 0
+
+    def has_group_dihedral(self) -> bool:
+        """True if any group-COM dihedral restraint exists. CG-solved (not
+        closed-form), so the solver must run when this is True."""
+        return self.group_dihedral is not None and self.group_dihedral.mask.sum() > 0
+
     def is_active(self) -> bool:
         """True if there is any work to do."""
         return self.n_active > 0 and (
-            self.has_conformer() or self.has_distance() or self.has_rmsd()
+            self.has_conformer()
+            or self.has_distance()
+            or self.has_rmsd()
+            or self.has_group_angle()
+            or self.has_group_dihedral()
         )
 
     def max_start_sigma(self) -> float:
@@ -246,4 +334,8 @@ class RestraintSpec:
             vals.append(float(np.max(self.distance.start_sigma)))
         if self.has_rmsd() and self.rmsd is not None:
             vals.append(float(np.max(self.rmsd.start_sigma)))
+        if self.has_group_angle() and self.group_angle is not None:
+            vals.append(float(np.max(self.group_angle.start_sigma)))
+        if self.has_group_dihedral() and self.group_dihedral is not None:
+            vals.append(float(np.max(self.group_dihedral.start_sigma)))
         return max(vals) if vals else -1.0

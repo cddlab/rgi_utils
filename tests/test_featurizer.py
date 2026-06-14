@@ -10,6 +10,7 @@ from rdkit.Chem import AllChem
 from rgi_utils.atom_context import LigandConf
 from rgi_utils.distance_restr_data import DistanceData
 from rgi_utils.featurizer import build_spec
+from rgi_utils.group_geom_restr_data import AngleRestraintData, DihedralRestraintData
 
 
 def _ethane():
@@ -76,6 +77,48 @@ def test_distance_and_conformer_active_union():
     g2l = {int(g): i for i, g in enumerate(spec.active_sites)}
     assert int(spec.distance.grp1_idx[0, 0]) == g2l[50]
     assert int(spec.distance.grp2_idx[0, 0]) == g2l[60]
+
+
+def test_group_angle_dihedral_active_union_and_padding():
+    """Group angle/dihedral atoms join active_sites; group indices are remapped to local
+    and padded per group with a {0,1} mask (max_grp spans every group)."""
+    ad = AngleRestraintData()
+    ad.geom_type, ad.target1, ad.target2 = "harmonic", 1.0, 0.0
+    ad.move_free, ad.weight, ad.run_restr = (True, True, True), 1.0, True
+    ad.start_sigma, ad.stop_sigma = 1e30, -1.0
+    ad.target_sites1 = [10, 11, 12]  # group of 3 -> sets max_grp
+    ad.target_sites2 = [20]  # group of 1 (padded)
+    ad.target_sites3 = [30, 31]
+
+    dd = DihedralRestraintData()
+    dd.geom_type, dd.target1, dd.target2 = "harmonic", 2.0, 0.0
+    dd.move_free, dd.weight, dd.run_restr = (True, True, True, True), 1.0, True
+    dd.start_sigma, dd.stop_sigma = 1e30, -1.0
+    dd.target_sites1, dd.target_sites2 = [40], [50]
+    dd.target_sites3, dd.target_sites4 = [60], [70]
+
+    spec = build_spec(angle_restraints=[ad], dihedral_restraints=[dd])
+    assert {int(x) for x in spec.active_sites} == {
+        10, 11, 12, 20, 30, 31, 40, 50, 60, 70
+    }
+
+    g2l = {int(g): i for i, g in enumerate(spec.active_sites)}
+    ga = spec.group_angle
+    assert ga is not None
+    assert ga.grp1_idx.shape[1] == 3  # max_grp = largest group (group1 has 3 atoms)
+    assert list(ga.grp1_idx[0]) == [g2l[10], g2l[11], g2l[12]]  # remapped to local
+    assert list(ga.grp1_mask[0]) == [1.0, 1.0, 1.0]
+    assert int(ga.grp2_idx[0, 0]) == g2l[20]  # group of 1: first slot valid
+    assert list(ga.grp2_mask[0]) == [1.0, 0.0, 0.0]  # rest masked padding
+    assert float(ga.target1[0]) == 1.0
+    assert int(ga.geom_type[0]) == 0  # harmonic
+    assert list(ga.move_free[0]) == [1.0, 1.0, 1.0]  # all groups free (default)
+
+    gd = spec.group_dihedral
+    assert gd is not None
+    assert int(gd.grp4_idx[0, 0]) == g2l[70]
+    assert float(gd.target1[0]) == 2.0
+    assert spec.has_group_angle() and spec.has_group_dihedral()
 
 
 def test_vdw_config_protein_background():

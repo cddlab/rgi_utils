@@ -11,6 +11,7 @@ import logging
 from dataclasses import dataclass, field
 
 from rgi_utils.distance_restr_data import DistanceData
+from rgi_utils.group_geom_restr_data import AngleRestraintData, DihedralRestraintData
 from rgi_utils.rmsd_restr_data import RmsdData
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,8 @@ class RestraintsConfig:
     conformer_config: dict = field(default_factory=dict)
     distance_data: list = field(default_factory=list)
     rmsd_data: list = field(default_factory=list)
+    angle_data: list = field(default_factory=list)  # group-COM angle restraints
+    dihedral_data: list = field(default_factory=list)  # group-COM dihedral restraints
 
     @classmethod
     def from_dict(cls, config: dict | None) -> "RestraintsConfig":
@@ -104,6 +107,20 @@ class RestraintsConfig:
             if rr.start_sigma is None:
                 rr.start_sigma = _ALWAYS_ON
             cfg.rmsd_data.append(rr)
+        # group-COM angle (3 groups) / dihedral (4 groups) restraints — same
+        # per-entry start_sigma convention as distance/rmsd (None -> +inf = every step).
+        for entry in config.get("angle_restraints_config", []) or []:
+            ad = AngleRestraintData()
+            ad.set_config(entry)
+            if ad.start_sigma is None:
+                ad.start_sigma = _ALWAYS_ON
+            cfg.angle_data.append(ad)
+        for entry in config.get("dihedral_restraints_config", []) or []:
+            dd = DihedralRestraintData()
+            dd.set_config(entry)
+            if dd.start_sigma is None:
+                dd.start_sigma = _ALWAYS_ON
+            cfg.dihedral_data.append(dd)
         return cfg
 
     def resolve_backend(self) -> str:

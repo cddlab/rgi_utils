@@ -157,6 +157,99 @@ def distance_energy(
     return np.sum(delta**2 * mask)
 
 
+def _group_com(positions, grp_idx, grp_mask):
+    """Masked-mean centre of mass of a padded atom group.
+
+    ``grp_idx`` (..., n, max_grp) gathers atoms; ``grp_mask`` (..., n, max_grp) {0,1}
+    zeroes padding columns. Returns (..., n, 3). Plain geometric centre (NOT
+    mass-weighted), identical to the COM in ``distance_energy``."""
+    pos = positions[..., grp_idx, :]  # (..., n, max_grp, 3)
+    m = grp_mask[..., None]
+    return np.sum(pos * m, axis=-2) / (np.sum(grp_mask, axis=-1)[..., None] + _EPS)
+
+
+def _move_com(positions, grp_idx, grp_mask, free):
+    """COM of a group. ``free`` ((..., n) {0,1}, 1=free) is gradient-only: numpy is the
+    VALUE reference (no autodiff), so move is a no-op and the value uses every group;
+    the torch/jax mirrors stop-gradient this COM where ``free`` is 0 (pinned)."""
+    return _group_com(positions, grp_idx, grp_mask)
+
+
+def _group_delta(val, harmonic_dev, target1, target2, geom_type):
+    """Distance-style flat-bottom delta (mirrors ``distance_energy``). ``geom_type``
+    0=harmonic (uses ``harmonic_dev`` so the dihedral can pass a wrapped deviation),
+    1=flat-bottomed, 2=lower bound, 3=upper bound."""
+    d_flat = np.where(
+        val < target1, val - target1, np.where(val > target2, val - target2, 0.0)
+    )
+    d_lower = np.minimum(0.0, val - target1)
+    d_upper = np.maximum(0.0, val - target2)
+    return np.where(
+        geom_type == 0,
+        harmonic_dev,
+        np.where(geom_type == 1, d_flat, np.where(geom_type == 2, d_lower, d_upper)),
+    )
+
+
+def _dihedral_angle(p0, p1, p2, p3):
+    """Torsion angle (radians) about the p1-p2 axis; periodicity handled by the caller.
+    Degenerate (collinear) geometry is nudged to keep the gradient finite + equal across
+    backends, as in ``dihedral_energy``."""
+    b1, b2, b3 = p1 - p0, p2 - p1, p3 - p2
+    n1 = np.cross(b1, b2)
+    n2 = np.cross(b2, b3)
+    b2n = b2 / np.sqrt(np.sum(b2**2, axis=-1, keepdims=True) + _EPS)
+    m1 = np.cross(n1, b2n)
+    x = np.sum(n1 * n2, axis=-1)
+    y = np.sum(m1 * n2, axis=-1)
+    x = np.where((x == 0.0) & (y == 0.0), x + _EPS, x)
+    return np.arctan2(y, x)
+
+
+def group_angle_energy(
+    positions, grp1_idx, grp2_idx, grp3_idx, grp1_mask, grp2_mask, grp3_mask,
+    target1, target2, geom_type, move_free, weight, mask,
+):
+    """Distance-style flat-bottomed angle between three group COMs (vertex = group 2).
+    ``geom_type`` 0=harmonic / 1=flat-bottomed / 2=lower / 3=upper, bounds
+    ``target1``/``target2`` in radians. The COM-only energy gives every atom in a free
+    group the same gradient (the group translates rigidly); ``move_free`` (n,3) pins the
+    groups whose column is 0 in torch/jax (no-op in this numpy value reference)."""
+    com1 = _move_com(positions, grp1_idx, grp1_mask, move_free[..., 0])
+    com2 = _move_com(positions, grp2_idx, grp2_mask, move_free[..., 1])
+    com3 = _move_com(positions, grp3_idx, grp3_mask, move_free[..., 2])
+    rij = com1 - com2
+    rkj = com3 - com2
+    nij = np.sqrt(np.sum(rij**2, axis=-1) + _EPS)
+    nkj = np.sqrt(np.sum(rkj**2, axis=-1) + _EPS)
+    cos_th = np.sum(rij * rkj, axis=-1) / (nij * nkj)
+    cos_th = np.clip(cos_th, -1.0 + 1e-7, 1.0 - 1e-7)
+    theta = np.arccos(cos_th)
+    delta = _group_delta(theta, theta - target1, target1, target2, geom_type)
+    return np.sum(weight * delta**2 * mask)
+
+
+def group_dihedral_energy(
+    positions, grp1_idx, grp2_idx, grp3_idx, grp4_idx,
+    grp1_mask, grp2_mask, grp3_mask, grp4_mask,
+    target1, target2, geom_type, move_free, weight, mask,
+):
+    """Distance-style flat-bottomed dihedral between four group COMs (axis = group2-3).
+    ``harmonic`` (geom_type 0) is periodicity-safe: the deviation ``phi - target1`` is
+    wrapped to [-pi, pi] before the square. ``flat-bottomed``/lower/upper use the raw
+    angle (``target1 < target2`` is enforced, so a window cannot straddle +-180).
+    ``move_free`` (n,4) as in ``group_angle_energy``."""
+    p0 = _move_com(positions, grp1_idx, grp1_mask, move_free[..., 0])
+    p1 = _move_com(positions, grp2_idx, grp2_mask, move_free[..., 1])
+    p2 = _move_com(positions, grp3_idx, grp3_mask, move_free[..., 2])
+    p3 = _move_com(positions, grp4_idx, grp4_mask, move_free[..., 3])
+    phi = _dihedral_angle(p0, p1, p2, p3)
+    dev = phi - target1
+    harmonic_dev = np.arctan2(np.sin(dev), np.cos(dev))  # wrap to [-pi, pi]
+    delta = _group_delta(phi, harmonic_dev, target1, target2, geom_type)
+    return np.sum(weight * delta**2 * mask)
+
+
 def _kabsch_R(Q0, P0):
     """Optimal proper rotation ``R`` (det +1) minimising ``sum_a ||R Q0_a - P0_a||^2``
     (Kabsch). ``Q0``/``P0`` are centred, padding-zeroed ``(..., A, 3)``. Returns
@@ -214,6 +307,8 @@ _LEAF_FNS = {
     "vdw_energy": vdw_energy,
     "distance_energy": distance_energy,
     "rmsd_energy": rmsd_energy,
+    "group_angle_energy": group_angle_energy,
+    "group_dihedral_energy": group_dihedral_energy,
 }
 
 

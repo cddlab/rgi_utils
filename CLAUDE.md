@@ -38,9 +38,11 @@ Design = **3 layers + autodiff + static shapes + GPU-complete optimization**:
 
 2. **Energy layer** (`energy/{numpy,torch,jax}_energy.py`, differentiable pure
    functions): identical flat-bottomed maths in all three backends —
-   `bond/angle/chiral/dihedral/vdw/distance/rmsd` (dihedral = periodicity-safe torsion
-   for cis/trans; rmsd = Kabsch-superposed RMSD toward a target, fit/calc separable).
-   `prepare_spec(spec)` → backend arrays;
+   `bond/angle/chiral/dihedral/vdw/distance/rmsd/group_angle/group_dihedral` (dihedral =
+   periodicity-safe torsion for cis/trans; rmsd = Kabsch-superposed RMSD toward a target,
+   fit/calc separable; `group_angle`/`group_dihedral` = the angle/dihedral of 3/4 atom
+   GROUPS' COMs — the angular analogue of the COM-distance restraint, distinct from the
+   per-atom `angle`/`dihedral` conformer terms). `prepare_spec(spec)` → backend arrays;
    `total_energy(positions, prepared)` → scalar. Gradients come from autodiff
    (no hand-written grad). `numpy_energy` is the reference;
    `tests/test_backend_parity.py` checks energy+grad agreement across backends.
@@ -192,6 +194,46 @@ parity across backends.
   so for a single restraint (or disjoint groups) convergence is identical — only the
   distribution differs (coupled restraints moving a SHARED atom can reach a different fixed
   point under `1`/`2` vs `both`).
+- Group angle/dihedral restraints (`angle_restraints_config` 3 groups / vertex=group2;
+  `dihedral_restraints_config` 4 groups / axis=group2-3): restrain the angle/dihedral of
+  the groups' COMs. The config surface MIRRORS the distance restraint — the four types
+  `harmonic{target_angle}` / `flat-bottomed{target_angle1,target_angle2}` / `flat-bottomed1`
+  / `flat-bottomed2` (dihedral uses `target_dihedral*`), plus the `move` key. Targets are in
+  **DEGREES** (→ radians in `group_geom_restr_data.py`); the spec carries
+  `target1/target2/geom_type` (reusing the distance `DIST_TYPE_CODES`) + `move_free` (a
+  per-group `(n, n_groups)` {0,1} mask). `weight` defaults 1.0; per-restraint
+  `start_sigma`/`stop_sigma` like distance/rmsd. Unlike distance these are **CG-solved
+  energy terms** (not closed-form): a COM angle/dihedral is not 1-DOF. The energy depends
+  only on the COMs, so every atom in a free group gets the same gradient → the CG translates
+  it rigidly (verified in `test_backend_parity`). The dihedral `harmonic` wraps the deviation
+  to +-180 (periodicity-safe); flat-bottomed enforces `target1<target2` so a window can't
+  straddle +-180. **`move`** selects which groups are free (the rest pinned); it can free
+  SEVERAL at once (`move: [1,4]` / `"1,4"`). The DEFAULT (omitted) moves the arms and pins
+  the anchor — angle frees groups 1+3 (vertex 2 pinned), dihedral frees 1+4 (axis 2+3
+  pinned); `move: all` frees every group. It is implemented IN THE ENERGY: pinned groups'
+  COMs are `stop_gradient`/`.detach()`'d (the rmsd `_kabsch_R` pattern), so the value is
+  unchanged (all-backend parity) but the CG doesn't move them — so `move_free` flows through
+  `_TERMS` to the leaf fn (numpy ignores it, value-only). Their `_TERMS` gate is `"group"` — any gate other than `conf`/`dist` means
+  per-restraint sigma gate + ALWAYS in the solver (like `rmsd`); such keys are collected in
+  `_terms.PER_ENTRY_KEYS`, which the torch GPU pre-gate (`torch_optim._gated_prepared`) folds
+  + keys its compile cache on (so a new per-entry term can't silently go ungated on the
+  compiled GPU path — a bug CPU CI can't catch). Solver-run condition in both optimizers ORs
+  in `has_group_angle()/has_group_dihedral()`. `move!=both` stop-gradients pinned groups, so
+  its grad parity is torch-vs-jax (not numpy-FD) — the rmsd carve-out (`test_optim`).
+  Caveat: a degenerate geometry — coincident COMs, or COM1-COM2-COM3 collinear for the
+  dihedral — gives a near-zero / ill-defined gradient (same failure mode as the conformer
+  dihedral; the clip/atan2 guards keep it finite but it won't move), so pick groups whose
+  COMs are non-collinear. **Rigid group motion / weight independence** (`_move_com`
+  `com_eff`): the COM gradient is naturally `1/N` per atom (dCOM/datom = 1/N), so a large
+  group would barely move per CG step (needing weight ~ N). `_move_com` cancels the `1/N`
+  with `com_eff = com_d + N*(com - com_d)` (value == com, gradient N×), so the whole group
+  translates RIGIDLY by the full step and **`weight: 1` (the default) drives ANY group
+  size** — the analogue of the distance restraint's rigid closed-form shift, as the user
+  requested. Cost: the group gradient is intentionally N×-rescaled, so it does NOT match a
+  numpy finite-difference of the true energy — group grad parity is therefore torch-vs-jax
+  (not numpy-FD), the same carve-out as rmsd's stop-gradient. Verified E2E on boltz: the
+  qbp 3-region angle (624/690/314 atoms) reaches 90.0° and the 4-region dihedral ±180° at
+  the default `weight: 1`.
 - Top-level `import rgi_utils` must work with numpy only (no torch/jax) — keep
   heavy imports lazy inside the backend modules.
 - GPU tests are marked `@pytest.mark.gpu` and excluded in CI.

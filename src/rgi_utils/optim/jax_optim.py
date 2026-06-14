@@ -142,6 +142,9 @@ def make_minimizer(
     has_dist = spec.has_distance()
     has_conf = spec.has_conformer()
     has_rmsd = spec.has_rmsd()
+    # group-COM angle/dihedral are CG-solved (energy terms gated per-restraint inside
+    # total_energy via sigma), so the solver branch must run when either is present.
+    has_group = spec.has_group_angle() or spec.has_group_dihedral()
     dist_prepared = prepared.get("distance")
     # dynamic ligand-protein VdW (formerly torch-only; now jax too). The protein
     # background is read from the FULL coords at minimize time (it moves per diffusion
@@ -170,7 +173,7 @@ def make_minimizer(
         #    RMSD), plus the ligand-protein VdW term (gated on conf_start_sigma -- the
         #    `jnp.where` zeroes its weight AND gradient above the gate). Skipped for a
         #    distance-only spec. has_conf is already True when vdw_config is set.
-        if has_conf or has_rmsd or has_vdw:
+        if has_conf or has_rmsd or has_vdw or has_group:
             if has_vdw:
                 prot_pos = coords[..., vdw_prot_global, :]
                 # conformer window conf_stop <= sigma <= conf_start (conf_stop=-1 = off)

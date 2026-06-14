@@ -35,6 +35,22 @@ _SPEC_SCHEMA = [
      [("fit_idx", "i"), ("fit_mask", "f"), ("fit_ref", "f"), ("calc_idx", "i"),
       ("calc_mask", "f"), ("calc_ref", "f"), ("target_rmsd", "f"), ("weight", "f"),
       ("mask", "f"), ("start_sigma", "f"), ("stop_sigma", "f")]),
+    # group-COM angle (3 groups, vertex = group 2) / dihedral (4 groups, axis =
+    # group2-group3): each group is a padded (n, max_grp) index list + {0,1} mask (same
+    # layout as distance). target1/target2/geom_type mirror distance's four
+    # types; move_free ((n,n_groups) {0,1}) drives the energy's detach-select (unlike
+    # distance, where move lives in the closed-form shift).
+    # start_sigma/stop_sigma are per-restraint.
+    ("group_angle", "group_angle",
+     [("grp1_idx", "i"), ("grp2_idx", "i"), ("grp3_idx", "i"),
+      ("grp1_mask", "f"), ("grp2_mask", "f"), ("grp3_mask", "f"),
+      ("target1", "f"), ("target2", "f"), ("geom_type", "i"), ("move_free", "f"),
+      ("weight", "f"), ("mask", "f"), ("start_sigma", "f"), ("stop_sigma", "f")]),
+    ("group_dihedral", "group_dihedral",
+     [("grp1_idx", "i"), ("grp2_idx", "i"), ("grp3_idx", "i"), ("grp4_idx", "i"),
+      ("grp1_mask", "f"), ("grp2_mask", "f"), ("grp3_mask", "f"), ("grp4_mask", "f"),
+      ("target1", "f"), ("target2", "f"), ("geom_type", "i"), ("move_free", "f"),
+      ("weight", "f"), ("mask", "f"), ("start_sigma", "f"), ("stop_sigma", "f")]),
 ]
 
 
@@ -60,7 +76,10 @@ def pack_spec(spec, to_int, to_float):
 #   "conf" -> conformer term, masked by the shared conformer gate ``cg``;
 #   "dist" -> distance, per-restraint sigma gate, ONLY when include_distance;
 #   "rmsd" -> RMSD, per-restraint sigma gate, ALWAYS (the CG solver calls
-#             total_energy(include_distance=False) and must still see the RMSD term).
+#             total_energy(include_distance=False) and must still see the RMSD term);
+#   "group" -> group-COM angle/dihedral, per-restraint sigma gate, ALWAYS (CG-solved
+#              like rmsd). Any gate other than conf/dist gets per-entry gating + is
+#              always summed in the solver; such keys are collected in PER_ENTRY_KEYS.
 _TERMS = [
     ("bond", "bond_energy", ["idx", "r0", "slack", "weight", "half"], "conf"),
     ("angle", "angle_energy", ["idx", "th0", "slack", "weight"], "conf"),
@@ -73,6 +92,13 @@ _TERMS = [
     ("rmsd", "rmsd_energy",
      ["fit_idx", "fit_mask", "fit_ref", "calc_idx", "calc_mask", "calc_ref",
       "target_rmsd", "weight"], "rmsd"),
+    ("group_angle", "group_angle_energy",
+     ["grp1_idx", "grp2_idx", "grp3_idx", "grp1_mask", "grp2_mask", "grp3_mask",
+      "target1", "target2", "geom_type", "move_free", "weight"], "group"),
+    ("group_dihedral", "group_dihedral_energy",
+     ["grp1_idx", "grp2_idx", "grp3_idx", "grp4_idx",
+      "grp1_mask", "grp2_mask", "grp3_mask", "grp4_mask",
+      "target1", "target2", "geom_type", "move_free", "weight"], "group"),
 ]
 
 
@@ -106,10 +132,23 @@ def term_energies(fns, prepared, positions, cg, sigma_gate, include_distance):
 
 
 # the float keys energy_breakdown reports, in display order (all start at 0.0)
-BREAKDOWN_KEYS = ("bond", "angle", "chiral", "dihedral", "vdw", "distance", "rmsd")
+BREAKDOWN_KEYS = (
+    "bond", "angle", "chiral", "dihedral", "vdw", "distance", "rmsd",
+    "group_angle", "group_dihedral",
+)
 
 # the conformer-gated term keys (gate == "conf"): the single source of truth for which
 # terms the conformer noise gate (cg) applies to. The torch GPU pre-gate path imports this
 # instead of re-listing the keys, so adding a 7th conformer term to _TERMS can't silently
 # leave it ungated on the compiled path.
 CONF_KEYS = frozenset(key for key, _fn, _fields, gate in _TERMS if gate == "conf")
+
+# per-restraint-gated term keys (gate not "conf"/"dist"): each carries its own
+# start_sigma/stop_sigma and is ALWAYS summed in the solver's energy
+# (include_distance=False). The torch GPU pre-gate (torch_optim._gated_prepared) folds
+# each one's gate into its mask and keys its cache on every gate state, so adding a
+# per-entry term to _TERMS can't silently leave it ungated on the compiled GPU path.
+# distance is excluded (closed-form, applied separately); conformer is in CONF_KEYS.
+PER_ENTRY_KEYS = frozenset(
+    key for key, _fn, _fields, gate in _TERMS if gate not in ("conf", "dist")
+)

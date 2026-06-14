@@ -17,6 +17,8 @@ from rgi_utils.spec import (
     ChiralArrays,
     DihedralArrays,
     DistanceArrays,
+    GroupAngleArrays,
+    GroupDihedralArrays,
     RestraintSpec,
     VdwArrays,
 )
@@ -24,8 +26,14 @@ from rgi_utils.spec import (
 N_ACTIVE = 12
 
 
-def _make_spec() -> RestraintSpec:
-    """A small spec exercising every restraint type with non-zero energy."""
+def _make_spec(include_groups: bool = True) -> RestraintSpec:
+    """A small spec exercising every restraint type with non-zero energy.
+
+    ``include_groups`` adds the group-COM angle/dihedral terms (default). The fuzzy
+    torch-vs-jax CG-convergence test opts out (``include_groups=False``) so its
+    calibrated tolerance keeps its original group-free landscape — the periodic group
+    dihedral makes the two backends' CG minima diverge a touch more than that tolerance
+    (group CG convergence is covered directly in test_optim.py)."""
     bond = BondArrays(
         idx=np.array([[0, 1], [2, 3], [4, 5]], dtype=np.int64),
         r0=np.array([1.0, 1.5, 1.2]),
@@ -78,6 +86,47 @@ def _make_spec() -> RestraintSpec:
         weight=np.array([0.2, 0.2, 0.2]),
         mask=np.array([1.0, 1.0, 0.0]),
     )
+    # group-COM angle: 2 restraints (vertex = group 2), exercising the harmonic + flat-
+    # bottomed types (geom_type 0/1). Row 1 uses groups of 1 (intra-group padding).
+    # move_free all 1 (every group free) so the numpy-FD gradient parity below holds
+    # (a pinned group diverges from FD; tested torch-vs-jax in test_optim). start_sigma
+    # [100, 5] keeps the gating-test invariants.
+    group_angle = None if not include_groups else GroupAngleArrays(
+        grp1_idx=np.array([[0, 1], [6, 0]], dtype=np.int64),
+        grp2_idx=np.array([[2, 3], [7, 0]], dtype=np.int64),
+        grp3_idx=np.array([[4, 5], [8, 0]], dtype=np.int64),
+        grp1_mask=np.array([[1.0, 1.0], [1.0, 0.0]]),  # row1: group of 1
+        grp2_mask=np.array([[1.0, 1.0], [1.0, 0.0]]),
+        grp3_mask=np.array([[1.0, 1.0], [1.0, 0.0]]),
+        target1=np.array([1.2, 2.0]),  # harmonic target / flat-bottomed lower
+        target2=np.array([0.0, 2.4]),  # flat-bottomed upper (unused for harmonic)
+        geom_type=np.array([0, 1], dtype=np.int64),  # harmonic + flat-bottomed
+        move_free=np.ones((2, 3)),  # all groups free (FD-grad parity needs it)
+        weight=np.array([1.0, 0.5]),
+        mask=np.array([1.0, 1.0]),
+        start_sigma=np.array([100.0, 5.0]),  # different per-restraint start_sigma
+        stop_sigma=np.array([-1.0, -1.0]),
+    )
+    # group-COM dihedral: 1 harmonic restraint + 1 masked padding row (per-restraint
+    # mask path). axis = group2-group3; harmonic is periodicity-safe.
+    group_dihedral = None if not include_groups else GroupDihedralArrays(
+        grp1_idx=np.array([[0, 1], [4, 5]], dtype=np.int64),
+        grp2_idx=np.array([[2, 3], [6, 7]], dtype=np.int64),
+        grp3_idx=np.array([[4, 5], [8, 9]], dtype=np.int64),
+        grp4_idx=np.array([[6, 7], [10, 11]], dtype=np.int64),
+        grp1_mask=np.array([[1.0, 1.0], [1.0, 1.0]]),
+        grp2_mask=np.array([[1.0, 1.0], [1.0, 1.0]]),
+        grp3_mask=np.array([[1.0, 1.0], [1.0, 1.0]]),
+        grp4_mask=np.array([[1.0, 1.0], [1.0, 1.0]]),
+        target1=np.array([0.7, -1.0]),
+        target2=np.array([0.0, 1.0]),
+        geom_type=np.array([0, 1], dtype=np.int64),  # harmonic (active) + flat (masked)
+        move_free=np.ones((2, 4)),
+        weight=np.array([0.8, 0.8]),
+        mask=np.array([1.0, 0.0]),  # second restraint is masked padding
+        start_sigma=np.array([100.0, 100.0]),
+        stop_sigma=np.array([-1.0, -1.0]),
+    )
     return RestraintSpec(
         n_active=N_ACTIVE,
         active_sites=np.arange(N_ACTIVE),
@@ -87,6 +136,8 @@ def _make_spec() -> RestraintSpec:
         dihedral=dihedral,
         vdw=vdw,
         distance=distance,
+        group_angle=group_angle,
+        group_dihedral=group_dihedral,
         conf_start_sigma=10.0,  # conformer terms active when sigma <= 10
     )
 
@@ -147,7 +198,10 @@ def test_grad_parity():
 
     from rgi_utils.energy import jax_energy, torch_energy
 
-    spec = _make_spec()
+    # group terms excluded: their COM gradient is intentionally N x-rescaled (com_eff, so
+    # the group moves rigidly at weight=1), so it does NOT match a numpy finite-difference
+    # of the true energy. Group grad parity is checked torch-vs-jax in test_optim.
+    spec = _make_spec(include_groups=False)
     pos = _positions()
 
     # numpy finite-difference gradient (ground truth for autodiff)
@@ -636,7 +690,9 @@ def test_jax_torch_cg_same_minimum_at_default_iters():
     from rgi_utils.optim._torch_cg_gpu import _cg_minimize_torch
     from rgi_utils.optim.jax_optim import _cg_minimize
 
-    spec = _make_spec()  # conformer + vdw + distance (no rmsd); CG handles conf only here
+    # conformer + vdw + distance only (no rmsd, no group terms); the CG handles conf
+    # here. Group terms are excluded: their convergence parity is covered in test_optim.
+    spec = _make_spec(include_groups=False)
     pos = _positions(0)
     prep_t = torch_energy.prepare_spec(spec, dtype=torch.float64)
     prep_j = jax_energy.prepare_spec(spec)

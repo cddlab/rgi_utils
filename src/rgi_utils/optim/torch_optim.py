@@ -23,7 +23,7 @@ import math
 import torch
 
 from rgi_utils.energy import torch_energy
-from rgi_utils.energy._terms import CONF_KEYS
+from rgi_utils.energy._terms import CONF_KEYS, PER_ENTRY_KEYS
 from rgi_utils.optim._cg_config import (
     ARMIJO_C1,
     BACKTRACK,
@@ -68,14 +68,17 @@ class TorchRestraintOptimizer:
     def _gated_prepared(self, sigma):
         """Stable pre-gated ``prepared`` for the compiled GPU CG, cached by the discrete
         GATE STATE — the conformer gate (``sigma <= conf_start_sigma``) plus the
-        per-restraint rmsd gate (``sigma <= start_sigma``). The noise gate is folded into
-        the masks here so the compiled energy is called with ``sigma=None``; scalar leaves
-        (e.g. ``conf_start_sigma``) are DROPPED because a python-float in the compiled
-        energy's pytree makes dynamo guard on its value and recompile per distinct value.
-        Stable object identity per gate state lets ``torch.compile`` reuse its artifact;
-        sigma decreases monotonically so each gate flips at most once -> a few states ->
-        a few compiles, then reuse. distance is excluded (closed-form). The conformer-gated
-        key set comes from ``_terms.CONF_KEYS`` (not a literal) so it tracks ``_TERMS``."""
+        per-restraint gate (``stop_sigma <= sigma <= start_sigma``) of every per-entry
+        term (rmsd, group_angle, group_dihedral — ``PER_ENTRY_KEYS``). The noise
+        gate is folded into the masks here so the compiled energy is called with
+        ``sigma=None``; scalar leaves (e.g. ``conf_start_sigma``) are DROPPED because a
+        python-float in the compiled energy's pytree makes dynamo guard on its value and
+        recompile per distinct value. Stable object identity per gate state lets
+        ``torch.compile`` reuse its artifact; sigma decreases monotonically so each gate
+        flips at most once -> a few states -> a few compiles, then reuse. distance is
+        excluded (closed-form). The conformer-gated key set (``CONF_KEYS``) and the
+        per-entry-gated set (``PER_ENTRY_KEYS``) both come from ``_TERMS``, so adding a
+        term can't silently leave it ungated on the compiled path."""
         p = self._prepared
         # conformer gate over the window conf_stop <= sigma <= conf_start (conf_stop=-1
         # -> never released, so this reduces to the old sigma<=conf_start gate).
@@ -87,16 +90,19 @@ class TorchRestraintOptimizer:
                 and (sigma >= float(self.spec.conf_stop_sigma))
             )
         )
-        if "rmsd" in p and sigma is not None:
-            # one tiny sync per step; per-restraint on/off over the active window
-            # stop_sigma <= sigma <= start_sigma (released below stop_sigma so the
-            # model's final low-sigma steps re-idealise the boundary geometry).
-            pr = p["rmsd"]
-            on = (sigma <= pr["start_sigma"]) & (sigma >= pr["stop_sigma"])
-            rgate = tuple(bool(b) for b in on.tolist())
-        else:
-            rgate = None
-        key = (cg_key, rgate)
+        # per-restraint on/off for every per-entry term present (one tiny sync each),
+        # over the active window stop_sigma <= sigma <= start_sigma (released below
+        # stop_sigma so the model's final low-sigma steps re-idealise geometry).
+        gates: dict[str, tuple] = {}
+        if sigma is not None:
+            for gk in PER_ENTRY_KEYS:
+                if gk in p:
+                    pe = p[gk]
+                    on = (sigma <= pe["start_sigma"]) & (sigma >= pe["stop_sigma"])
+                    gates[gk] = tuple(bool(b) for b in on.tolist())
+        # the cache key carries EVERY gate state, so a step flipping only a group gate
+        # gets its own (correct) entry instead of reusing a stale conf/rmsd mask.
+        key = (cg_key, tuple(sorted(gates.items())))
         cache = self._prepared_g
         if key not in cache:
             pg = {}
@@ -107,9 +113,9 @@ class TorchRestraintOptimizer:
                     # and total_energy(sigma=None) never reads it
                 elif k in CONF_KEYS:
                     pg[k] = {**v, "mask": v["mask"] * cg_key}
-                elif k == "rmsd" and rgate is not None:
+                elif k in gates:
                     rg = torch.tensor(
-                        rgate, dtype=v["mask"].dtype, device=v["mask"].device
+                        gates[k], dtype=v["mask"].dtype, device=v["mask"].device
                     )
                     pg[k] = {**v, "mask": v["mask"] * rg}
                 else:
@@ -190,6 +196,9 @@ class TorchRestraintOptimizer:
         has_dist = self.spec.has_distance()
         has_conf = self.spec.has_conformer()
         has_rmsd = self.spec.has_rmsd()
+        # group-COM angle/dihedral are CG-solved like rmsd (not closed-form), so the
+        # solver branch must run when either is present.
+        has_group = self.spec.has_group_angle() or self.spec.has_group_dihedral()
         prepared = self._prepared
 
         # boltz / Lightning run prediction under torch.inference_mode, where leaf
@@ -211,11 +220,11 @@ class TorchRestraintOptimizer:
                         active, prepared["distance"], sigma
                     )
 
-            # 2) Conformer (bond/angle/chiral/dihedral/vdw) + RMSD restraints: gradient
-            #    solver on the non-distance energy (distance is already applied above;
-            #    total_energy(include_distance=False) covers conformer AND RMSD). Skipped
-            #    entirely for a distance-only run.
-            if has_conf or has_rmsd:
+            # 2) Conformer (bond/angle/chiral/dihedral/vdw) + RMSD + group-COM
+            #    angle/dihedral restraints: gradient solver on the non-distance energy
+            #    (distance already applied above; total_energy(include_distance=False)
+            #    covers conformer, RMSD AND the group terms). Skipped for distance-only.
+            if has_conf or has_rmsd or has_group:
                 active = active.detach().clone()
                 active.requires_grad_(True)
                 prot_pos = None
@@ -281,7 +290,15 @@ class TorchRestraintOptimizer:
         # geometry can make the solver step diverge to non-finite values; keep the
         # input coordinates rather than writing NaN/Inf into the structure.
         if not torch.isfinite(new_active).all():
-            logger.warning("restraint step produced non-finite coords; skipping update")
+            # If the INPUT coords were already non-finite, the model (or a broken GPU
+            # kernel) diverged upstream — the restraint only inherited the NaN. Reporting
+            # input_finite keeps a NaN from being misattributed to the restraint.
+            input_finite = bool(torch.isfinite(coords[..., self._active_idx, :]).all())
+            logger.warning(
+                "restraint step produced non-finite coords; skipping update "
+                "(input_finite=%s)",
+                input_finite,
+            )
             return coords
         # back in the ambient (inference) context: in-place write is allowed
         coords[..., self._active_idx, :] = new_active.to(out_dtype)

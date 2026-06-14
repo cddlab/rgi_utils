@@ -29,6 +29,8 @@ from rgi_utils.spec import (
     ChiralArrays,
     DihedralArrays,
     DistanceArrays,
+    GroupAngleArrays,
+    GroupDihedralArrays,
     RestraintSpec,
     RmsdArrays,
     VdwArrays,
@@ -187,6 +189,60 @@ def _extract_conformer(ligand_confs: list[LigandConf]):
     return bonds, angles, chirals, dihedrals
 
 
+def _pad_groups(restraints, n_groups, g2l):
+    """Pad each restraint's ``n_groups`` atom groups into (n, max_grp) local-index and
+    {0,1} mask arrays. Reads ``restraints[k].target_sites{1..n_groups}`` (global
+    indices). ``max_grp`` spans every group of every restraint so one padded width
+    covers them all. Returns (idx_arrays, mask_arrays): each a list of ``n_groups``
+    arrays in group order. Used for group-COM angle (3) and dihedral (4)."""
+    n = len(restraints)
+    max_grp = max(
+        len(getattr(r, f"target_sites{g + 1}"))
+        for r in restraints
+        for g in range(n_groups)
+    )
+    idx_arrays = [np.zeros((n, max_grp), dtype=np.int64) for _ in range(n_groups)]
+    mask_arrays = [np.zeros((n, max_grp)) for _ in range(n_groups)]
+    for ri, r in enumerate(restraints):
+        for g in range(n_groups):
+            local = [g2l[int(s)] for s in getattr(r, f"target_sites{g + 1}")]
+            idx_arrays[g][ri, : len(local)] = local
+            mask_arrays[g][ri, : len(local)] = 1.0
+    return idx_arrays, mask_arrays
+
+
+def _group_geom_params(restraints):
+    """(geom_type codes, target1, target2, move_free) arrays for group angle/dihedral
+    restraints. The string type maps to the SAME int code as the distance restraint
+    (``DIST_TYPE_CODES``: harmonic=0 / flat-bottomed=1 / flat-bottomed1=2 (lower) /
+    flat-bottomed2=3 (upper)); target1/target2 are radians (0.0 where unused). move_free
+    is an (n, n_groups) {0,1} mask (1 = that group is free to move)."""
+    codes = np.array(
+        [DIST_TYPE_CODES[r.geom_type] for r in restraints], dtype=np.int64
+    )
+    t1 = np.array([float(r.target1) for r in restraints])
+    t2 = np.array([float(r.target2) for r in restraints])
+    move_free = np.array(
+        [[1.0 if f else 0.0 for f in r.move_free] for r in restraints]
+    )
+    return codes, t1, t2, move_free
+
+
+def _group_sigmas(restraints, conf_start_sigma):
+    """Per-restraint (start_sigma, stop_sigma) arrays for group angle/dihedral. Mirrors
+    the distance/rmsd convention: an omitted start_sigma (None) falls back to
+    ``conf_start_sigma`` (from_dict normally pre-fills +inf), stop_sigma defaults -1."""
+    start = np.array(
+        [
+            float(r.start_sigma) if getattr(r, "start_sigma", None) is not None
+            else conf_start_sigma
+            for r in restraints
+        ]
+    )
+    stop = np.array([float(getattr(r, "stop_sigma", -1.0)) for r in restraints])
+    return start, stop
+
+
 def _dist_params(dr) -> tuple[int, float, float]:
     """Map a DistanceData (string type + targets) to (code, target1, target2)."""
     t = dr.distance_restraint_type
@@ -331,10 +387,15 @@ def build_spec(
     conf_start_sigma: float = -1.0,
     conf_stop_sigma: float = -1.0,
     rmsd_restraints: list | None = None,
+    angle_restraints: list | None = None,
+    dihedral_restraints: list | None = None,
 ) -> RestraintSpec:
     """Build a RestraintSpec. ``distance_restraints`` are DistanceData with
     ``target_sites1``/``target_sites2`` already resolved to global indices;
-    ``rmsd_restraints`` are RmsdData with ``target_sites``/``ref_coords`` resolved."""
+    ``rmsd_restraints`` are RmsdData with ``target_sites``/``ref_coords`` resolved;
+    ``angle_restraints``/``dihedral_restraints`` are AngleRestraintData /
+    DihedralRestraintData with their group ``target_sites{1..N}`` resolved to global
+    indices (N=3 for angle, N=4 for dihedral)."""
     ligand_confs = ligand_confs or []
     cfg = conformer_config or {}
     # Conformer restraints are OPT-IN -- this is the single enforcement point for every
@@ -353,6 +414,12 @@ def build_spec(
     ]
     rmsd_restraints = [
         rr for rr in (rmsd_restraints or []) if getattr(rr, "run_restr", False)
+    ]
+    angle_restraints = [
+        ar for ar in (angle_restraints or []) if getattr(ar, "run_restr", False)
+    ]
+    dihedral_restraints = [
+        dr for dr in (dihedral_restraints or []) if getattr(dr, "run_restr", False)
     ]
     bw = cfg.get("bond", {}).get("weight", 0.05)
     bsl = cfg.get("bond", {}).get("slack", 0.0)
@@ -396,6 +463,12 @@ def build_spec(
     for rr in rmsd_restraints:
         active.update(int(s) for s in rr.fit_target_sites)
         active.update(int(s) for s in rr.calc_target_sites)
+    for gar in angle_restraints:
+        for g in range(3):
+            active.update(int(s) for s in getattr(gar, f"target_sites{g + 1}"))
+    for gdr in dihedral_restraints:
+        for g in range(4):
+            active.update(int(s) for s in getattr(gdr, f"target_sites{g + 1}"))
     # VdW pushes the whole ligand, so every ligand atom must be optimisable even
     # if it carries no bond/angle/chiral term (e.g. a monatomic ion).
     if vdw_weight > 0:
@@ -577,6 +650,38 @@ def build_spec(
             mask=np.ones(n),
         )
 
+    # ---- group-COM angle / dihedral arrays (padded, local indices) ------------
+    group_angle = None
+    if angle_restraints:
+        n = len(angle_restraints)
+        (g1, g2, g3), (m1, m2, m3) = _pad_groups(angle_restraints, 3, g2l)
+        start_sigma, stop_sigma = _group_sigmas(angle_restraints, conf_start_sigma)
+        codes, t1, t2, move_free = _group_geom_params(angle_restraints)
+        group_angle = GroupAngleArrays(
+            grp1_idx=g1, grp2_idx=g2, grp3_idx=g3,
+            grp1_mask=m1, grp2_mask=m2, grp3_mask=m3,
+            target1=t1, target2=t2, geom_type=codes, move_free=move_free,
+            weight=np.array([float(r.weight) for r in angle_restraints]),
+            mask=np.ones(n),
+            start_sigma=start_sigma,
+            stop_sigma=stop_sigma,
+        )
+    group_dihedral = None
+    if dihedral_restraints:
+        n = len(dihedral_restraints)
+        (g1, g2, g3, g4), (m1, m2, m3, m4) = _pad_groups(dihedral_restraints, 4, g2l)
+        start_sigma, stop_sigma = _group_sigmas(dihedral_restraints, conf_start_sigma)
+        codes, t1, t2, move_free = _group_geom_params(dihedral_restraints)
+        group_dihedral = GroupDihedralArrays(
+            grp1_idx=g1, grp2_idx=g2, grp3_idx=g3, grp4_idx=g4,
+            grp1_mask=m1, grp2_mask=m2, grp3_mask=m3, grp4_mask=m4,
+            target1=t1, target2=t2, geom_type=codes, move_free=move_free,
+            weight=np.array([float(r.weight) for r in dihedral_restraints]),
+            mask=np.ones(n),
+            start_sigma=start_sigma,
+            stop_sigma=stop_sigma,
+        )
+
     spec = RestraintSpec(
         n_active=len(active_sites),
         active_sites=active_sites,
@@ -586,6 +691,8 @@ def build_spec(
         dihedral=dihedral,
         distance=distance,
         rmsd=rmsd,
+        group_angle=group_angle,
+        group_dihedral=group_dihedral,
         vdw=vdw_arrays,
         vdw_config=vdw_config,
         conf_start_sigma=conf_start_sigma,
@@ -601,7 +708,7 @@ def build_spec(
     vdw_desc = "+".join(vdw_parts) if vdw_parts else "off"
     logger.info(
         "built spec: n_active=%d bonds=%d angles=%d chirals=%d dihedrals=%d "
-        "distances=%d rmsd=%d vdw=%s",
+        "distances=%d rmsd=%d group_angle=%d group_dihedral=%d vdw=%s",
         spec.n_active,
         len(bonds),
         len(angles),
@@ -609,6 +716,8 @@ def build_spec(
         len(dihedrals),
         len(distance_restraints),
         len(rmsd_restraints),
+        len(angle_restraints),
+        len(dihedral_restraints),
         vdw_desc,
     )
     return spec

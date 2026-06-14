@@ -156,6 +156,110 @@ def distance_energy(
     return torch.sum(delta**2 * mask)
 
 
+def _group_com(positions, grp_idx, grp_mask):
+    """Masked-mean centre of mass of a padded atom group (mirrors
+    ``numpy_energy._group_com``). ``grp_idx``/``grp_mask`` are (..., n, max_grp)."""
+    pos = positions[..., grp_idx, :]  # (..., n, max_grp, 3)
+    m = grp_mask[..., None]
+    return torch.sum(pos * m, dim=-2) / (
+        torch.sum(grp_mask, dim=-1)[..., None] + _EPS
+    )
+
+
+def _move_com(positions, grp_idx, grp_mask, free):
+    """COM of a group for the restraint gradient, adjusted so the group moves as a RIGID
+    UNIT at any weight (like the closed-form distance shift), independent of group size N:
+
+    (1) ``com_eff = com_d + N*(com - com_d)`` (``com_d`` = stop-gradient'd COM). Value ==
+        ``com``, but the gradient is N x: dCOM/datom = 1/N, so this cancels the 1/N and the
+        per-atom gradient becomes the FULL COM gradient -> the whole group translates
+        rigidly by the full step. Without it a large group barely moves per CG step (needs
+        weight ~ N); with it weight=1 drives ANY group size ("move the selection as a
+        whole", like distance).
+    (2) ``free`` ((..., n) {0,1}) = 0 PINS a group: its COM is stop-gradient'd (the move
+        knob; mirrors rmsd ``_kabsch_R``).
+
+    Value is unchanged either way, so the energy (all-backend value parity) is unaffected;
+    only the gradient is rescaled, so group grad parity is torch-vs-jax, not numpy-FD."""
+    com = _group_com(positions, grp_idx, grp_mask)
+    com_d = com.detach()
+    n = torch.sum(grp_mask, dim=-1, keepdim=True)  # group size (..., n_restr, 1)
+    com_eff = com_d + n * (com - com_d)  # un-suppress the 1/N COM gradient (rigid step)
+    return torch.where((free > 0.5)[..., None], com_eff, com_d)
+
+
+def _group_delta(val, harmonic_dev, target1, target2, geom_type):
+    """Distance-style flat-bottom delta (mirrors ``distance_energy``). geom_type 0=
+    harmonic (uses ``harmonic_dev`` so the dihedral can pass a wrapped deviation), 1=
+    flat-bottomed, 2=lower, 3=upper."""
+    zero = torch.zeros_like(val)
+    d_flat = torch.where(
+        val < target1, val - target1, torch.where(val > target2, val - target2, zero)
+    )
+    d_lower = torch.clamp(val - target1, max=0.0)
+    d_upper = torch.clamp(val - target2, min=0.0)
+    return torch.where(
+        geom_type == 0,
+        harmonic_dev,
+        torch.where(
+            geom_type == 1, d_flat, torch.where(geom_type == 2, d_lower, d_upper)
+        ),
+    )
+
+
+def _dihedral_angle(p0, p1, p2, p3):
+    """Torsion angle (radians) about the p1-p2 axis (mirrors ``dihedral_energy``)."""
+    b1, b2, b3 = p1 - p0, p2 - p1, p3 - p2
+    n1 = torch.linalg.cross(b1, b2, dim=-1)
+    n2 = torch.linalg.cross(b2, b3, dim=-1)
+    b2n = b2 / torch.sqrt(torch.sum(b2**2, dim=-1, keepdim=True) + _EPS)
+    m1 = torch.linalg.cross(n1, b2n, dim=-1)
+    x = torch.sum(n1 * n2, dim=-1)
+    y = torch.sum(m1 * n2, dim=-1)
+    x = torch.where((x == 0.0) & (y == 0.0), x + _EPS, x)
+    return torch.atan2(y, x)
+
+
+def group_angle_energy(
+    positions, grp1_idx, grp2_idx, grp3_idx, grp1_mask, grp2_mask, grp3_mask,
+    target1, target2, geom_type, move_free, weight, mask,
+):
+    """Distance-style flat-bottomed angle between three group COMs (vertex = group 2).
+    Mirrors ``numpy_energy.group_angle_energy``; ``move_free`` (n,3) pins groups via the
+    detach-select in ``_move_com``."""
+    com1 = _move_com(positions, grp1_idx, grp1_mask, move_free[..., 0])
+    com2 = _move_com(positions, grp2_idx, grp2_mask, move_free[..., 1])
+    com3 = _move_com(positions, grp3_idx, grp3_mask, move_free[..., 2])
+    rij = com1 - com2
+    rkj = com3 - com2
+    nij = torch.sqrt(torch.sum(rij**2, dim=-1) + _EPS)
+    nkj = torch.sqrt(torch.sum(rkj**2, dim=-1) + _EPS)
+    cos_th = torch.sum(rij * rkj, dim=-1) / (nij * nkj)
+    cos_th = torch.clamp(cos_th, -1.0 + 1e-7, 1.0 - 1e-7)
+    theta = torch.arccos(cos_th)
+    delta = _group_delta(theta, theta - target1, target1, target2, geom_type)
+    return torch.sum(weight * delta**2 * mask)
+
+
+def group_dihedral_energy(
+    positions, grp1_idx, grp2_idx, grp3_idx, grp4_idx,
+    grp1_mask, grp2_mask, grp3_mask, grp4_mask,
+    target1, target2, geom_type, move_free, weight, mask,
+):
+    """Distance-style flat-bottomed dihedral between 4 group COMs (axis = COM2-COM3).
+    harmonic (geom_type 0) is periodicity-safe (deviation wrapped). Mirrors
+    ``numpy_energy.group_dihedral_energy``; ``move_free`` pins via ``_move_com``."""
+    p0 = _move_com(positions, grp1_idx, grp1_mask, move_free[..., 0])
+    p1 = _move_com(positions, grp2_idx, grp2_mask, move_free[..., 1])
+    p2 = _move_com(positions, grp3_idx, grp3_mask, move_free[..., 2])
+    p3 = _move_com(positions, grp4_idx, grp4_mask, move_free[..., 3])
+    phi = _dihedral_angle(p0, p1, p2, p3)
+    dev = phi - target1
+    harmonic_dev = torch.atan2(torch.sin(dev), torch.cos(dev))  # wrap to [-pi, pi]
+    delta = _group_delta(phi, harmonic_dev, target1, target2, geom_type)
+    return torch.sum(weight * delta**2 * mask)
+
+
 def _kabsch_R(Q0, P0):
     """Optimal proper rotation R (det +1) s.t. R Q0 ~ P0 (Kabsch). Computed under
     ``no_grad`` and detached, so the gradient flows only through the moving atoms in
@@ -209,6 +313,8 @@ _LEAF_FNS = {
     "vdw_energy": vdw_energy,
     "distance_energy": distance_energy,
     "rmsd_energy": rmsd_energy,
+    "group_angle_energy": group_angle_energy,
+    "group_dihedral_energy": group_dihedral_energy,
 }
 
 

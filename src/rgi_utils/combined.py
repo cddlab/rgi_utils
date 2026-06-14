@@ -91,6 +91,10 @@ class CombinedRestraints:
             dr.resolve_sites(adapter)
         for rr in cfg.rmsd_data:
             rr.resolve_sites(adapter)
+        for ar in cfg.angle_data:
+            ar.resolve_sites(adapter)
+        for dr in cfg.dihedral_data:
+            dr.resolve_sites(adapter)
 
         ligand_confs = []
         if hasattr(adapter, "iter_ligand_confs"):
@@ -111,6 +115,8 @@ class CombinedRestraints:
             conf_start_sigma=cfg.conf_start_sigma,
             conf_stop_sigma=cfg.conf_stop_sigma,
             rmsd_restraints=cfg.rmsd_data,
+            angle_restraints=cfg.angle_data,
+            dihedral_restraints=cfg.dihedral_data,
         )
         self._backend = cfg.resolve_backend()
         self._optimizer = None
@@ -129,6 +135,10 @@ class CombinedRestraints:
             n_dist = 0 if d is None else int(d.mask.sum())
             rm = self.spec.rmsd
             n_rmsd = 0 if rm is None else int(rm.mask.sum())
+            ga = self.spec.group_angle
+            n_grp_angle = 0 if ga is None else int(ga.mask.sum())
+            gd = self.spec.group_dihedral
+            n_grp_dihedral = 0 if gd is None else int(gd.mask.sum())
             vc = self.spec.vdw_config
             vdw_s = (
                 "off"
@@ -150,7 +160,8 @@ class CombinedRestraints:
                 f"[rgi_utils] setup: backend={self._backend} "
                 f"n_active={self.spec.n_active} "
                 f"conformer={self.spec.has_conformer()} n_distance={n_dist} "
-                f"n_rmsd={n_rmsd} "
+                f"n_rmsd={n_rmsd} n_group_angle={n_grp_angle} "
+                f"n_group_dihedral={n_grp_dihedral} "
                 f"vdw={vdw_s} conf_start_sigma={self.spec.conf_start_sigma:g} "
                 f"dist_start_sigma={dist_ss}"
             )
@@ -215,6 +226,29 @@ class CombinedRestraints:
                     "one or more RMSD restraints have stop_sigma > start_sigma, so the "
                     "active window (stop_sigma <= sigma <= start_sigma) is EMPTY and "
                     "they NEVER activate — set stop_sigma below start_sigma"
+                )
+        # group-COM angle/dihedral: same per-restraint gate as distance/rmsd, so the
+        # same silent-no-op traps apply (start_sigma < 0 never fires; stop > start is an
+        # empty window). Counts + ungated finalize energy would both read non-zero.
+        for label, arr in (
+            ("angle", spec.group_angle),
+            ("dihedral", spec.group_dihedral),
+        ):
+            if arr is None or arr.mask.sum() <= 0:
+                continue
+            active = np.asarray(arr.mask) > 0
+            ss = np.asarray(arr.start_sigma)[active]
+            if ss.size and float(ss.min()) < 0:
+                msgs.append(
+                    f"one or more group {label} restraints have start_sigma < 0, so "
+                    f"they will NEVER activate (gate is sigma <= start_sigma)"
+                )
+            stop = np.asarray(arr.stop_sigma)[active]
+            if stop.size and np.any(stop > ss):
+                msgs.append(
+                    f"one or more group {label} restraints have stop_sigma > "
+                    f"start_sigma, so their active window is EMPTY and they NEVER "
+                    f"activate — set stop_sigma below start_sigma"
                 )
         for m in msgs:
             logger.warning(m)
@@ -324,6 +358,8 @@ class CombinedRestraints:
                 + bd["vdw"]
                 + bd["distance"]
                 + bd.get("rmsd", 0.0)
+                + bd.get("group_angle", 0.0)
+                + bd.get("group_dihedral", 0.0)
             )
             # The dynamic ligand-protein VdW (spec.vdw_config) is applied only inside
             # the torch optimizer and is absent from the static per-term breakdown
@@ -345,6 +381,8 @@ class CombinedRestraints:
                 f"chiral={bd['chiral']:.5f} dihedral={bd['dihedral']:.5f} "
                 f"vdw={bd['vdw']:.5f} "
                 f"distance={bd['distance']:.5f} rmsd={bd.get('rmsd', 0.0):.5f} "
+                f"group_angle={bd.get('group_angle', 0.0):.5f} "
+                f"group_dihedral={bd.get('group_dihedral', 0.0):.5f} "
                 f"total={total:.5f}"
             )
             logger.info(msg)

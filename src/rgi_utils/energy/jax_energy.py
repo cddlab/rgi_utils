@@ -152,6 +152,95 @@ def distance_energy(
     return jnp.sum(delta**2 * mask)
 
 
+def _group_com(positions, grp_idx, grp_mask):
+    """Masked-mean centre of mass of a padded atom group (mirrors
+    ``numpy_energy._group_com``). Pure jnp so it stays JIT/scan-able."""
+    pos = positions[..., grp_idx, :]  # (..., n, max_grp, 3)
+    m = grp_mask[..., None]
+    return jnp.sum(pos * m, axis=-2) / (jnp.sum(grp_mask, axis=-1)[..., None] + _EPS)
+
+
+def _move_com(positions, grp_idx, grp_mask, free):
+    """COM of a group for the restraint gradient (mirrors ``torch_energy._move_com``):
+    ``com_eff = com_d + N*(com - com_d)`` un-suppresses the 1/N COM gradient so the group
+    translates rigidly by the full step (weight=1 drives ANY group size — "move the
+    selection as a whole", like distance); ``free``=0 PINS a group (stop-gradient, the move
+    knob). Value == com, so energy value parity holds; group grad parity is torch-vs-jax."""
+    com = _group_com(positions, grp_idx, grp_mask)
+    com_d = jax.lax.stop_gradient(com)
+    n = jnp.sum(grp_mask, axis=-1, keepdims=True)  # group size (..., n_restr, 1)
+    com_eff = com_d + n * (com - com_d)  # un-suppress the 1/N COM gradient (rigid step)
+    return jnp.where((free > 0.5)[..., None], com_eff, com_d)
+
+
+def _group_delta(val, harmonic_dev, target1, target2, geom_type):
+    """Distance-style flat-bottom delta (mirrors ``distance_energy``). geom_type 0=
+    harmonic (uses ``harmonic_dev``), 1=flat-bottomed, 2=lower, 3=upper."""
+    d_flat = jnp.where(
+        val < target1, val - target1, jnp.where(val > target2, val - target2, 0.0)
+    )
+    d_lower = jnp.minimum(0.0, val - target1)
+    d_upper = jnp.maximum(0.0, val - target2)
+    return jnp.where(
+        geom_type == 0,
+        harmonic_dev,
+        jnp.where(geom_type == 1, d_flat, jnp.where(geom_type == 2, d_lower, d_upper)),
+    )
+
+
+def _dihedral_angle(p0, p1, p2, p3):
+    """Torsion angle (radians) about the p1-p2 axis (mirrors ``dihedral_energy``)."""
+    b1, b2, b3 = p1 - p0, p2 - p1, p3 - p2
+    n1 = jnp.cross(b1, b2)
+    n2 = jnp.cross(b2, b3)
+    b2n = b2 / jnp.sqrt(jnp.sum(b2**2, axis=-1, keepdims=True) + _EPS)
+    m1 = jnp.cross(n1, b2n)
+    x = jnp.sum(n1 * n2, axis=-1)
+    y = jnp.sum(m1 * n2, axis=-1)
+    x = jnp.where((x == 0.0) & (y == 0.0), x + _EPS, x)
+    return jnp.arctan2(y, x)
+
+
+def group_angle_energy(
+    positions, grp1_idx, grp2_idx, grp3_idx, grp1_mask, grp2_mask, grp3_mask,
+    target1, target2, geom_type, move_free, weight, mask,
+):
+    """Distance-style flat-bottomed angle between three group COMs (vertex = group 2).
+    Mirrors ``numpy_energy.group_angle_energy``; ``move_free`` (n,3) pins groups via the
+    stop-gradient select in ``_move_com``. Pure jnp (JIT/scan/vmap-able)."""
+    com1 = _move_com(positions, grp1_idx, grp1_mask, move_free[..., 0])
+    com2 = _move_com(positions, grp2_idx, grp2_mask, move_free[..., 1])
+    com3 = _move_com(positions, grp3_idx, grp3_mask, move_free[..., 2])
+    rij = com1 - com2
+    rkj = com3 - com2
+    nij = jnp.sqrt(jnp.sum(rij**2, axis=-1) + _EPS)
+    nkj = jnp.sqrt(jnp.sum(rkj**2, axis=-1) + _EPS)
+    cos_th = jnp.sum(rij * rkj, axis=-1) / (nij * nkj)
+    cos_th = jnp.clip(cos_th, -1.0 + 1e-7, 1.0 - 1e-7)
+    theta = jnp.arccos(cos_th)
+    delta = _group_delta(theta, theta - target1, target1, target2, geom_type)
+    return jnp.sum(weight * delta**2 * mask)
+
+
+def group_dihedral_energy(
+    positions, grp1_idx, grp2_idx, grp3_idx, grp4_idx,
+    grp1_mask, grp2_mask, grp3_mask, grp4_mask,
+    target1, target2, geom_type, move_free, weight, mask,
+):
+    """Distance-style flat-bottomed dihedral between 4 group COMs (axis = COM2-COM3).
+    harmonic (geom_type 0) is periodicity-safe (deviation wrapped). Mirrors
+    ``numpy_energy.group_dihedral_energy``; ``move_free`` pins via ``_move_com``."""
+    p0 = _move_com(positions, grp1_idx, grp1_mask, move_free[..., 0])
+    p1 = _move_com(positions, grp2_idx, grp2_mask, move_free[..., 1])
+    p2 = _move_com(positions, grp3_idx, grp3_mask, move_free[..., 2])
+    p3 = _move_com(positions, grp4_idx, grp4_mask, move_free[..., 3])
+    phi = _dihedral_angle(p0, p1, p2, p3)
+    dev = phi - target1
+    harmonic_dev = jnp.arctan2(jnp.sin(dev), jnp.cos(dev))  # wrap to [-pi, pi]
+    delta = _group_delta(phi, harmonic_dev, target1, target2, geom_type)
+    return jnp.sum(weight * delta**2 * mask)
+
+
 def _kabsch_R(Q0, P0):
     """Optimal proper rotation R (det +1) s.t. R Q0 ~ P0 (Kabsch). ``H`` (and thus R)
     is wrapped in ``stop_gradient`` so ``jax.grad`` flows only through the moving atoms
@@ -202,6 +291,8 @@ _LEAF_FNS = {
     "vdw_energy": vdw_energy,
     "distance_energy": distance_energy,
     "rmsd_energy": rmsd_energy,
+    "group_angle_energy": group_angle_energy,
+    "group_dihedral_energy": group_dihedral_energy,
 }
 
 
