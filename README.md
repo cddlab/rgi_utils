@@ -1,15 +1,25 @@
 # rgi-utils
 
 Restraint-Guided Inference (RGI) utilities for diffusion-based structure predictors
-(PyTorch and JAX). Integrated into boltz, protenix, chai-lab, openfold-3 (torch) and
-alphafold3 (jax).
+(PyTorch and JAX). Integrated into boltz, protenix, chai-lab, openfold-3, esmfold2
+(torch) and alphafold3 (jax).
 
-Provides distance restraints (center-of-mass between atom groups) and ligand conformer
-restraints (bond / angle / chiral volume / dihedral / intramolecular VdW toward an ideal
-RDKit geometry) plus a Kabsch-superposed RMSD restraint, minimized during the denoising
-loop to guide coordinate optimization. The default `method='CG'` solver (a nonlinear
-conjugate gradient with autodiff gradients) runs on GPU or CPU via the same torch/jax
-backend (`gpu: false` runs it on CPU); distance restraints are applied closed-form.
+Restraint types, all minimized during the denoising loop to guide coordinate optimization:
+
+- **distance** — center-of-mass distance between two atom groups (applied closed-form).
+- **group angle / dihedral** — the angle (3 groups) / dihedral (4 groups) of the groups'
+  centers of mass, in degrees; the angular analogue of the distance restraint.
+- **conformer** — ligand bond / angle / chiral-volume / dihedral (cis/trans) toward an
+  ideal RDKit geometry.
+- **VdW** — non-bonded clash avoidance, intramolecular and/or dynamic ligand-protein
+  (`mode` defaults to `both`).
+- **RMSD** — Kabsch-superposed RMSD of a group toward a reference PDB.
+
+The default `method='CG'` solver (a nonlinear conjugate gradient with autodiff gradients)
+runs on GPU or CPU via the same torch/jax backend (`gpu: false` runs it on CPU); distance
+restraints skip the solver and are applied closed-form. Each restraint is gated by an
+optional `start_sigma` (active once `sigma <= start_sigma`) and `stop_sigma` (released
+once `sigma < stop_sigma`).
 
 ## Installation
 
@@ -29,23 +39,37 @@ restraints_config = {
     "method": "CG",
     "max_iter": 200,
     "verbose": True,
-    # NOTE: start_sigma is NOT a top-level key (a top-level one raises). It is set
-    # per distance entry and once inside conformer_restraints_config; omitted -> the
-    # restraint is active at every step (set it, e.g. 1.0, to act only late).
+    # NOTE: start_sigma / stop_sigma are NOT top-level keys (a top-level start_sigma
+    # raises). They are set per distance/rmsd/group entry and once inside
+    # conformer_restraints_config. start_sigma omitted -> active at every step (set it,
+    # e.g. 1.0, to act only late); stop_sigma omitted -> never released.
     "distance_restraints_config": [          # a LIST of entries
         {
             "atom_selection1": "chain A and resid 10",
             "atom_selection2": "chain B and resid 20",
             "harmonic": {"target_distance": 5.0},
             "start_sigma": 1.0,              # optional; active when sigma <= start_sigma
+            # "move": "both",               # which group the COM shift moves: both / 1 / 2
+        }
+    ],
+    "angle_restraints_config": [             # group-COM angle: 3 groups, vertex = group 2
+        {
+            "atom_selection1": "chain A and resid 1 to 10",
+            "atom_selection2": "chain A and resid 40 to 50",
+            "atom_selection3": "chain A and resid 80 to 90",
+            "harmonic": {"target_angle": 90.0},   # DEGREES
         }
     ],
     "conformer_restraints_config": {
+        "start_sigma": 1.0,                  # one value for all conformer terms (optional)
         "bond": {"weight": 1.0},
         "angle": {"weight": 1.0},
         "chiral": {"weight": 1.0},
-        "vdw": {"weight": 1.0, "mode": "intramolecular"},
+        "dihedral": {"weight": 1.0},         # ligand cis/trans (acyclic C=C only)
+        "vdw": {"weight": 1.0},              # mode defaults to "both"
     },
+    # "rmsd_restraints_config": [{"ref_pdb": "ref.pdb", "target_rmsd": 0.0}],
+    # "dihedral_restraints_config": [...],   # group-COM dihedral: 4 groups, axis = 2-3
 }
 
 # ONE instance per structure (not a singleton). setup() takes the config dict.
@@ -70,10 +94,13 @@ Distance restraints use a selection DSL to specify atom groups:
 | Example | Meaning |
 |---------|---------|
 | `chain A` | all atoms in chain A |
-| `resid 10` | residue 10 (1-based) |
+| `resid 10` | residue 10 (1-based, per-chain ordinal) |
 | `resid 1 to 5` | residues 1–5 |
 | `resid 1 3 7` | residues 1, 3, 7 |
 | `index 42` | atom at padded index 42 |
+| `name CA` | atoms named CA (case-insensitive) |
+| `protein` / `dna` / `rna` | polymer-type selectors |
+| `backbone` / `sidechain` | PyMOL-like polymer selectors (gated on polymer type) |
 | `chain A and resid 1 to 5` | boolean AND |
 | `chain A or chain B` | boolean OR |
 | `not chain A` | negation |
@@ -89,6 +116,19 @@ Distance restraints use a selection DSL to specify atom groups:
 | `flat-bottomed2` | `target_distance2` | No penalty above d2 |
 
 Distance is calculated between the centers of mass (COM) of the two selected atom groups (`calc_method: "unfixed-absolute"`).
+
+The per-entry `move` key picks which group the closed-form COM shift moves: `both`
+(default, both move) / `1` / `2` (pin the other group — e.g. move only a ligand toward a
+fixed pocket).
+
+### Group angle / dihedral restraints
+
+`angle_restraints_config` (3 groups, vertex = group 2) and `dihedral_restraints_config`
+(4 groups, axis = group 2–3) restrain the angle/dihedral of the groups' COMs. Same four
+types as distance (`harmonic` / `flat-bottomed` / `flat-bottomed1` / `flat-bottomed2`),
+but targets are in **degrees** (`target_angle` / `target_dihedral`). `weight` defaults to
+1.0 and translates any group size rigidly. `move` selects which groups are free (default:
+the arms move, the anchor group is pinned).
 
 ### Implementing a framework adapter
 
