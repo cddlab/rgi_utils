@@ -1,0 +1,171 @@
+# protenix_restr — Restraint-Guided Inference (RGI)
+
+Protenix + [`rgi_utils`](https://github.com/cddlab/rgi_utils) restraint-guided inference. Full
+`restraints_config` schema & atom-selection DSL: [`config.md`](config.md).
+
+## Install
+
+The RGI code lives in the `cddlab/protenix_restr` fork (branch `rgi-integration`) — install **that
+fork**, not the upstream PyPI `protenix`, which has no RGI hooks.
+
+```bash
+git clone -b rgi-integration https://github.com/cddlab/protenix_restr.git
+cd protenix_restr
+uv venv && source .venv/bin/activate           # Python 3.11+
+uv pip install -e .
+uv pip install "rgi_utils[torch] @ git+https://github.com/cddlab/rgi_utils.git@rgi-integration"
+```
+
+> **Run protenix on sm_89 (e.g. RTX 4090), NOT on Blackwell (sm_120).** On Blackwell its
+> cuequivariance fused kernels **silently** emit all-NaN coordinates (no crash, exit 0) even for a
+> bare fold with no restraints. A NaN output is almost always this, not the restraint; confirm by
+> re-running on an sm_89 GPU. Run on a machine with a CUDA GPU.
+
+## Configuring restraints
+
+protenix reads RGI from a **`restraints_config` key nested inside each fold-input object** of the
+input JSON (the input is a JSON *list* of fold jobs; the key sits beside `name`/`sequences`). Turn
+restraints on with:
+
+1. **Per ligand** — `"conformer_restraints": true` on the ligand object enables its conformer
+   restraints.
+2. **The `restraints_config` object** — the distance / angle / dihedral / conformer /
+   RMSD restraints. The example below writes **every usable variable** with a concrete value; see
+   [`config.md`](config.md) for what each does, the alternative restraint types
+   (`flat-bottomed` etc.), and the RMSD `atom_selection_ref`/`atom_selection_target` shorthand.
+
+`resid` is the **per-chain 1-based ordinal** (qualify protein groups with `chain A and (...)`).
+There is **no top-level `start_sigma`**.
+
+## Full config (input file)
+
+Save this as `restr_example.json`. Folds QBP + GLN with a centroid distance, group angle, group
+dihedral, GLN conformer, and whole-structure RMSD restraint, every variable spelled out. The run
+command passes `--use_msa true`, so protenix runs its (ColabFold-compatible) MSA search.
+
+```json
+[
+  {
+    "name": "qbp_rgi_example",
+    "sequences": [
+      { "proteinChain": { "sequence": "ADKKLVVATDTAFVPFEFKQGDKYVGFDVDLWAAIAKELKLDYELKPMDFSGIIPALQTKNVDLALAGITITDERKKAIDFSDGYYKSGLLVMVKANNNDVKSVKDLDGKVVAVKSGTGSVDYAKANIKTKDLRQFPNIDNAYMELGTNRADAVLHDTPNILYFIKTAGNGQFKAVGDSLEAQQYGIAFPKGSDELRDKVNGALKTLRENGTYNEIYKKWFGTEPK", "count": 1 } },
+      { "ligand": { "ligand": "CCD_GLN", "count": 1, "conformer_restraints": true } }
+    ],
+    "restraints_config": {
+      "verbose": true,
+      "gpu": true,
+      "backend": "torch",
+      "method": "CG",
+      "max_iter": 1000,
+      "distance_restraints_config": [
+        {
+          "atom_selection1": "chain A and ((resid 5 to 84) or (resid 186 to 224))",
+          "atom_selection2": "chain A and (resid 90 to 180)",
+          "start_sigma": 99999999,
+          "stop_sigma": -1,
+          "move": "both",
+          "harmonic": { "target_distance": 25.0 }
+        }
+      ],
+      "angle_restraints_config": [
+        {
+          "atom_selection1": "chain A and (resid 5 to 84)",
+          "atom_selection2": "chain A and (resid 90 to 180)",
+          "atom_selection3": "chain A and (resid 186 to 224)",
+          "start_sigma": 99999999,
+          "stop_sigma": -1,
+          "move": "1,3",
+          "weight": 1.0,
+          "harmonic": { "target_angle": 90.0 }
+        }
+      ],
+      "dihedral_restraints_config": [
+        {
+          "atom_selection1": "chain A and (resid 5 to 50)",
+          "atom_selection2": "chain A and (resid 51 to 100)",
+          "atom_selection3": "chain A and (resid 101 to 150)",
+          "atom_selection4": "chain A and (resid 151 to 224)",
+          "start_sigma": 99999999,
+          "stop_sigma": -1,
+          "move": "1,4",
+          "weight": 1.0,
+          "harmonic": { "target_dihedral": 180.0 }
+        }
+      ],
+      "conformer_restraints_config": {
+        "start_sigma": 99999999,
+        "stop_sigma": -1,
+        "bond": { "weight": 1.0, "slack": 0.0 },
+        "angle": { "weight": 1.0, "slack": 0.0 },
+        "chiral": { "weight": 1.0, "slack": 0.05 },
+        "dihedral": { "weight": 1.0, "slack": 0.0 },
+        "vdw": { "weight": 1.0, "mode": "both", "scale": 0.75, "dmax": 5.0 }
+      },
+      "rmsd_restraints_config": [
+        {
+          "ref_pdb": "rmsd_ref.pdb",
+          "target_rmsd": 0.0,
+          "weight": 1.0,
+          "start_sigma": 99999999,
+          "stop_sigma": 1.0,
+          "pairing": "align",
+          "best_effort": true,
+          "atom_selection_ref_fit": "chain A and (resid 5 to 220)",
+          "atom_selection_target_fit": "chain A and (resid 5 to 220)",
+          "atom_selection_ref_calc": "chain A and (resid 90 to 180)",
+          "atom_selection_target_calc": "chain A and (resid 90 to 180)"
+        }
+      ]
+    }
+  }
+]
+```
+
+## How to run
+
+### Prerequisite — generate `rmsd_ref.pdb`
+
+The config has an RMSD restraint, so supply the reference first: predict the same complex once
+**without** `restraints_config`, then convert to PDB.
+
+```bash
+protenix pred -i vanilla.json -o out_vanilla --use_default_params true --use_msa true \
+    --seeds 0 --step 200 --sample 1 --cycle 4
+python -c "import gemmi,glob; gemmi.read_structure(glob.glob('out_vanilla/**/*.cif',recursive=True)[0]).write_pdb('rmsd_ref.pdb')"
+```
+
+### Run
+
+Save as `run_restr_example.sh` and run it on a GPU machine (`bash run_restr_example.sh`):
+
+```bash
+#!/bin/bash
+# protenix RGI example runner. Run on an sm_89 CUDA GPU:  bash run_restr_example.sh
+set -e
+cd "$(dirname "$0")"
+source .venv/bin/activate
+
+rm -rf out_restr_example
+# restr_example.json nests `restraints_config`. RGI: rgi_utils minimizes the restraints on the
+# x0 prediction each step. --use_msa true runs protenix's MSA search.
+# Run to a log so the inference exit status is checked: a `| grep ... || true` pipe
+# (no pipefail) would otherwise swallow a crash and still report success.
+if ! protenix pred -i restr_example.json -o out_restr_example \
+    --use_default_params true --use_msa true --seeds 0 --step 200 --sample 1 --cycle 4 \
+    > run_restr_example.log 2>&1; then
+    echo "protenix inference FAILED:"; tail -n 40 run_restr_example.log; exit 1
+fi
+grep -iE "rgi_utils|built spec|setup:|finalize" run_restr_example.log || true
+
+CIF=$(find out_restr_example -name '*.cif' | head -1)
+echo "prediction: $CIF"
+echo done
+```
+
+## Verify
+
+With `verbose: true`, `setup` logs `built spec: n_active=.. bonds=.. angles=.. distances=.. rmsd=..
+group_angle=.. group_dihedral=..` — confirm the counts are non-zero for what you requested.
+Cross-check the result with the workspace helpers (any gemmi/rdkit venv): `../check_dist.py
+<pred.cif>` (centroid distance vs 25 Å) and `../check_conf.py <pred.cif> GLN` (ligand geometry). If
+the output is all-NaN, you almost certainly ran on Blackwell — re-run on an sm_89 GPU.
