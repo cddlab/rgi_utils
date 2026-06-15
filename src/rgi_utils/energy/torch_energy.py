@@ -122,18 +122,18 @@ def distance_energy(
     dist_type,
     mask,
 ):
-    """COM distance energy. dist_type: 0=harmonic, 1=flat-bottomed, 2=lower, 3=upper."""
+    """Centroid distance energy. dist_type: 0=harmonic, 1=flat-bottomed, 2=lower, 3=upper."""
     grp1_pos = positions[..., grp1_idx, :]  # (..., n_dist, max_grp, 3)
     grp2_pos = positions[..., grp2_idx, :]
     m1 = grp1_mask[..., None]
     m2 = grp2_mask[..., None]
-    com1 = torch.sum(grp1_pos * m1, dim=-2) / (
+    centroid1 = torch.sum(grp1_pos * m1, dim=-2) / (
         torch.sum(grp1_mask, dim=-1)[..., None] + _EPS
     )
-    com2 = torch.sum(grp2_pos * m2, dim=-2) / (
+    centroid2 = torch.sum(grp2_pos * m2, dim=-2) / (
         torch.sum(grp2_mask, dim=-1)[..., None] + _EPS
     )
-    diff = com2 - com1
+    diff = centroid2 - centroid1
     dist = torch.sqrt(torch.sum(diff**2, dim=-1) + _EPS)
     zero = torch.zeros_like(dist)
     delta_harmonic = dist - target1
@@ -156,9 +156,9 @@ def distance_energy(
     return torch.sum(delta**2 * mask)
 
 
-def _group_com(positions, grp_idx, grp_mask):
-    """Masked-mean centre of mass of a padded atom group (mirrors
-    ``numpy_energy._group_com``). ``grp_idx``/``grp_mask`` are (..., n, max_grp)."""
+def _group_centroid(positions, grp_idx, grp_mask):
+    """Masked-mean geometric centroid (unweighted; NOT mass-weighted) of a padded atom group (mirrors
+    ``numpy_energy._group_centroid``). ``grp_idx``/``grp_mask`` are (..., n, max_grp)."""
     pos = positions[..., grp_idx, :]  # (..., n, max_grp, 3)
     m = grp_mask[..., None]
     return torch.sum(pos * m, dim=-2) / (
@@ -166,26 +166,26 @@ def _group_com(positions, grp_idx, grp_mask):
     )
 
 
-def _move_com(positions, grp_idx, grp_mask, free):
-    """COM of a group for the restraint gradient, adjusted so the group moves as a RIGID
+def _move_centroid(positions, grp_idx, grp_mask, free):
+    """Centroid of a group for the restraint gradient, adjusted so the group moves as a RIGID
     UNIT at any weight (like the closed-form distance shift), independent of group size N:
 
-    (1) ``com_eff = com_d + N*(com - com_d)`` (``com_d`` = stop-gradient'd COM). Value ==
-        ``com``, but the gradient is N x: dCOM/datom = 1/N, so this cancels the 1/N and the
-        per-atom gradient becomes the FULL COM gradient -> the whole group translates
+    (1) ``centroid_eff = centroid_d + N*(centroid - centroid_d)`` (``centroid_d`` = stop-gradient'd centroid). Value ==
+        ``centroid``, but the gradient is N x: dcentroid/datom = 1/N, so this cancels the 1/N and the
+        per-atom gradient becomes the FULL centroid gradient -> the whole group translates
         rigidly by the full step. Without it a large group barely moves per CG step (needs
         weight ~ N); with it weight=1 drives ANY group size ("move the selection as a
         whole", like distance).
-    (2) ``free`` ((..., n) {0,1}) = 0 PINS a group: its COM is stop-gradient'd (the move
+    (2) ``free`` ((..., n) {0,1}) = 0 PINS a group: its centroid is stop-gradient'd (the move
         knob; mirrors rmsd ``_kabsch_R``).
 
     Value is unchanged either way, so the energy (all-backend value parity) is unaffected;
     only the gradient is rescaled, so group grad parity is torch-vs-jax, not numpy-FD."""
-    com = _group_com(positions, grp_idx, grp_mask)
-    com_d = com.detach()
+    centroid = _group_centroid(positions, grp_idx, grp_mask)
+    centroid_d = centroid.detach()
     n = torch.sum(grp_mask, dim=-1, keepdim=True)  # group size (..., n_restr, 1)
-    com_eff = com_d + n * (com - com_d)  # un-suppress the 1/N COM gradient (rigid step)
-    return torch.where((free > 0.5)[..., None], com_eff, com_d)
+    centroid_eff = centroid_d + n * (centroid - centroid_d)  # un-suppress the 1/N centroid gradient (rigid step)
+    return torch.where((free > 0.5)[..., None], centroid_eff, centroid_d)
 
 
 def _group_delta(val, harmonic_dev, target1, target2, geom_type):
@@ -224,14 +224,14 @@ def group_angle_energy(
     positions, grp1_idx, grp2_idx, grp3_idx, grp1_mask, grp2_mask, grp3_mask,
     target1, target2, geom_type, move_free, weight, mask,
 ):
-    """Distance-style flat-bottomed angle between three group COMs (vertex = group 2).
+    """Distance-style flat-bottomed angle between three group centroids (vertex = group 2).
     Mirrors ``numpy_energy.group_angle_energy``; ``move_free`` (n,3) pins groups via the
-    detach-select in ``_move_com``."""
-    com1 = _move_com(positions, grp1_idx, grp1_mask, move_free[..., 0])
-    com2 = _move_com(positions, grp2_idx, grp2_mask, move_free[..., 1])
-    com3 = _move_com(positions, grp3_idx, grp3_mask, move_free[..., 2])
-    rij = com1 - com2
-    rkj = com3 - com2
+    detach-select in ``_move_centroid``."""
+    centroid1 = _move_centroid(positions, grp1_idx, grp1_mask, move_free[..., 0])
+    centroid2 = _move_centroid(positions, grp2_idx, grp2_mask, move_free[..., 1])
+    centroid3 = _move_centroid(positions, grp3_idx, grp3_mask, move_free[..., 2])
+    rij = centroid1 - centroid2
+    rkj = centroid3 - centroid2
     nij = torch.sqrt(torch.sum(rij**2, dim=-1) + _EPS)
     nkj = torch.sqrt(torch.sum(rkj**2, dim=-1) + _EPS)
     cos_th = torch.sum(rij * rkj, dim=-1) / (nij * nkj)
@@ -246,13 +246,13 @@ def group_dihedral_energy(
     grp1_mask, grp2_mask, grp3_mask, grp4_mask,
     target1, target2, geom_type, move_free, weight, mask,
 ):
-    """Distance-style flat-bottomed dihedral between 4 group COMs (axis = COM2-COM3).
+    """Distance-style flat-bottomed dihedral between 4 group centroids (axis = centroid2-centroid3).
     harmonic (geom_type 0) is periodicity-safe (deviation wrapped). Mirrors
-    ``numpy_energy.group_dihedral_energy``; ``move_free`` pins via ``_move_com``."""
-    p0 = _move_com(positions, grp1_idx, grp1_mask, move_free[..., 0])
-    p1 = _move_com(positions, grp2_idx, grp2_mask, move_free[..., 1])
-    p2 = _move_com(positions, grp3_idx, grp3_mask, move_free[..., 2])
-    p3 = _move_com(positions, grp4_idx, grp4_mask, move_free[..., 3])
+    ``numpy_energy.group_dihedral_energy``; ``move_free`` pins via ``_move_centroid``."""
+    p0 = _move_centroid(positions, grp1_idx, grp1_mask, move_free[..., 0])
+    p1 = _move_centroid(positions, grp2_idx, grp2_mask, move_free[..., 1])
+    p2 = _move_centroid(positions, grp3_idx, grp3_mask, move_free[..., 2])
+    p3 = _move_centroid(positions, grp4_idx, grp4_mask, move_free[..., 3])
     phi = _dihedral_angle(p0, p1, p2, p3)
     dev = phi - target1
     harmonic_dev = torch.atan2(torch.sin(dev), torch.cos(dev))  # wrap to [-pi, pi]

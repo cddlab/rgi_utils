@@ -35,7 +35,7 @@ _SPEC_SCHEMA = [
      [("fit_idx", "i"), ("fit_mask", "f"), ("fit_ref", "f"), ("calc_idx", "i"),
       ("calc_mask", "f"), ("calc_ref", "f"), ("target_rmsd", "f"), ("weight", "f"),
       ("mask", "f"), ("start_sigma", "f"), ("stop_sigma", "f")]),
-    # group-COM angle (3 groups, vertex = group 2) / dihedral (4 groups, axis =
+    # group-centroid angle (3 groups, vertex = group 2) / dihedral (4 groups, axis =
     # group2-group3): each group is a padded (n, max_grp) index list + {0,1} mask (same
     # layout as distance). target1/target2/geom_type mirror distance's four
     # types; move_free ((n,n_groups) {0,1}) drives the energy's detach-select (unlike
@@ -77,7 +77,7 @@ def pack_spec(spec, to_int, to_float):
 #   "dist" -> distance, per-restraint sigma gate, ONLY when include_distance;
 #   "rmsd" -> RMSD, per-restraint sigma gate, ALWAYS (the CG solver calls
 #             total_energy(include_distance=False) and must still see the RMSD term);
-#   "group" -> group-COM angle/dihedral, per-restraint sigma gate, ALWAYS (CG-solved
+#   "group" -> group-centroid angle/dihedral, per-restraint sigma gate, ALWAYS (CG-solved
 #              like rmsd). Any gate other than conf/dist gets per-entry gating + is
 #              always summed in the solver; such keys are collected in PER_ENTRY_KEYS.
 _TERMS = [

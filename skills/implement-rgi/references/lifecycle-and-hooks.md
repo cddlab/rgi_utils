@@ -96,7 +96,7 @@ restraints_config:
       harmonic: {target_distance: 25.0}
       # alternatives: flat-bottomed {target_distance1, target_distance2},
       #               flat-bottomed1 {target_distance1}, flat-bottomed2 {target_distance2}
-  angle_restraints_config:        # angle of THREE group COMs (vertex = group 2), DEGREES
+  angle_restraints_config:        # angle of THREE group centroids (vertex = group 2), DEGREES
     - atom_selection1: "chain A and resid 10 and name CA"
       atom_selection2: "chain A and resid 20 and name CA"   # vertex (group 2)
       atom_selection3: "chain B and resid 5 and name CA"
@@ -104,9 +104,9 @@ restraints_config:
       #   {target_angle1, target_angle2} | flat-bottomed1 {target_angle1} | flat-bottomed2 {target_angle2}
       # move: 1,3                       # DEFAULT: arms (1,3) free, vertex (2) pinned. or 'all' | index | list
       # weight / start_sigma / stop_sigma: optional. The whole group moves RIGIDLY (the
-      #   1/N COM gradient is un-suppressed in _move_com), so the default weight: 1.0 drives
+      #   1/N centroid gradient is un-suppressed in _move_centroid), so the default weight: 1.0 drives
       #   any group size — no need to scale weight by group size.
-  dihedral_restraints_config:     # dihedral of FOUR group COMs (axis = group2-3), DEGREES
+  dihedral_restraints_config:     # dihedral of FOUR group centroids (axis = group2-3), DEGREES
     - atom_selection1: "chain A and resid 1 and name CA"
       atom_selection2: "chain A and resid 2 and name CA"
       atom_selection3: "chain A and resid 3 and name CA"

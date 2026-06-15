@@ -32,7 +32,7 @@ DIST_TYPE_CODES = {
     "flat-bottomed2": DIST_UPPER_BOUND,
 }
 
-# Which group(s) the closed-form COM shift moves (the `move` config key). The minimal-
+# Which group(s) the closed-form centroid shift moves (the `move` config key). The minimal-
 # displacement split ("both") distributes the correction over both groups; move-1/move-2
 # concentrate the full shift on group1 / group2 so the OTHER group is held fixed (e.g.
 # pull only a ligand toward a fixed pocket). The code equals the config value: 1 ->
@@ -140,7 +140,7 @@ class VdwConfig:
 
 @dataclass
 class DistanceArrays:
-    """COM distance restraints between two atom groups (padded)."""
+    """Centroid distance restraints between two atom groups (padded)."""
 
     grp1_idx: np.ndarray  # (n_dist, max_grp) int local indices
     grp2_idx: np.ndarray  # (n_dist, max_grp) int
@@ -189,16 +189,16 @@ class RmsdArrays:
 
 @dataclass
 class GroupAngleArrays:
-    """COM angle restraints between three atom groups (padded).
+    """Centroid angle restraints between three atom groups (padded).
 
-    The angle is formed by the three groups' centres of mass with group 2 as the
-    vertex (``COM1 - COM2 - COM3``), mirroring ``AngleArrays`` (column-1 vertex) but
-    on group COMs. The penalty mirrors the distance restraint's four ``geom_type``
+    The angle is formed by the three groups' centroids with group 2 as the
+    vertex (``centroid1 - centroid2 - centroid3``), mirroring ``AngleArrays`` (column-1 vertex) but
+    on group centroids. The penalty mirrors the distance restraint's four ``geom_type``
     codes (harmonic / flat-bottomed / lower / upper) on the angle value, with
     ``target1``/``target2`` the bound(s) in radians. ``move_free`` is a per-group mask
-    (1 = free, 0 = pinned): a pinned group's COM is stop-gradient'd so the CG holds it
+    (1 = free, 0 = pinned): a pinned group's centroid is stop-gradient'd so the CG holds it
     fixed for this term. Optimised by the CG solver (NOT closed-form like
-    distance), so the group atoms join active_sites; the COM-only energy gradient is
+    distance), so the group atoms join active_sites; the centroid-only energy gradient is
     uniform across each free group, so the solver translates it rigidly. Active window
     ``stop_sigma <= sigma <= start_sigma``. All ``*_idx`` are local indices into
     active_sites; padding columns are neutralised by ``grp*_mask``.
@@ -222,11 +222,11 @@ class GroupAngleArrays:
 
 @dataclass
 class GroupDihedralArrays:
-    """COM dihedral restraints between four atom groups (padded).
+    """Centroid dihedral restraints between four atom groups (padded).
 
-    The dihedral is formed by the four groups' centres of mass with the ``COM2-COM3``
-    line as the rotatable axis (``COM1-COM2-COM3-COM4``), mirroring ``DihedralArrays``
-    (i-j-k-l) but on group COMs. The penalty mirrors the distance restraint's four
+    The dihedral is formed by the four groups' centroids with the ``centroid2-centroid3``
+    line as the rotatable axis (``centroid1-centroid2-centroid3-centroid4``), mirroring ``DihedralArrays``
+    (i-j-k-l) but on group centroids. The penalty mirrors the distance restraint's four
     ``geom_type`` codes with ``target1``/``target2`` in radians. The ``harmonic`` code
     is periodicity-safe (the deviation ``phi - target1`` is wrapped to [-pi, pi] before
     the square, so +179 deg and -179 deg read as 2 deg apart); the flat-bottomed / lower
@@ -274,7 +274,7 @@ class RestraintSpec:
     vdw_config: VdwConfig | None = None
     distance: DistanceArrays | None = None
     rmsd: RmsdArrays | None = None
-    # COM angle/dihedral restraints between atom GROUPS (distinct from the conformer
+    # centroid angle/dihedral restraints between atom GROUPS (distinct from the conformer
     # angle/dihedral above, which act on single ligand atoms). Each carries its own
     # per-restraint start_sigma/stop_sigma like distance/rmsd.
     group_angle: GroupAngleArrays | None = None
@@ -305,12 +305,12 @@ class RestraintSpec:
         return self.rmsd is not None and self.rmsd.mask.sum() > 0
 
     def has_group_angle(self) -> bool:
-        """True if any group-COM angle restraint exists. CG-solved (not closed-form),
+        """True if any group-centroid angle restraint exists. CG-solved (not closed-form),
         so the solver must run when this is True."""
         return self.group_angle is not None and self.group_angle.mask.sum() > 0
 
     def has_group_dihedral(self) -> bool:
-        """True if any group-COM dihedral restraint exists. CG-solved (not
+        """True if any group-centroid dihedral restraint exists. CG-solved (not
         closed-form), so the solver must run when this is True."""
         return self.group_dihedral is not None and self.group_dihedral.mask.sum() > 0
 

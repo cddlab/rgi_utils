@@ -29,8 +29,8 @@ class RestraintsConfig:
     conformer_config: dict = field(default_factory=dict)
     distance_data: list = field(default_factory=list)
     rmsd_data: list = field(default_factory=list)
-    angle_data: list = field(default_factory=list)  # group-COM angle restraints
-    dihedral_data: list = field(default_factory=list)  # group-COM dihedral restraints
+    angle_data: list = field(default_factory=list)  # group-centroid angle restraints
+    dihedral_data: list = field(default_factory=list)  # group-centroid dihedral restraints
 
     @classmethod
     def from_dict(cls, config: dict | None) -> "RestraintsConfig":
@@ -107,7 +107,7 @@ class RestraintsConfig:
             if rr.start_sigma is None:
                 rr.start_sigma = _ALWAYS_ON
             cfg.rmsd_data.append(rr)
-        # group-COM angle (3 groups) / dihedral (4 groups) restraints — same
+        # group-centroid angle (3 groups) / dihedral (4 groups) restraints — same
         # per-entry start_sigma convention as distance/rmsd (None -> +inf = every step).
         for entry in config.get("angle_restraints_config", []) or []:
             ad = AngleRestraintData()

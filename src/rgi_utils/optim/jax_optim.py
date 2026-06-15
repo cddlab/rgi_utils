@@ -142,7 +142,7 @@ def make_minimizer(
     has_dist = spec.has_distance()
     has_conf = spec.has_conformer()
     has_rmsd = spec.has_rmsd()
-    # group-COM angle/dihedral are CG-solved (energy terms gated per-restraint inside
+    # group-centroid angle/dihedral are CG-solved (energy terms gated per-restraint inside
     # total_energy via sigma), so the solver branch must run when either is present.
     has_group = spec.has_group_angle() or spec.has_group_dihedral()
     dist_prepared = prepared.get("distance")
@@ -164,8 +164,8 @@ def make_minimizer(
 
     def _descend(coords, sigma):
         active = coords[..., active_idx, :]
-        # 1) Distance restraints: closed-form rigid COM translation (pure jnp, no
-        #    solver) -- a COM-distance restraint is 1-DOF. Gated per-restraint inside.
+        # 1) Distance restraints: closed-form rigid centroid translation (pure jnp, no
+        #    solver) -- a centroid-distance restraint is 1-DOF. Gated per-restraint inside.
         if has_dist:
             active = apply_distance_shift_jax(active, dist_prepared, sigma)
         # 2) Conformer + RMSD restraints: jaxopt on the non-distance energy (distance is

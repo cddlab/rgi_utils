@@ -29,7 +29,7 @@ N_ACTIVE = 12
 def _make_spec(include_groups: bool = True) -> RestraintSpec:
     """A small spec exercising every restraint type with non-zero energy.
 
-    ``include_groups`` adds the group-COM angle/dihedral terms (default). The fuzzy
+    ``include_groups`` adds the group-centroid angle/dihedral terms (default). The fuzzy
     torch-vs-jax CG-convergence test opts out (``include_groups=False``) so its
     calibrated tolerance keeps its original group-free landscape — the periodic group
     dihedral makes the two backends' CG minima diverge a touch more than that tolerance
@@ -86,7 +86,7 @@ def _make_spec(include_groups: bool = True) -> RestraintSpec:
         weight=np.array([0.2, 0.2, 0.2]),
         mask=np.array([1.0, 1.0, 0.0]),
     )
-    # group-COM angle: 2 restraints (vertex = group 2), exercising the harmonic + flat-
+    # group-centroid angle: 2 restraints (vertex = group 2), exercising the harmonic + flat-
     # bottomed types (geom_type 0/1). Row 1 uses groups of 1 (intra-group padding).
     # move_free all 1 (every group free) so the numpy-FD gradient parity below holds
     # (a pinned group diverges from FD; tested torch-vs-jax in test_optim). start_sigma
@@ -107,7 +107,7 @@ def _make_spec(include_groups: bool = True) -> RestraintSpec:
         start_sigma=np.array([100.0, 5.0]),  # different per-restraint start_sigma
         stop_sigma=np.array([-1.0, -1.0]),
     )
-    # group-COM dihedral: 1 harmonic restraint + 1 masked padding row (per-restraint
+    # group-centroid dihedral: 1 harmonic restraint + 1 masked padding row (per-restraint
     # mask path). axis = group2-group3; harmonic is periodicity-safe.
     group_dihedral = None if not include_groups else GroupDihedralArrays(
         grp1_idx=np.array([[0, 1], [4, 5]], dtype=np.int64),
@@ -198,7 +198,7 @@ def test_grad_parity():
 
     from rgi_utils.energy import jax_energy, torch_energy
 
-    # group terms excluded: their COM gradient is intentionally N x-rescaled (com_eff, so
+    # group terms excluded: their centroid gradient is intentionally N x-rescaled (centroid_eff, so
     # the group moves rigidly at weight=1), so it does NOT match a numpy finite-difference
     # of the true energy. Group grad parity is checked torch-vs-jax in test_optim.
     spec = _make_spec(include_groups=False)
@@ -331,8 +331,8 @@ def test_dihedral_degenerate_gradient_parity():
 
 
 def test_distance_closed_form_backend_parity():
-    """The closed-form COM-distance shift agrees across numpy/torch/jax and lands the
-    COM separation exactly on target in one step (this replaced the per-atom CG)."""
+    """The closed-form centroid-distance shift agrees across numpy/torch/jax and lands the
+    centroid separation exactly on target in one step (this replaced the per-atom CG)."""
     torch = pytest.importorskip("torch")
     jnp = pytest.importorskip("jax.numpy")
     from rgi_utils.optim import distance_shift as ds
@@ -350,7 +350,7 @@ def test_distance_closed_form_backend_parity():
         stop_sigma=np.array([-1.0]),
     )
     active = np.zeros((4, 3))
-    active[2:, 0] = 20.0  # COM1 at x=0, COM2 at x=20 -> dist 20
+    active[2:, 0] = 20.0  # centroid1 at x=0, centroid2 at x=20 -> dist 20
 
     a_np = ds.apply_distance_shift_numpy(active, d_np, 0.0)
     a_t = ds.apply_distance_shift_torch(
@@ -362,17 +362,17 @@ def test_distance_closed_form_backend_parity():
         )
     )
 
-    def com_dist(a):
+    def centroid_dist(a):
         return np.linalg.norm(a[2:].mean(0) - a[:2].mean(0))
 
-    assert abs(com_dist(a_np) - 5.0) < 1e-6
+    assert abs(centroid_dist(a_np) - 5.0) < 1e-6
     assert np.allclose(a_np, a_t, atol=1e-6)
     assert np.allclose(a_np, a_j, atol=1e-5)
 
 
 def test_distance_closed_form_stop_sigma_release():
     """The closed-form distance shift honours stop_sigma (lower noise bound) across all
-    three backends: below stop the COM shift is RELEASED (coords untouched), inside the
+    three backends: below stop the centroid shift is RELEASED (coords untouched), inside the
     window [stop, start] it lands on target. Covers the PRODUCTION closed-form path
     (apply_distance_shift_*) with stop ON -- the other closed-form tests use -1."""
     torch = pytest.importorskip("torch")
@@ -392,7 +392,7 @@ def test_distance_closed_form_stop_sigma_release():
         stop_sigma=np.array([2.0]),  # released below sigma=2
     )
     active = np.zeros((4, 3))
-    active[2:, 0] = 20.0  # COM1 at x=0, COM2 at x=20 -> gap 20, target 5
+    active[2:, 0] = 20.0  # centroid1 at x=0, centroid2 at x=20 -> gap 20, target 5
 
     def shift_all(sigma):
         a_np = ds.apply_distance_shift_numpy(active, d_np, sigma)
@@ -410,16 +410,16 @@ def test_distance_closed_form_stop_sigma_release():
         )
         return a_np, a_t, a_j
 
-    def com_dist(a):
+    def centroid_dist(a):
         return np.linalg.norm(a[2:].mean(0) - a[:2].mean(0))
 
     # below stop_sigma -> released: every backend leaves the coords untouched (gap 20)
     for name, a in zip(("numpy", "torch", "jax"), shift_all(1.0)):
         assert np.allclose(a, active, atol=1e-6), name
-        assert abs(com_dist(a) - 20.0) < 1e-6, name
-    # inside [stop, start] -> applied: every backend lands the COM gap on target 5
+        assert abs(centroid_dist(a) - 20.0) < 1e-6, name
+    # inside [stop, start] -> applied: every backend lands the centroid gap on target 5
     for name, a in zip(("numpy", "torch", "jax"), shift_all(5.0)):
-        assert abs(com_dist(a) - 5.0) < 1e-6, name
+        assert abs(centroid_dist(a) - 5.0) < 1e-6, name
 
 
 def test_distance_closed_form_coupled_restraints():
@@ -463,7 +463,7 @@ def test_distance_closed_form_coupled_restraints():
 def test_distance_closed_form_move_modes():
     """The `move` key picks which group the closed-form shift moves: 0=both (minimal-
     displacement split), 1=only group1 (atom_selection1), 2=only group2. All three reach
-    the target COM separation; 1/2 leave the OTHER group's atoms EXACTLY fixed. numpy/
+    the target centroid separation; 1/2 leave the OTHER group's atoms EXACTLY fixed. numpy/
     torch/jax agree."""
     torch = pytest.importorskip("torch")
     jnp = pytest.importorskip("jax.numpy")
@@ -485,7 +485,7 @@ def test_distance_closed_form_move_modes():
         )
 
     active = np.zeros((4, 3))
-    active[2:, 0] = 20.0  # COM1 at x=0, COM2 at x=20 -> gap 20, target 5
+    active[2:, 0] = 20.0  # centroid1 at x=0, centroid2 at x=20 -> gap 20, target 5
 
     def shift_all(move):
         d = base_d(move)
@@ -506,13 +506,13 @@ def test_distance_closed_form_move_modes():
         assert np.allclose(a_np, a_j, atol=1e-5), move
         return a_np
 
-    def com_dist(a):
+    def centroid_dist(a):
         return np.linalg.norm(a[2:].mean(0) - a[:2].mean(0))
 
     a_both, a_m1, a_m2 = shift_all(0), shift_all(1), shift_all(2)
-    # every mode lands the COM gap on the target
+    # every mode lands the centroid gap on the target
     for a in (a_both, a_m1, a_m2):
-        assert abs(com_dist(a) - 5.0) < 1e-6
+        assert abs(centroid_dist(a) - 5.0) < 1e-6
     # move=1 -> only group1 (atoms 0,1) moves; group2 (2,3) EXACTLY fixed
     assert np.allclose(a_m1[2:], active[2:], atol=1e-9)
     assert not np.allclose(a_m1[:2], active[:2], atol=1e-6)
@@ -788,7 +788,7 @@ def test_conformer_distance_stop_sigma_window():
     from rgi_utils.energy import jax_energy, torch_energy
     from rgi_utils.spec import BondArrays, DistanceArrays, RestraintSpec
 
-    # bond 0-1 stretched (3 vs r0 1.5) and dist groups off target (COM gap 8 vs 2)
+    # bond 0-1 stretched (3 vs r0 1.5) and dist groups off target (centroid gap 8 vs 2)
     pos = np.array([[0.0, 0, 0], [3.0, 0, 0], [0, 5.0, 0], [0, 8.0, 0]])
     spec = RestraintSpec(
         n_active=4, active_sites=np.arange(4),

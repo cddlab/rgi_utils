@@ -175,8 +175,8 @@ def test_distance_resolve_and_minimize():
 
 
 def test_distance_closed_form_hits_target_exactly():
-    """The COM-distance restraint is applied in closed form (rigid translation), so one
-    minimize lands the group COM distance exactly on target -- no iterative residual,
+    """The centroid-distance restraint is applied in closed form (rigid translation), so one
+    minimize lands the group centroid distance exactly on target -- no iterative residual,
     and no conformer solver is needed for a distance-only spec."""
     cr = CombinedRestraints.get_instance()
     cr.set_config(
@@ -200,11 +200,11 @@ def test_distance_closed_form_hits_target_exactly():
     ]
     cr.setup(MockAdapter(atoms))
     coords = np.zeros((1, 4, 3))
-    coords[0, 2:, 0] = 20.0  # COM1 at x=0, COM2 at x=20 -> dist 20
+    coords[0, 2:, 0] = 20.0  # centroid1 at x=0, centroid2 at x=20 -> dist 20
     cr.minimize(coords, 0, sigma=0.0)
     d = np.linalg.norm(coords[0, 2:].mean(0) - coords[0, :2].mean(0))
     assert abs(d - 7.0) < 1e-6
-    # minimal-displacement split (equal group sizes) -> COMs meet symmetrically
+    # minimal-displacement split (equal group sizes) -> centroids meet symmetrically
     assert abs(coords[0, :2].mean(0)[0] - 6.5) < 1e-6
     assert abs(coords[0, 2:].mean(0)[0] - 13.5) < 1e-6
 
@@ -212,7 +212,7 @@ def test_distance_closed_form_hits_target_exactly():
 def test_distance_move_mode_end_to_end():
     """End-to-end (config -> DistanceData.move_mode -> featurizer -> DistanceArrays ->
     pack_spec -> closed-form apply): `move: 2` moves ONLY atom_selection2's group, so
-    chain A (group1) stays put while chain B lands the COM gap on target. Guards the
+    chain A (group1) stays put while chain B lands the centroid gap on target. Guards the
     middle wiring that the parity tests (move_mode=0) and the hand-built-dict tests both
     skip -- a dropped schema field / wrong featurizer attr would silently fall back to 0
     (both) and chain A would move."""
@@ -240,17 +240,17 @@ def test_distance_move_mode_end_to_end():
     cr.setup(MockAdapter(atoms))
     assert cr.config.distance_data[0].move_mode == 2  # parsed onto the DistanceData
     coords = np.zeros((1, 4, 3))
-    coords[0, 2:, 0] = 20.0  # COM1 (A) at x=0, COM2 (B) at x=20 -> dist 20
+    coords[0, 2:, 0] = 20.0  # centroid1 (A) at x=0, centroid2 (B) at x=20 -> dist 20
     a_before = coords[0, :2].copy()
     cr.minimize(coords, 0, sigma=0.0)
     d = np.linalg.norm(coords[0, 2:].mean(0) - coords[0, :2].mean(0))
-    assert abs(d - 7.0) < 1e-6  # COM gap lands on target
+    assert abs(d - 7.0) < 1e-6  # centroid gap lands on target
     assert np.allclose(coords[0, :2], a_before)  # group1 (chain A) EXACTLY fixed
     assert abs(coords[0, 2:].mean(0)[0] - 7.0) < 1e-6  # only group2 moved (to x=7)
 
 
 def test_distance_name_ca_selects_backbone_only():
-    """`name CA` inside a distance selection filters the COM group to CA atoms only
+    """`name CA` inside a distance selection filters the centroid group to CA atoms only
     (the user-facing 'name CA' for distance restraints). Each residue here carries a CA
     and a CB, so the group must hold only the CA indices -- a regression that dropped
     `name` from the distance candidate dict would admit every atom and break these
@@ -284,17 +284,17 @@ def test_distance_name_ca_selects_backbone_only():
     dd = cr.config.distance_data[0]
     assert set(dd.target_sites1) == {0, 2}  # chain A CAs only (CB 1,3 excluded)
     assert set(dd.target_sites2) == {4, 6}  # chain B CAs only (CB 5,7 excluded)
-    # end-to-end: the closed-form COM shift lands the CA-group distance on target
+    # end-to-end: the closed-form centroid shift lands the CA-group distance on target
     coords = np.zeros((1, 8, 3))
     coords[0, 4:, 0] = 20.0  # chain B far on x
     cr.minimize(coords, 0, sigma=0.0)
-    com1 = coords[0, [0, 2]].mean(0)
-    com2 = coords[0, [4, 6]].mean(0)
-    assert abs(np.linalg.norm(com2 - com1) - 5.0) < 1e-6
+    centroid1 = coords[0, [0, 2]].mean(0)
+    centroid2 = coords[0, [4, 6]].mean(0)
+    assert abs(np.linalg.norm(centroid2 - centroid1) - 5.0) < 1e-6
 
 
 def test_distance_moltype_selector_matches():
-    """Parity with RMSD: protein/dna/rna selectors resolve in distance COM groups too
+    """Parity with RMSD: protein/dna/rna selectors resolve in distance centroid groups too
     (the distance candidate dict now carries mol_type). Guards the silent-failure
     footgun where 'protein'/'dna' would match nothing and an OR with a chain term would
     quietly return a wrong, non-empty group."""
@@ -325,7 +325,7 @@ def test_distance_moltype_selector_matches():
 
 
 def test_distance_backbone_sidechain_resname_gated():
-    """`backbone`/`sidechain` resolve in distance COM groups via the resname-gated
+    """`backbone`/`sidechain` resolve in distance centroid groups via the resname-gated
     polymer path: each atom carries resname but NO mol_type (the chai/of3/protenix
     case), so the distance candidate dict's `resname` is what fires the polymer gate.
     CA -> group1 (backbone), CB -> group2 (sidechain)."""
@@ -586,8 +586,8 @@ def test_distance_move_mode_parsing():
 
 
 def test_distance_stop_sigma_releases_below():
-    """A DISTANCE restraint with stop_sigma is RELEASED below it (the closed-form COM
-    shift is gated off): minimize at sigma < stop leaves the COM separation untouched,
+    """A DISTANCE restraint with stop_sigma is RELEASED below it (the closed-form centroid
+    shift is gated off): minimize at sigma < stop leaves the centroid separation untouched,
     while in the active window it still lands exactly on target. Exercises
     DistanceData.stop_sigma -> distance_shift gate (stop_sigma on a non-rmsd term)."""
     cr = CombinedRestraints.get_instance()
@@ -612,20 +612,20 @@ def test_distance_stop_sigma_releases_below():
     ]
     cr.setup(MockAdapter(atoms))
 
-    def com_dist(c):
+    def centroid_dist(c):
         return np.linalg.norm(c[0, 2:].mean(0) - c[0, :2].mean(0))
 
-    # sigma below stop_sigma -> released -> COM separation unchanged (still 20)
+    # sigma below stop_sigma -> released -> centroid separation unchanged (still 20)
     coords = np.zeros((1, 4, 3))
     coords[0, 2:, 0] = 20.0
     cr.minimize(coords, 0, sigma=1.0)
-    assert com_dist(coords) == pytest.approx(20.0, abs=1e-6)
+    assert centroid_dist(coords) == pytest.approx(20.0, abs=1e-6)
 
     # sigma in [stop, start] -> active -> closed-form shift lands on target
     coords = np.zeros((1, 4, 3))
     coords[0, 2:, 0] = 20.0
     cr.minimize(coords, 0, sigma=5.0)
-    assert abs(com_dist(coords) - 7.0) < 1e-5
+    assert abs(centroid_dist(coords) - 7.0) < 1e-5
 
 
 def test_distance_stop_sigma_above_start_warns(tmp_path, caplog):
@@ -766,7 +766,7 @@ def test_gpu_false_uses_torch_on_cpu():
     cr.minimize(coords, 0, sigma=0.0)
     assert coords.device.type == "cpu"
     d = float(torch.norm(coords[0, 2:].mean(0) - coords[0, :2].mean(0)))
-    assert abs(d - 5.0) < 1e-4  # closed-form COM-distance shift hits target on CPU
+    assert abs(d - 5.0) < 1e-4  # closed-form centroid-distance shift hits target on CPU
 
 
 @pytest.mark.gpu

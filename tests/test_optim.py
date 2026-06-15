@@ -70,7 +70,7 @@ def test_jax_minimize_reduces_energy():
 def test_jax_minimizer_move_mode_end_to_end():
     """jax E2E (build_spec -> jax_energy.prepare_spec -> pack_spec -> make_minimizer ->
     apply_distance_shift_jax): move_mode=2 moves ONLY group2; group1 stays fixed while
-    group2 lands the COM gap on target. Confirms move_mode flows via the featurizer and
+    group2 lands the centroid gap on target. Confirms move_mode flows via the featurizer and
     the SHARED pack_spec into the jax prepared dict, then through the jax minimizer (the
     AF3 closure path) -- not just the directly-tested apply_distance_shift_jax."""
     jax = pytest.importorskip("jax")
@@ -94,19 +94,19 @@ def test_jax_minimizer_move_mode_end_to_end():
     assert list(spec.distance.move_mode) == [2]  # flowed into the spec via featurizer
 
     coords_np = np.zeros((1, 4, 3))
-    coords_np[0, 2:, 0] = 20.0  # COM1 (group1) x=0, COM2 (group2) x=20 -> dist 20
+    coords_np[0, 2:, 0] = 20.0  # centroid1 (group1) x=0, centroid2 (group2) x=20 -> dist 20
     coords = jnp.asarray(coords_np)
     g1_before = np.asarray(coords[0, :2])
     minimize = make_minimizer(spec, max_iter=100)
     coords = minimize(coords, 0.0)
     a = np.asarray(coords)
     gap = np.linalg.norm(a[0, 2:].mean(0) - a[0, :2].mean(0))
-    assert abs(gap - 7.0) < 1e-5  # COM gap on target
+    assert abs(gap - 7.0) < 1e-5  # centroid gap on target
     assert np.allclose(a[0, :2], g1_before, atol=1e-9)  # group1 EXACTLY fixed
     assert abs(a[0, 2:].mean(0)[0] - 7.0) < 1e-5  # only group2 moved (to x=7)
 
 
-# --- group-COM angle / dihedral restraints ---------------------------------------
+# --- group-centroid angle / dihedral restraints ---------------------------------------
 
 
 def _angle_deg(p1, p2, p3):
@@ -130,7 +130,7 @@ def _wrap180(x):
 
 
 def _group_angle_spec(target_deg, start_sigma=1e30, move_free=(True, True, True)):
-    """Spec with one harmonic group-COM angle restraint: groups {0,1}/{2,3}/{4,5}
+    """Spec with one harmonic group-centroid angle restraint: groups {0,1}/{2,3}/{4,5}
     (vertex=2). ``move_free`` is the per-group free mask (default all free)."""
     ad = AngleRestraintData()
     ad.target_sites1, ad.target_sites2, ad.target_sites3 = [0, 1], [2, 3], [4, 5]
@@ -141,7 +141,7 @@ def _group_angle_spec(target_deg, start_sigma=1e30, move_free=(True, True, True)
 
 
 def _group_angle_coords():
-    """group1 COM (8,0,0), vertex COM (0,0,0), group3 COM (0,8,0) -> initial 90 deg."""
+    """group1 centroid (8,0,0), vertex centroid (0,0,0), group3 centroid (0,8,0) -> initial 90 deg."""
     coords = np.zeros((1, 6, 3))
     coords[0, 0], coords[0, 1] = [8.0, 0.5, 0.0], [8.0, -0.5, 0.0]
     coords[0, 2], coords[0, 3] = [0.0, 0.5, 0.0], [0.0, -0.5, 0.0]
@@ -154,7 +154,7 @@ def _coms(a):
 
 
 def _group_dihedral_spec(target_deg, move_free=(True, True, True, True)):
-    """Spec with one group-COM dihedral restraint over single-atom groups 0-1-2-3.
+    """Spec with one group-centroid dihedral restraint over single-atom groups 0-1-2-3.
     ``move_free`` is the per-group free mask (default all free)."""
     dd = DihedralRestraintData()
     dd.target_sites1, dd.target_sites2 = [0], [1]
@@ -176,8 +176,8 @@ def _group_dihedral_coords():
 
 
 def test_torch_group_angle_converges():
-    """The torch CG bends the COM1-COM2-COM3 angle from 90 deg onto a 120 deg target,
-    moving each group rigidly (the COM-only energy gives a group's atoms equal grad)."""
+    """The torch CG bends the centroid1-centroid2-centroid3 angle from 90 deg onto a 120 deg target,
+    moving each group rigidly (the centroid-only energy gives a group's atoms equal grad)."""
     torch = pytest.importorskip("torch")
     from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
 
@@ -191,7 +191,7 @@ def test_torch_group_angle_converges():
 
 
 def test_jax_group_angle_converges():
-    """Same group-COM angle convergence on the jax minimizer (the AF3 path)."""
+    """Same group-centroid angle convergence on the jax minimizer (the AF3 path)."""
     jax = pytest.importorskip("jax")
     jax.config.update("jax_enable_x64", True)
     import jax.numpy as jnp
@@ -205,7 +205,7 @@ def test_jax_group_angle_converges():
 
 
 def test_torch_group_dihedral_converges():
-    """The torch CG drives the COM dihedral from 0 deg onto a 90 deg target (90 deg is
+    """The torch CG drives the centroid dihedral from 0 deg onto a 90 deg target (90 deg is
     mid-range, away from the +-180 wrap boundary, so convergence is unambiguous)."""
     torch = pytest.importorskip("torch")
     from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
@@ -649,7 +649,7 @@ def test_gated_prepared_matches_energy_gate():
 def test_compiled_energy_matches_eager():
     """torch.compile of the GPU energy+grad must equal eager grad_and_value (compiling
     fuses kernels; it must NOT change the maths), incl. the detached Kabsch SVD in the
-    RMSD term AND the group-COM angle/dihedral terms (gather + masked centroid + cross +
+    RMSD term AND the group-centroid angle/dihedral terms (gather + masked centroid + cross +
     atan2 wrap). Runs on CPU (inductor, no CUDA graph) so CI guards the invariant;
     otherwise the compiled group energy is only ever exercised by an sbatch GPU run."""
     torch = pytest.importorskip("torch")

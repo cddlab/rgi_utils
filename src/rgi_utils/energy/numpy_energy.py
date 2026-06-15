@@ -126,18 +126,18 @@ def distance_energy(
     dist_type,
     mask,
 ):
-    """COM distance energy. dist_type: 0=harmonic, 1=flat-bottomed, 2=lower, 3=upper."""
+    """Centroid distance energy. dist_type: 0=harmonic, 1=flat-bottomed, 2=lower, 3=upper."""
     grp1_pos = positions[..., grp1_idx, :]  # (..., n_dist, max_grp, 3)
     grp2_pos = positions[..., grp2_idx, :]
     m1 = grp1_mask[..., None]
     m2 = grp2_mask[..., None]
-    com1 = np.sum(grp1_pos * m1, axis=-2) / (
+    centroid1 = np.sum(grp1_pos * m1, axis=-2) / (
         np.sum(grp1_mask, axis=-1)[..., None] + _EPS
     )
-    com2 = np.sum(grp2_pos * m2, axis=-2) / (
+    centroid2 = np.sum(grp2_pos * m2, axis=-2) / (
         np.sum(grp2_mask, axis=-1)[..., None] + _EPS
     )
-    diff = com2 - com1
+    diff = centroid2 - centroid1
     dist = np.sqrt(np.sum(diff**2, axis=-1) + _EPS)
     delta_harmonic = dist - target1
     delta_flat = np.where(
@@ -157,22 +157,22 @@ def distance_energy(
     return np.sum(delta**2 * mask)
 
 
-def _group_com(positions, grp_idx, grp_mask):
-    """Masked-mean centre of mass of a padded atom group.
+def _group_centroid(positions, grp_idx, grp_mask):
+    """Masked-mean geometric centroid (unweighted; NOT mass-weighted) of a padded atom group.
 
     ``grp_idx`` (..., n, max_grp) gathers atoms; ``grp_mask`` (..., n, max_grp) {0,1}
     zeroes padding columns. Returns (..., n, 3). Plain geometric centre (NOT
-    mass-weighted), identical to the COM in ``distance_energy``."""
+    mass-weighted), identical to the centroid in ``distance_energy``."""
     pos = positions[..., grp_idx, :]  # (..., n, max_grp, 3)
     m = grp_mask[..., None]
     return np.sum(pos * m, axis=-2) / (np.sum(grp_mask, axis=-1)[..., None] + _EPS)
 
 
-def _move_com(positions, grp_idx, grp_mask, free):
-    """COM of a group. ``free`` ((..., n) {0,1}, 1=free) is gradient-only: numpy is the
+def _move_centroid(positions, grp_idx, grp_mask, free):
+    """Centroid of a group. ``free`` ((..., n) {0,1}, 1=free) is gradient-only: numpy is the
     VALUE reference (no autodiff), so move is a no-op and the value uses every group;
-    the torch/jax mirrors stop-gradient this COM where ``free`` is 0 (pinned)."""
-    return _group_com(positions, grp_idx, grp_mask)
+    the torch/jax mirrors stop-gradient this centroid where ``free`` is 0 (pinned)."""
+    return _group_centroid(positions, grp_idx, grp_mask)
 
 
 def _group_delta(val, harmonic_dev, target1, target2, geom_type):
@@ -210,16 +210,16 @@ def group_angle_energy(
     positions, grp1_idx, grp2_idx, grp3_idx, grp1_mask, grp2_mask, grp3_mask,
     target1, target2, geom_type, move_free, weight, mask,
 ):
-    """Distance-style flat-bottomed angle between three group COMs (vertex = group 2).
+    """Distance-style flat-bottomed angle between three group centroids (vertex = group 2).
     ``geom_type`` 0=harmonic / 1=flat-bottomed / 2=lower / 3=upper, bounds
-    ``target1``/``target2`` in radians. The COM-only energy gives every atom in a free
+    ``target1``/``target2`` in radians. The centroid-only energy gives every atom in a free
     group the same gradient (the group translates rigidly); ``move_free`` (n,3) pins the
     groups whose column is 0 in torch/jax (no-op in this numpy value reference)."""
-    com1 = _move_com(positions, grp1_idx, grp1_mask, move_free[..., 0])
-    com2 = _move_com(positions, grp2_idx, grp2_mask, move_free[..., 1])
-    com3 = _move_com(positions, grp3_idx, grp3_mask, move_free[..., 2])
-    rij = com1 - com2
-    rkj = com3 - com2
+    centroid1 = _move_centroid(positions, grp1_idx, grp1_mask, move_free[..., 0])
+    centroid2 = _move_centroid(positions, grp2_idx, grp2_mask, move_free[..., 1])
+    centroid3 = _move_centroid(positions, grp3_idx, grp3_mask, move_free[..., 2])
+    rij = centroid1 - centroid2
+    rkj = centroid3 - centroid2
     nij = np.sqrt(np.sum(rij**2, axis=-1) + _EPS)
     nkj = np.sqrt(np.sum(rkj**2, axis=-1) + _EPS)
     cos_th = np.sum(rij * rkj, axis=-1) / (nij * nkj)
@@ -234,15 +234,15 @@ def group_dihedral_energy(
     grp1_mask, grp2_mask, grp3_mask, grp4_mask,
     target1, target2, geom_type, move_free, weight, mask,
 ):
-    """Distance-style flat-bottomed dihedral between four group COMs (axis = group2-3).
+    """Distance-style flat-bottomed dihedral between four group centroids (axis = group2-3).
     ``harmonic`` (geom_type 0) is periodicity-safe: the deviation ``phi - target1`` is
     wrapped to [-pi, pi] before the square. ``flat-bottomed``/lower/upper use the raw
     angle (``target1 < target2`` is enforced, so a window cannot straddle +-180).
     ``move_free`` (n,4) as in ``group_angle_energy``."""
-    p0 = _move_com(positions, grp1_idx, grp1_mask, move_free[..., 0])
-    p1 = _move_com(positions, grp2_idx, grp2_mask, move_free[..., 1])
-    p2 = _move_com(positions, grp3_idx, grp3_mask, move_free[..., 2])
-    p3 = _move_com(positions, grp4_idx, grp4_mask, move_free[..., 3])
+    p0 = _move_centroid(positions, grp1_idx, grp1_mask, move_free[..., 0])
+    p1 = _move_centroid(positions, grp2_idx, grp2_mask, move_free[..., 1])
+    p2 = _move_centroid(positions, grp3_idx, grp3_mask, move_free[..., 2])
+    p3 = _move_centroid(positions, grp4_idx, grp4_mask, move_free[..., 3])
     phi = _dihedral_angle(p0, p1, p2, p3)
     dev = phi - target1
     harmonic_dev = np.arctan2(np.sin(dev), np.cos(dev))  # wrap to [-pi, pi]

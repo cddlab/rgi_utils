@@ -194,7 +194,7 @@ def _pad_groups(restraints, n_groups, g2l):
     {0,1} mask arrays. Reads ``restraints[k].target_sites{1..n_groups}`` (global
     indices). ``max_grp`` spans every group of every restraint so one padded width
     covers them all. Returns (idx_arrays, mask_arrays): each a list of ``n_groups``
-    arrays in group order. Used for group-COM angle (3) and dihedral (4)."""
+    arrays in group order. Used for group-centroid angle (3) and dihedral (4)."""
     n = len(restraints)
     max_grp = max(
         len(getattr(r, f"target_sites{g + 1}"))
@@ -650,7 +650,7 @@ def build_spec(
             mask=np.ones(n),
         )
 
-    # ---- group-COM angle / dihedral arrays (padded, local indices) ------------
+    # ---- group-centroid angle / dihedral arrays (padded, local indices) ------------
     group_angle = None
     if angle_restraints:
         n = len(angle_restraints)

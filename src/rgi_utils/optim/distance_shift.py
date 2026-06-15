@@ -1,14 +1,14 @@
-"""Closed-form COM-distance restraint (no iterative solver).
+"""Closed-form centroid-distance restraint (no iterative solver).
 
-A distance restraint's energy depends ONLY on the two groups' centres of mass
-(``E = f(|COM1 - COM2|)``), so its minimiser is a rigid translation of each group
-along the COM-COM axis until the separation hits the target. That is a 1-DOF
+A distance restraint's energy depends ONLY on the two groups' centroids
+(``E = f(|centroid1 - centroid2|)``), so its minimiser is a rigid translation of each group
+along the centroid-centroid axis until the separation hits the target. That is a 1-DOF
 problem solvable in closed form -- there is no need to run a CG/LBFGS optimiser
 over every group atom (which is what the energy-layer ``distance_energy`` term
 forced when it was part of the joint optimisation).
 
 For each restraint d (applied only when ``sigma <= start_sigma[d]``):
-  COM1, COM2  -> dist = |COM2-COM1|, unit axis u
+  centroid1, centroid2  -> dist = |centroid2-centroid1|, unit axis u
   delta (type): harmonic -> target1-dist; flat-bottomed -> nearest-bound gap;
                 lower(2) -> max(0,target1-dist); upper(3) -> min(0,target2-dist)
   split by move_mode (the `move` config key): both(0) = minimal-displacement
@@ -62,23 +62,23 @@ def apply_distance_shift_numpy(active, d, sigma=None):
     for _ in range(passes):
         g1 = active[..., idx1, :]
         g2 = active[..., idx2, :]
-        com1 = (g1 * m1[..., None]).sum(-2) / (n1[..., None] + _EPS)
-        com2 = (g2 * m2[..., None]).sum(-2) / (n2[..., None] + _EPS)
-        diff = com2 - com1
+        centroid1 = (g1 * m1[..., None]).sum(-2) / (n1[..., None] + _EPS)
+        centroid2 = (g2 * m2[..., None]).sum(-2) / (n2[..., None] + _EPS)
+        diff = centroid2 - centroid1
         dist = np.sqrt((diff * diff).sum(-1) + _EPS)
         u = diff / (dist[..., None] + _EPS)
         delta = _delta(dist, t1, t2, dt, np.where, np.zeros_like) * gate
-        com1_shift = (-delta * c1)[..., None] * u
-        com2_shift = (delta * c2)[..., None] * u
-        pa1 = _per_atom_shift(com1_shift, m1)
-        pa2 = _per_atom_shift(com2_shift, m2)
+        centroid1_shift = (-delta * c1)[..., None] * u
+        centroid2_shift = (delta * c2)[..., None] * u
+        pa1 = _per_atom_shift(centroid1_shift, m1)
+        pa2 = _per_atom_shift(centroid2_shift, m2)
         _scatter_add_numpy(active, idx1.reshape(-1), pa1)
         _scatter_add_numpy(active, idx2.reshape(-1), pa2)
     return active
 
 
 def _delta(dist, t1, t2, dt, where, zeros_like):
-    """Per-restraint COM-distance correction by type (0=harmonic, 1=flat-bottomed,
+    """Per-restraint centroid-distance correction by type (0=harmonic, 1=flat-bottomed,
     2=lower-bound, 3=upper-bound). ``where``/``zeros_like`` are the backend's ops, so
     this one formula serves numpy/torch/jax."""
     zero = zeros_like(dist)
@@ -91,11 +91,11 @@ def _delta(dist, t1, t2, dt, where, zeros_like):
 
 def _split(mm, n1, n2, denom):
     """Per-restraint shift-distribution coefficients ``(c1, c2)`` for the move mode
-    ``mm`` (0=both, 1=group1 only, 2=group2 only): ``com1_shift = -delta*c1*u``,
-    ``com2_shift = +delta*c2*u``. "both" is the minimal-displacement split (each group
+    ``mm`` (0=both, 1=group1 only, 2=group2 only): ``centroid1_shift = -delta*c1*u``,
+    ``centroid2_shift = +delta*c2*u``. "both" is the minimal-displacement split (each group
     moves inversely to its size); 1/2 put the WHOLE shift on group1 / group2 so the
     other group stays fixed (e.g. pull only a ligand toward a fixed pocket). EVERY mode
-    changes the COM separation by ``delta`` (only the distribution differs), so the
+    changes the centroid separation by ``delta`` (only the distribution differs), so the
     target is reached in every mode. Pure arithmetic (``==``/``*``/``+``) on the masks
     (bool -> float), so one helper serves numpy/torch/jax with no backend ``where``."""
     both = mm == 0
@@ -104,13 +104,13 @@ def _split(mm, n1, n2, denom):
     return c1, c2
 
 
-def _per_atom_shift(com_shift, m):
-    """Broadcast a per-restraint COM shift ``(..., n_dist, 3)`` to per-(restraint,
+def _per_atom_shift(centroid_shift, m):
+    """Broadcast a per-restraint centroid shift ``(..., n_dist, 3)`` to per-(restraint,
     atom) via the group mask, then flatten the ``(n_dist, max_grp)`` dims so it lines
     up with the flattened scatter index. Pure ``*``/``reshape``, so the one helper
     works on every backend (numpy/torch/jax arrays alike)."""
-    return (com_shift[..., :, None, :] * m[..., None]).reshape(
-        *com_shift.shape[:-2], -1, 3
+    return (centroid_shift[..., :, None, :] * m[..., None]).reshape(
+        *centroid_shift.shape[:-2], -1, 3
     )
 
 
@@ -153,16 +153,16 @@ def apply_distance_shift_torch(active, d, sigma=None):
     for _ in range(passes):
         g1 = active[..., idx1, :]
         g2 = active[..., idx2, :]
-        com1 = (g1 * m1[..., None]).sum(-2) / (n1[..., None] + _EPS)
-        com2 = (g2 * m2[..., None]).sum(-2) / (n2[..., None] + _EPS)
-        diff = com2 - com1
+        centroid1 = (g1 * m1[..., None]).sum(-2) / (n1[..., None] + _EPS)
+        centroid2 = (g2 * m2[..., None]).sum(-2) / (n2[..., None] + _EPS)
+        diff = centroid2 - centroid1
         dist = torch.sqrt((diff * diff).sum(-1) + _EPS)
         u = diff / (dist[..., None] + _EPS)
         delta = _delta(dist, t1, t2, dt, torch.where, torch.zeros_like) * gate
-        com1_shift = (-delta * c1)[..., None] * u
-        com2_shift = (delta * c2)[..., None] * u
-        pa1 = _per_atom_shift(com1_shift, m1)
-        pa2 = _per_atom_shift(com2_shift, m2)
+        centroid1_shift = (-delta * c1)[..., None] * u
+        centroid2_shift = (delta * c2)[..., None] * u
+        pa1 = _per_atom_shift(centroid1_shift, m1)
+        pa2 = _per_atom_shift(centroid2_shift, m2)
         active = active.index_add(-2, fidx1, pa1.to(active.dtype))
         active = active.index_add(-2, fidx2, pa2.to(active.dtype))
     return active
@@ -193,16 +193,16 @@ def apply_distance_shift_jax(active, d, sigma):
     for _ in range(passes):
         g1 = active[..., idx1, :]
         g2 = active[..., idx2, :]
-        com1 = (g1 * m1[..., None]).sum(-2) / (n1[..., None] + _EPS)
-        com2 = (g2 * m2[..., None]).sum(-2) / (n2[..., None] + _EPS)
-        diff = com2 - com1
+        centroid1 = (g1 * m1[..., None]).sum(-2) / (n1[..., None] + _EPS)
+        centroid2 = (g2 * m2[..., None]).sum(-2) / (n2[..., None] + _EPS)
+        diff = centroid2 - centroid1
         dist = jnp.sqrt((diff * diff).sum(-1) + _EPS)
         u = diff / (dist[..., None] + _EPS)
         delta = _delta(dist, t1, t2, dt, jnp.where, jnp.zeros_like) * gate
-        com1_shift = (-delta * c1)[..., None] * u
-        com2_shift = (delta * c2)[..., None] * u
-        pa1 = _per_atom_shift(com1_shift, m1)
-        pa2 = _per_atom_shift(com2_shift, m2)
+        centroid1_shift = (-delta * c1)[..., None] * u
+        centroid2_shift = (delta * c2)[..., None] * u
+        pa1 = _per_atom_shift(centroid1_shift, m1)
+        pa2 = _per_atom_shift(centroid2_shift, m2)
         active = active.at[..., fidx1, :].add(pa1)
         active = active.at[..., fidx2, :].add(pa2)
     return active

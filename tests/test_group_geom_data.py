@@ -1,4 +1,4 @@
-"""Group-COM angle / dihedral restraint data parsing + site resolution.
+"""Group-centroid angle / dihedral restraint data parsing + site resolution.
 
 Mirrors ``test_distance_data.py``: the four restraint types (harmonic / flat-bottomed /
 flat-bottomed1 / flat-bottomed2) and the ``move`` key. Targets are DEGREES in the config

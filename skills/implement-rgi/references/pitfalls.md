@@ -68,7 +68,7 @@ tool's default is to make a fresh timestamped dir when output exists, change the
 default to "skip completed jobs" instead of adding a `--skip_existing` flag, and
 let the existing force/override flag handle recompute. The decisive test that the
 fix works: run two structures with *different* configs in one batch and confirm
-each reaches its own target (e.g. COM 25 Å and 45 Å, not both the same).
+each reaches its own target (e.g. centroid 25 Å and 45 Å, not both the same).
 
 ## 9. Don't re-port features that are already shared
 If a tool needs a feature another tool already has (e.g. intramolecular VdW), add
@@ -134,7 +134,7 @@ time, not at import — see pitfall 13's lesson about not trusting a clean-looki
 `resid 5 to 84` (no `chain` qualifier) matches that per-chain ordinal in EVERY chain,
 including a ligand chain whose atoms each carry an ordinal (1..N). A protein distance
 group written as a bare resid range silently sweeps in the ligand's atoms, shifting the
-group's COM. This is standard selection-DSL behaviour (like PyMOL `resi`), NOT a bug —
+group's centroid. This is standard selection-DSL behaviour (like PyMOL `resi`), NOT a bug —
 but **qualify protein groups with `chain A and (...)`**. It is invisible in a
 distance-only or conformer-only run; it only surfaces when a distance restraint and a
 ligand coexist. The giveaway is an `n_active` / group size larger than expected — e.g.

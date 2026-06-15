@@ -1,7 +1,7 @@
-"""Parse + resolve group-COM angle / dihedral restraints.
+"""Parse + resolve group-centroid angle / dihedral restraints.
 
-These restrain the angle (3 groups) / dihedral (4 groups) formed by the centres of
-mass of atom groups — the angular analogue of the COM-distance restraint in
+These restrain the angle (3 groups) / dihedral (4 groups) formed by the centroids
+of atom groups — the angular analogue of the centroid-distance restraint in
 ``distance_restr_data.py``, and they mirror its config surface: the four restraint
 types ``harmonic`` / ``flat-bottomed`` / ``flat-bottomed1`` / ``flat-bottomed2`` and the
 ``move`` key. Targets are given in DEGREES in the config and stored in RADIANS here
@@ -9,10 +9,10 @@ types ``harmonic`` / ``flat-bottomed`` / ``flat-bottomed1`` / ``flat-bottomed2``
 Angstroms).
 
 Geometry convention (mirrors the conformer angle/dihedral terms):
-  * angle    — groups 1-2-3, the VERTEX is group 2 (``COM1 - COM2 - COM3``);
-  * dihedral — groups 1-2-3-4, the rotatable AXIS is the ``COM2-COM3`` line.
+  * angle    — groups 1-2-3, the VERTEX is group 2 (``centroid1 - centroid2 - centroid3``);
+  * dihedral — groups 1-2-3-4, the rotatable AXIS is the ``centroid2-centroid3`` line.
 
-``move``: which group(s) the solver may move; the rest are pinned (their COMs are
+``move``: which group(s) the solver may move; the rest are pinned (their centroids are
 stop-gradient'd in the energy, so the CG holds them fixed FOR THIS restraint — another
 restraint sharing those atoms still moves them, like the distance ``move``). The DEFAULT
 (omitted) moves the "arms" and pins the anchor: an ANGLE frees groups 1 + 3 and pins the
@@ -166,7 +166,7 @@ def _parse_common(
 
 
 class AngleRestraintData:
-    """COM angle restraint between three atom groups (vertex = group 2).
+    """Centroid angle restraint between three atom groups (vertex = group 2).
 
     Restraint types mirror the distance restraint (``harmonic`` / ``flat-bottomed`` /
     ``flat-bottomed1`` / ``flat-bottomed2``) on the angle value; ``target1``/``target2``
@@ -249,7 +249,7 @@ class AngleRestraintData:
 
 
 class DihedralRestraintData:
-    """COM dihedral restraint between four atom groups (axis = COM2-COM3 line).
+    """Centroid dihedral restraint between four atom groups (axis = centroid2-centroid3 line).
 
     Restraint types mirror the distance restraint on the dihedral value;
     ``target1``/``target2`` are stored in RADIANS (from the config's degrees). The

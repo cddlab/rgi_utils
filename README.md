@@ -6,9 +6,9 @@ Restraint-Guided Inference (RGI) utilities for diffusion-based structure predict
 
 Restraint types, all minimized during the denoising loop to guide coordinate optimization:
 
-- **distance** — center-of-mass distance between two atom groups (applied closed-form).
+- **distance** — centroid distance between two atom groups (applied closed-form).
 - **group angle / dihedral** — the angle (3 groups) / dihedral (4 groups) of the groups'
-  centers of mass, in degrees; the angular analogue of the distance restraint.
+  centroids, in degrees; the angular analogue of the distance restraint.
 - **conformer** — ligand bond / angle / chiral-volume / dihedral (cis/trans) toward an
   ideal RDKit geometry.
 - **VdW** — non-bonded clash avoidance, intramolecular and/or dynamic ligand-protein
@@ -49,10 +49,10 @@ restraints_config = {
             "atom_selection2": "chain B and resid 20",
             "harmonic": {"target_distance": 5.0},
             "start_sigma": 1.0,              # optional; active when sigma <= start_sigma
-            # "move": "both",               # which group the COM shift moves: both / 1 / 2
+            # "move": "both",               # which group the centroid shift moves: both / 1 / 2
         }
     ],
-    "angle_restraints_config": [             # group-COM angle: 3 groups, vertex = group 2
+    "angle_restraints_config": [             # group-centroid angle: 3 groups, vertex = group 2
         {
             "atom_selection1": "chain A and resid 1 to 10",
             "atom_selection2": "chain A and resid 40 to 50",
@@ -69,7 +69,7 @@ restraints_config = {
         "vdw": {"weight": 1.0},              # mode defaults to "both"
     },
     # "rmsd_restraints_config": [{"ref_pdb": "ref.pdb", "target_rmsd": 0.0}],
-    # "dihedral_restraints_config": [...],   # group-COM dihedral: 4 groups, axis = 2-3
+    # "dihedral_restraints_config": [...],   # group-centroid dihedral: 4 groups, axis = 2-3
 }
 
 # ONE instance per structure (not a singleton). setup() takes the config dict.
@@ -115,16 +115,16 @@ Distance restraints use a selection DSL to specify atom groups:
 | `flat-bottomed1` | `target_distance1` | No penalty below d1 |
 | `flat-bottomed2` | `target_distance2` | No penalty above d2 |
 
-Distance is calculated between the centers of mass (COM) of the two selected atom groups (`calc_method: "unfixed-absolute"`).
+Distance is calculated between the centroids (unweighted geometric centers) of the two selected atom groups (`calc_method: "unfixed-absolute"`).
 
-The per-entry `move` key picks which group the closed-form COM shift moves: `both`
+The per-entry `move` key picks which group the closed-form centroid shift moves: `both`
 (default, both move) / `1` / `2` (pin the other group — e.g. move only a ligand toward a
 fixed pocket).
 
 ### Group angle / dihedral restraints
 
 `angle_restraints_config` (3 groups, vertex = group 2) and `dihedral_restraints_config`
-(4 groups, axis = group 2–3) restrain the angle/dihedral of the groups' COMs. Same four
+(4 groups, axis = group 2–3) restrain the angle/dihedral of the groups' centroids. Same four
 types as distance (`harmonic` / `flat-bottomed` / `flat-bottomed1` / `flat-bottomed2`),
 but targets are in **degrees** (`target_angle` / `target_dihedral`). `weight` defaults to
 1.0 and translates any group size rigidly. `move` selects which groups are free (default:

@@ -2,7 +2,7 @@
 name: implement-rgi
 description: >-
   Guide for adding restraint-guided inference (RGI) — distance restraints
-  (COM distance between atom groups) and ligand conformer restraints
+  (centroid distance between atom groups) and ligand conformer restraints
   (bond/angle/chiral/intramolecular-VdW toward an ideal geometry) — to a
   diffusion-based structure-prediction tool (boltz / protenix / AlphaFold3 and
   similar samplers). The shared engine `rgi_utils` does all the heavy lifting;
@@ -25,7 +25,7 @@ injects a short gradient-based minimization at each step — right after the mod
 produces `positions_denoised`, before the Euler update — that nudges atoms to
 satisfy user restraints:
 
-- **distance restraint**: the center-of-mass distance between two atom groups is
+- **distance restraint**: the centroid distance between two atom groups is
   pulled toward a target (harmonic / flat-bottomed / lower- / upper-bound).
 - **conformer restraint**: a ligand's bond lengths, bond angles, chiral volumes,
   and intramolecular non-bonded clashes are pulled toward an ideal RDKit
@@ -174,7 +174,7 @@ the setup spec counts (13); undeclared deps / CPU torch builds (14).
     restraint type you requested — a type that built 0 restraints reports a perfect
     `finalize` energy of `0.00000`, so near-zero energy alone does NOT prove a
     restraint is working (pitfall 13);
-  - distance: the predicted structure's COM distance reaches the target;
+  - distance: the predicted structure's centroid distance reaches the target;
   - conformer: spec counts non-zero AND `finalize` bond/angle/chiral energies are
     small, or the ligand RMSD differs between restraint-on and restraint-off runs;
   - batch: put two structures with *different* configs in one run and confirm

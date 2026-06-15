@@ -57,13 +57,13 @@ class DistanceData:
         if _ss is not None:
             self.start_sigma = float(_ss)
         # per-distance stop_sigma (OPTIONAL; default -1 = never released). Releasing a
-        # distance restraint late lets the model relax the COM-driven pull in its final
+        # distance restraint late lets the model relax the centroid-driven pull in its final
         # steps; off by default like rmsd/conformer.
         _stop = config.get("stop_sigma")
         if _stop is not None:
             self.stop_sigma = float(_stop)
         # per-distance move mode (OPTIONAL; default "both"): which group(s) the closed-
-        # form COM shift moves. both/omitted -> 0 (split, both move); 1 -> only
+        # form centroid shift moves. both/omitted -> 0 (split, both move); 1 -> only
         # atom_selection1's group; 2 -> only atom_selection2's group. Accepts int or str
         # (1 / "1"); unknown value raises (silent fallback would move wrong groups).
         _mv = config.get("move")

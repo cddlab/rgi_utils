@@ -120,19 +120,19 @@ def distance_energy(
     dist_type,
     mask,
 ):
-    """COM distance energy between two atom groups. dist_type: 0=harmonic,
+    """Centroid distance energy between two atom groups. dist_type: 0=harmonic,
     1=flat-bottomed, 2=lower-bound, 3=upper-bound."""
     grp1_pos = positions[..., grp1_idx, :]  # (..., n_dist, max_grp, 3)
     grp2_pos = positions[..., grp2_idx, :]
     m1 = grp1_mask[..., None]
     m2 = grp2_mask[..., None]
-    com1 = jnp.sum(grp1_pos * m1, axis=-2) / (
+    centroid1 = jnp.sum(grp1_pos * m1, axis=-2) / (
         jnp.sum(grp1_mask, axis=-1)[..., None] + _EPS
     )
-    com2 = jnp.sum(grp2_pos * m2, axis=-2) / (
+    centroid2 = jnp.sum(grp2_pos * m2, axis=-2) / (
         jnp.sum(grp2_mask, axis=-1)[..., None] + _EPS
     )
-    diff = com2 - com1
+    diff = centroid2 - centroid1
     dist = jnp.sqrt(jnp.sum(diff**2, axis=-1) + _EPS)
     delta_harmonic = dist - target1
     delta_flat = jnp.where(
@@ -152,25 +152,25 @@ def distance_energy(
     return jnp.sum(delta**2 * mask)
 
 
-def _group_com(positions, grp_idx, grp_mask):
-    """Masked-mean centre of mass of a padded atom group (mirrors
-    ``numpy_energy._group_com``). Pure jnp so it stays JIT/scan-able."""
+def _group_centroid(positions, grp_idx, grp_mask):
+    """Masked-mean geometric centroid (unweighted; NOT mass-weighted) of a padded atom group (mirrors
+    ``numpy_energy._group_centroid``). Pure jnp so it stays JIT/scan-able."""
     pos = positions[..., grp_idx, :]  # (..., n, max_grp, 3)
     m = grp_mask[..., None]
     return jnp.sum(pos * m, axis=-2) / (jnp.sum(grp_mask, axis=-1)[..., None] + _EPS)
 
 
-def _move_com(positions, grp_idx, grp_mask, free):
-    """COM of a group for the restraint gradient (mirrors ``torch_energy._move_com``):
-    ``com_eff = com_d + N*(com - com_d)`` un-suppresses the 1/N COM gradient so the group
+def _move_centroid(positions, grp_idx, grp_mask, free):
+    """Centroid of a group for the restraint gradient (mirrors ``torch_energy._move_centroid``):
+    ``centroid_eff = centroid_d + N*(centroid - centroid_d)`` un-suppresses the 1/N centroid gradient so the group
     translates rigidly by the full step (weight=1 drives ANY group size — "move the
     selection as a whole", like distance); ``free``=0 PINS a group (stop-gradient, the move
-    knob). Value == com, so energy value parity holds; group grad parity is torch-vs-jax."""
-    com = _group_com(positions, grp_idx, grp_mask)
-    com_d = jax.lax.stop_gradient(com)
+    knob). Value == centroid, so energy value parity holds; group grad parity is torch-vs-jax."""
+    centroid = _group_centroid(positions, grp_idx, grp_mask)
+    centroid_d = jax.lax.stop_gradient(centroid)
     n = jnp.sum(grp_mask, axis=-1, keepdims=True)  # group size (..., n_restr, 1)
-    com_eff = com_d + n * (com - com_d)  # un-suppress the 1/N COM gradient (rigid step)
-    return jnp.where((free > 0.5)[..., None], com_eff, com_d)
+    centroid_eff = centroid_d + n * (centroid - centroid_d)  # un-suppress the 1/N centroid gradient (rigid step)
+    return jnp.where((free > 0.5)[..., None], centroid_eff, centroid_d)
 
 
 def _group_delta(val, harmonic_dev, target1, target2, geom_type):
@@ -205,14 +205,14 @@ def group_angle_energy(
     positions, grp1_idx, grp2_idx, grp3_idx, grp1_mask, grp2_mask, grp3_mask,
     target1, target2, geom_type, move_free, weight, mask,
 ):
-    """Distance-style flat-bottomed angle between three group COMs (vertex = group 2).
+    """Distance-style flat-bottomed angle between three group centroids (vertex = group 2).
     Mirrors ``numpy_energy.group_angle_energy``; ``move_free`` (n,3) pins groups via the
-    stop-gradient select in ``_move_com``. Pure jnp (JIT/scan/vmap-able)."""
-    com1 = _move_com(positions, grp1_idx, grp1_mask, move_free[..., 0])
-    com2 = _move_com(positions, grp2_idx, grp2_mask, move_free[..., 1])
-    com3 = _move_com(positions, grp3_idx, grp3_mask, move_free[..., 2])
-    rij = com1 - com2
-    rkj = com3 - com2
+    stop-gradient select in ``_move_centroid``. Pure jnp (JIT/scan/vmap-able)."""
+    centroid1 = _move_centroid(positions, grp1_idx, grp1_mask, move_free[..., 0])
+    centroid2 = _move_centroid(positions, grp2_idx, grp2_mask, move_free[..., 1])
+    centroid3 = _move_centroid(positions, grp3_idx, grp3_mask, move_free[..., 2])
+    rij = centroid1 - centroid2
+    rkj = centroid3 - centroid2
     nij = jnp.sqrt(jnp.sum(rij**2, axis=-1) + _EPS)
     nkj = jnp.sqrt(jnp.sum(rkj**2, axis=-1) + _EPS)
     cos_th = jnp.sum(rij * rkj, axis=-1) / (nij * nkj)
@@ -227,13 +227,13 @@ def group_dihedral_energy(
     grp1_mask, grp2_mask, grp3_mask, grp4_mask,
     target1, target2, geom_type, move_free, weight, mask,
 ):
-    """Distance-style flat-bottomed dihedral between 4 group COMs (axis = COM2-COM3).
+    """Distance-style flat-bottomed dihedral between 4 group centroids (axis = centroid2-centroid3).
     harmonic (geom_type 0) is periodicity-safe (deviation wrapped). Mirrors
-    ``numpy_energy.group_dihedral_energy``; ``move_free`` pins via ``_move_com``."""
-    p0 = _move_com(positions, grp1_idx, grp1_mask, move_free[..., 0])
-    p1 = _move_com(positions, grp2_idx, grp2_mask, move_free[..., 1])
-    p2 = _move_com(positions, grp3_idx, grp3_mask, move_free[..., 2])
-    p3 = _move_com(positions, grp4_idx, grp4_mask, move_free[..., 3])
+    ``numpy_energy.group_dihedral_energy``; ``move_free`` pins via ``_move_centroid``."""
+    p0 = _move_centroid(positions, grp1_idx, grp1_mask, move_free[..., 0])
+    p1 = _move_centroid(positions, grp2_idx, grp2_mask, move_free[..., 1])
+    p2 = _move_centroid(positions, grp3_idx, grp3_mask, move_free[..., 2])
+    p3 = _move_centroid(positions, grp4_idx, grp4_mask, move_free[..., 3])
     phi = _dihedral_angle(p0, p1, p2, p3)
     dev = phi - target1
     harmonic_dev = jnp.arctan2(jnp.sin(dev), jnp.cos(dev))  # wrap to [-pi, pi]

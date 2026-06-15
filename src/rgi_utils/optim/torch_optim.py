@@ -196,7 +196,7 @@ class TorchRestraintOptimizer:
         has_dist = self.spec.has_distance()
         has_conf = self.spec.has_conformer()
         has_rmsd = self.spec.has_rmsd()
-        # group-COM angle/dihedral are CG-solved like rmsd (not closed-form), so the
+        # group-centroid angle/dihedral are CG-solved like rmsd (not closed-form), so the
         # solver branch must run when either is present.
         has_group = self.spec.has_group_angle() or self.spec.has_group_dihedral()
         prepared = self._prepared
@@ -211,8 +211,8 @@ class TorchRestraintOptimizer:
             )
             active.copy_(coords[..., self._active_idx, :])  # casts bf16/fp16 -> fp32
 
-            # 1) Distance restraints: closed-form rigid COM translation (no solver, no
-            #    autograd) -- a COM-distance restraint is a 1-DOF problem, so iterating
+            # 1) Distance restraints: closed-form rigid centroid translation (no solver, no
+            #    autograd) -- a centroid-distance restraint is a 1-DOF problem, so iterating
             #    a per-atom CG over it is wasteful. Gated per-restraint inside the shift.
             if has_dist:
                 with torch.no_grad():
@@ -220,7 +220,7 @@ class TorchRestraintOptimizer:
                         active, prepared["distance"], sigma
                     )
 
-            # 2) Conformer (bond/angle/chiral/dihedral/vdw) + RMSD + group-COM
+            # 2) Conformer (bond/angle/chiral/dihedral/vdw) + RMSD + group-centroid
             #    angle/dihedral restraints: gradient solver on the non-distance energy
             #    (distance already applied above; total_energy(include_distance=False)
             #    covers conformer, RMSD AND the group terms). Skipped for distance-only.

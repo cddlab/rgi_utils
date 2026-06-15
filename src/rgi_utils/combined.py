@@ -227,7 +227,7 @@ class CombinedRestraints:
                     "active window (stop_sigma <= sigma <= start_sigma) is EMPTY and "
                     "they NEVER activate — set stop_sigma below start_sigma"
                 )
-        # group-COM angle/dihedral: same per-restraint gate as distance/rmsd, so the
+        # group-centroid angle/dihedral: same per-restraint gate as distance/rmsd, so the
         # same silent-no-op traps apply (start_sigma < 0 never fires; stop > start is an
         # empty window). Counts + ungated finalize energy would both read non-zero.
         for label, arr in (
