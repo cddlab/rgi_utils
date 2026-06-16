@@ -83,21 +83,21 @@ class ChiralArrays:
 
 
 @dataclass
-class DihedralArrays:
-    """Flat-bottomed dihedral (torsion) restraints (padded). Atom order i-j-k-l;
+class CisTransArrays:
+    """Flat-bottomed cis/trans (E/Z) torsion restraints (padded). Atom order i-j-k-l;
     the rotatable bond axis is the j-k pair (columns 1-2).
 
-    Used for cis/trans (E/Z) preservation of acyclic double bonds: the target
-    ``phi0`` is the reference-conformer dihedral, so the bond is held at its
-    input E/Z geometry. The energy is periodicity-safe (the deviation from
+    Holds each acyclic double bond at its input E/Z geometry: the target
+    ``phi0`` is the reference-conformer torsion, so the bond keeps its input
+    cis/trans configuration. The energy is periodicity-safe (the deviation from
     ``phi0`` is wrapped to [-pi, pi] before the flat-bottomed square penalty).
     """
 
-    idx: np.ndarray  # (n_dihedral, 4) int
-    phi0: np.ndarray  # (n_dihedral,) target dihedral in radians
-    slack: np.ndarray  # (n_dihedral,) radians
-    weight: np.ndarray  # (n_dihedral,)
-    mask: np.ndarray  # (n_dihedral,)
+    idx: np.ndarray  # (n_cistrans, 4) int
+    phi0: np.ndarray  # (n_cistrans,) target torsion in radians
+    slack: np.ndarray  # (n_cistrans,) radians
+    weight: np.ndarray  # (n_cistrans,)
+    mask: np.ndarray  # (n_cistrans,)
 
 
 @dataclass
@@ -225,7 +225,7 @@ class GroupDihedralArrays:
     """Centroid dihedral restraints between four atom groups (padded).
 
     The dihedral is formed by the four groups' centroids with the ``centroid2-centroid3``
-    line as the rotatable axis (``centroid1-centroid2-centroid3-centroid4``), mirroring ``DihedralArrays``
+    line as the rotatable axis (``centroid1-centroid2-centroid3-centroid4``), mirroring ``CisTransArrays``
     (i-j-k-l) but on group centroids. The penalty mirrors the distance restraint's four
     ``geom_type`` codes with ``target1``/``target2`` in radians. The ``harmonic`` code
     is periodicity-safe (the deviation ``phi - target1`` is wrapped to [-pi, pi] before
@@ -269,13 +269,13 @@ class RestraintSpec:
     bond: BondArrays | None = None
     angle: AngleArrays | None = None
     chiral: ChiralArrays | None = None
-    dihedral: DihedralArrays | None = None
+    cistrans: CisTransArrays | None = None
     vdw: VdwArrays | None = None
     vdw_config: VdwConfig | None = None
     distance: DistanceArrays | None = None
     rmsd: RmsdArrays | None = None
     # centroid angle/dihedral restraints between atom GROUPS (distinct from the conformer
-    # angle/dihedral above, which act on single ligand atoms). Each carries its own
+    # angle/cistrans above, which act on single ligand atoms). Each carries its own
     # per-restraint start_sigma/stop_sigma like distance/rmsd.
     group_angle: GroupAngleArrays | None = None
     group_dihedral: GroupDihedralArrays | None = None
@@ -287,12 +287,12 @@ class RestraintSpec:
     conf_stop_sigma: float = -1.0
 
     def has_conformer(self) -> bool:
-        """True if any conformer (bond/angle/chiral/dihedral/vdw) restraint exists."""
+        """True if any conformer (bond/angle/chiral/cistrans/vdw) restraint exists."""
         if self.vdw_config is not None and self.vdw_config.weight > 0:
             return True
         return any(
             arr is not None and arr.mask.sum() > 0
-            for arr in (self.bond, self.angle, self.chiral, self.dihedral, self.vdw)
+            for arr in (self.bond, self.angle, self.chiral, self.cistrans, self.vdw)
         )
 
     def has_distance(self) -> bool:

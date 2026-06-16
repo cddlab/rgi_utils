@@ -50,7 +50,7 @@ schema is identical to the other tools.
 
 A ligand = one token/atom, so `token_bonds` carries intra-ligand connectivity and bond ORDERS ride
 on `ChainInfo.ligand_bond_orders` (CCD via `get_ligand_ccd_bonds`, SMILES via Kekulized 3-tuples) —
-so the conformer dihedral (cis/trans) term works for both CCD and SMILES ligands.
+so the conformer cistrans term works for both CCD and SMILES ligands.
 
 The `RESTRAINTS_CONFIG` dict below writes **every usable variable** with a concrete value (distance
 / angle / dihedral / conformer / RMSD); see [`config.md`](config.md) for the
@@ -129,7 +129,7 @@ RESTRAINTS_CONFIG = {
         "bond": {"weight": 1.0, "slack": 0.0},
         "angle": {"weight": 1.0, "slack": 0.0},
         "chiral": {"weight": 1.0, "slack": 0.05},
-        "dihedral": {"weight": 1.0, "slack": 0.0},
+        "cistrans": {"weight": 1.0, "slack": 0.0},
         "vdw": {"weight": 1.0},
     },
     "rmsd_restraints_config": [

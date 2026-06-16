@@ -27,7 +27,7 @@ from rgi_utils.spec import (
     AngleArrays,
     BondArrays,
     ChiralArrays,
-    DihedralArrays,
+    CisTransArrays,
     DistanceArrays,
     GroupAngleArrays,
     GroupDihedralArrays,
@@ -64,10 +64,10 @@ def _chiral_vol(crds: np.ndarray, c: int, n1: int, n2: int, n3: int) -> float:
     return float(np.dot(v1, np.cross(v2, v3)))
 
 
-def _dihedral_rad(crds: np.ndarray, i: int, j: int, k: int, ll: int) -> float:
-    """Signed dihedral angle (radians) for atoms i-j-k-ll about the j-k axis.
+def _cistrans_rad(crds: np.ndarray, i: int, j: int, k: int, ll: int) -> float:
+    """Signed torsion angle (radians) for atoms i-j-k-ll about the j-k axis.
 
-    Identical formula to the energy backends' ``dihedral_energy`` so the target
+    Identical formula to the energy backends' ``cistrans_energy`` so the target
     computed here equals the value the energy sees at the reference conformer
     (residual starts at zero before any perturbation).
     """
@@ -88,17 +88,17 @@ def _dihedral_rad(crds: np.ndarray, i: int, j: int, k: int, ll: int) -> float:
 
 
 def _extract_conformer(ligand_confs: list[LigandConf]):
-    """Return bond/angle/chiral/dihedral restraint tuples in GLOBAL atom indices."""
+    """Return bond/angle/chiral/cistrans restraint tuples in GLOBAL atom indices."""
     bonds = []  # (g0, g1, r0)
     angles = []  # (g0, g1, g2, th0)
     chirals = []  # (g0, g1, g2, g3, vol0)
-    dihedrals = []  # (g0, g1, g2, g3, phi0)
+    cistrans = []  # (g0, g1, g2, g3, phi0)
 
     for lc in ligand_confs:
         mol = lc.mol
         crds = np.asarray(lc.conf_coords, dtype=np.float64)
         gidx = np.asarray(lc.global_indices, dtype=np.int64)
-        # Derive the bond/angle/chiral/dihedral TARGETS from a UFF-relaxed copy of the
+        # Derive the bond/angle/chiral/cistrans TARGETS from a UFF-relaxed copy of the
         # tool's conformer. Each tool's cached conformer carries its own idiosyncrasies
         # (the boltz v2 ~/.boltz/mols cache Kekule-localizes aromatic rings ~1.34/1.48;
         # other tools' ref_pos has non-ideal bond/angle lengths), so without this the
@@ -175,8 +175,8 @@ def _extract_conformer(ligand_confs: list[LigandConf]):
             # chiral combination enumeration: an order-independent restraint set.
             for i in nbr_j:
                 for ll in nbr_k:
-                    phi0 = _dihedral_rad(crds, i, j, k, ll)
-                    dihedrals.append(
+                    phi0 = _cistrans_rad(crds, i, j, k, ll)
+                    cistrans.append(
                         (
                             int(gidx[i]),
                             int(gidx[j]),
@@ -186,7 +186,7 @@ def _extract_conformer(ligand_confs: list[LigandConf]):
                         )
                     )
 
-    return bonds, angles, chirals, dihedrals
+    return bonds, angles, chirals, cistrans
 
 
 def _pad_groups(restraints, n_groups, g2l):
@@ -427,16 +427,16 @@ def build_spec(
     asl = cfg.get("angle", {}).get("slack", 0.0)
     cw = cfg.get("chiral", {}).get("weight", 0.1)
     csl = cfg.get("chiral", {}).get("slack", 0.05)
-    # Dihedral (cis/trans) is ON by default like bond/angle/chiral; set weight<=0
+    # Cis/trans (E/Z) is ON by default like bond/angle/chiral; set weight<=0
     # to disable. slack is in radians (0 = pure harmonic toward the reference).
-    dw = float((cfg.get("dihedral", {}) or {}).get("weight", 0.1) or 0.0)
-    dsl = float((cfg.get("dihedral", {}) or {}).get("slack", 0.0) or 0.0)
+    dw = float((cfg.get("cistrans", {}) or {}).get("weight", 0.1) or 0.0)
+    dsl = float((cfg.get("cistrans", {}) or {}).get("slack", 0.0) or 0.0)
     vdw_weight = float((cfg.get("vdw", {}) or {}).get("weight", 0.0) or 0.0)
 
-    bonds, angles, chirals, dihedrals = _extract_conformer(ligand_confs)
+    bonds, angles, chirals, cistrans = _extract_conformer(ligand_confs)
     # weight<=0 means "disable": drop the term BEFORE the active_sites union so its
     # atoms do not become optimisable and it is never iterated — uniform across all
-    # conformer terms (bond/angle/chiral/dihedral). Defaults are >0, so this only
+    # conformer terms (bond/angle/chiral/cistrans). Defaults are >0, so this only
     # fires when a weight is explicitly set to 0.
     if bw <= 0:
         bonds = []
@@ -445,7 +445,7 @@ def build_spec(
     if cw <= 0:
         chirals = []
     if dw <= 0:
-        dihedrals = []
+        cistrans = []
 
     # ---- collect every referenced global atom -> active_sites -----------------
     active: set[int] = set()
@@ -455,7 +455,7 @@ def build_spec(
         active.update((g0, g1, g2))
     for g0, g1, g2, g3, _ in chirals:
         active.update((g0, g1, g2, g3))
-    for g0, g1, g2, g3, _ in dihedrals:
+    for g0, g1, g2, g3, _ in cistrans:
         active.update((g0, g1, g2, g3))
     for dr in distance_restraints:
         active.update(int(s) for s in dr.target_sites1)
@@ -539,18 +539,18 @@ def build_spec(
             weight=np.full(len(chirals), cw),
             mask=np.ones(len(chirals)),
         )
-    dihedral = None
-    if dihedrals:
+    cistrans_arr = None
+    if cistrans:
         idx = np.array(
-            [[g2l[g0], g2l[g1], g2l[g2], g2l[g3]] for g0, g1, g2, g3, _ in dihedrals],
+            [[g2l[g0], g2l[g1], g2l[g2], g2l[g3]] for g0, g1, g2, g3, _ in cistrans],
             dtype=np.int64,
         )
-        dihedral = DihedralArrays(
+        cistrans_arr = CisTransArrays(
             idx=idx,
-            phi0=np.array([p for _, _, _, _, p in dihedrals]),
-            slack=np.full(len(dihedrals), dsl),
-            weight=np.full(len(dihedrals), dw),
-            mask=np.ones(len(dihedrals)),
+            phi0=np.array([p for _, _, _, _, p in cistrans]),
+            slack=np.full(len(cistrans), dsl),
+            weight=np.full(len(cistrans), dw),
+            mask=np.ones(len(cistrans)),
         )
 
     # ---- distance arrays (padded, local indices) ------------------------------
@@ -688,7 +688,7 @@ def build_spec(
         bond=bond,
         angle=angle,
         chiral=chiral,
-        dihedral=dihedral,
+        cistrans=cistrans_arr,
         distance=distance,
         rmsd=rmsd,
         group_angle=group_angle,
@@ -707,13 +707,13 @@ def build_spec(
         vdw_parts.append(f"{len(vdw_arrays.idx)}intra")
     vdw_desc = "+".join(vdw_parts) if vdw_parts else "off"
     logger.info(
-        "built spec: n_active=%d bonds=%d angles=%d chirals=%d dihedrals=%d "
+        "built spec: n_active=%d bonds=%d angles=%d chirals=%d cistrans=%d "
         "distances=%d rmsd=%d group_angle=%d group_dihedral=%d vdw=%s",
         spec.n_active,
         len(bonds),
         len(angles),
         len(chirals),
-        len(dihedrals),
+        len(cistrans),
         len(distance_restraints),
         len(rmsd_restraints),
         len(angle_restraints),

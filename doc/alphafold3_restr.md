@@ -123,7 +123,7 @@ whole-structure RMSD restraint.
       "bond": { "weight": 1.0, "slack": 0.0 },
       "angle": { "weight": 1.0, "slack": 0.0 },
       "chiral": { "weight": 1.0, "slack": 0.05 },
-      "dihedral": { "weight": 1.0, "slack": 0.0 },
+      "cistrans": { "weight": 1.0, "slack": 0.0 },
       "vdw": { "weight": 1.0 }
     },
     "rmsd_restraints_config": [

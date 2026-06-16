@@ -23,7 +23,7 @@ _SPEC_SCHEMA = [
      [("idx", "i"), ("th0", "f"), ("slack", "f"), ("weight", "f"), ("mask", "f")]),
     ("chiral", "chiral",
      [("idx", "i"), ("vol0", "f"), ("slack", "f"), ("weight", "f"), ("mask", "f")]),
-    ("dihedral", "dihedral",
+    ("cistrans", "cistrans",
      [("idx", "i"), ("phi0", "f"), ("slack", "f"), ("weight", "f"), ("mask", "f")]),
     ("vdw", "vdw",
      [("idx", "i"), ("r_min", "f"), ("weight", "f"), ("mask", "f")]),
@@ -84,7 +84,7 @@ _TERMS = [
     ("bond", "bond_energy", ["idx", "r0", "slack", "weight", "half"], "conf"),
     ("angle", "angle_energy", ["idx", "th0", "slack", "weight"], "conf"),
     ("chiral", "chiral_energy", ["idx", "vol0", "slack", "weight"], "conf"),
-    ("dihedral", "dihedral_energy", ["idx", "phi0", "slack", "weight"], "conf"),
+    ("cistrans", "cistrans_energy", ["idx", "phi0", "slack", "weight"], "conf"),
     ("vdw", "vdw_energy", ["idx", "r_min", "weight"], "conf"),
     ("distance", "distance_energy",
      ["grp1_idx", "grp2_idx", "grp1_mask", "grp2_mask", "target1", "target2",
@@ -133,7 +133,7 @@ def term_energies(fns, prepared, positions, cg, sigma_gate, include_distance):
 
 # the float keys energy_breakdown reports, in display order (all start at 0.0)
 BREAKDOWN_KEYS = (
-    "bond", "angle", "chiral", "dihedral", "vdw", "distance", "rmsd",
+    "bond", "angle", "chiral", "cistrans", "vdw", "distance", "rmsd",
     "group_angle", "group_dihedral",
 )
 

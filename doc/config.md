@@ -111,7 +111,7 @@ Restraint-type block (exactly one):
 
 The **angle of 3 group centroids** (vertex = group 2) or the **dihedral of 4 group centroids** (axis
 = groups 2–3). These are the group-centroid analogues of the distance restraint — distinct from the
-per-ligand-atom conformer `angle`/`dihedral` terms. Targets are in **degrees**. CG-solved; rigid
+per-ligand-atom conformer `angle`/`cistrans` terms. Targets are in **degrees**. CG-solved; rigid
 group motion means `weight: 1.0` drives any group size.
 
 | key | type | default | meaning |
@@ -140,7 +140,7 @@ Each term is a sub-dict; a term with `weight <= 0` is disabled (and not built).
 | `bond` | `weight` (0.05), `slack` (0.0 Å) | bond lengths toward ideal; flat-bottomed by `slack` |
 | `angle` | `weight` (0.05), `slack` (0.0 rad) | bond angles toward ideal |
 | `chiral` | `weight` (0.1), `slack` (0.05) | chiral volume (stereochemistry) — holds each stereocentre's handedness |
-| `dihedral` | `weight` (0.1), `slack` (0.0 rad) | **cis/trans (E/Z)** of acyclic, non-aromatic double bonds (needs real bond orders; detects 0 for ligands with none, e.g. ATP/NAD/GLN) |
+| `cistrans` | `weight` (0.1), `slack` (0.0 rad) | **cis/trans (E/Z)** of acyclic, non-aromatic double bonds (needs real bond orders; detects 0 for ligands with none, e.g. ATP/NAD/GLN) |
 | `vdw` | `weight` (**0.0**, off), `mode` (`"both"`), `scale` (0.75), `dmax` (5.0 Å) | non-bonded clash avoidance |
 
 `vdw.mode`: `"intramolecular"` (static ligand-internal pairs, all backends), `"ligand_protein"`

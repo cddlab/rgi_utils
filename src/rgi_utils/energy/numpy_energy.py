@@ -69,8 +69,8 @@ def chiral_energy(positions, idx, vol0, slack, weight, mask):
     return np.sum(weight * delta**2 * mask)
 
 
-def dihedral_energy(positions, idx, phi0, slack, weight, mask):
-    """Flat-bottomed dihedral (torsion) energy; bond axis is columns 1-2.
+def cistrans_energy(positions, idx, phi0, slack, weight, mask):
+    """Flat-bottomed cis/trans (E/Z) torsion energy; bond axis is columns 1-2.
 
     Periodicity-safe: the deviation ``phi - phi0`` is wrapped to [-pi, pi] before
     the flat-bottomed square penalty, so e.g. +179 deg and -179 deg read as a 2 deg
@@ -194,7 +194,7 @@ def _group_delta(val, harmonic_dev, target1, target2, geom_type):
 def _dihedral_angle(p0, p1, p2, p3):
     """Torsion angle (radians) about the p1-p2 axis; periodicity handled by the caller.
     Degenerate (collinear) geometry is nudged to keep the gradient finite + equal across
-    backends, as in ``dihedral_energy``."""
+    backends, as in ``cistrans_energy``."""
     b1, b2, b3 = p1 - p0, p2 - p1, p3 - p2
     n1 = np.cross(b1, b2)
     n2 = np.cross(b2, b3)
@@ -303,7 +303,7 @@ _LEAF_FNS = {
     "bond_energy": bond_energy,
     "angle_energy": angle_energy,
     "chiral_energy": chiral_energy,
-    "dihedral_energy": dihedral_energy,
+    "cistrans_energy": cistrans_energy,
     "vdw_energy": vdw_energy,
     "distance_energy": distance_energy,
     "rmsd_energy": rmsd_energy,
@@ -338,7 +338,7 @@ def total_energy(positions, prepared, sigma=None, include_distance=True):
 
     ``sigma`` is the current diffusion noise level: each restraint contributes only
     when ``sigma <= start_sigma`` (a 0/1 gate folded into its mask). The conformer
-    terms (bond/angle/chiral/dihedral/vdw) share one ``conf_start_sigma``; distance
+    terms (bond/angle/chiral/cistrans/vdw) share one ``conf_start_sigma``; distance
     and RMSD have their own per-restraint gate. RMSD is summed regardless of
     ``include_distance`` (the CG solver calls with ``include_distance=False``).
     ``sigma=None`` disables gating (all active).
@@ -354,7 +354,7 @@ def total_energy(positions, prepared, sigma=None, include_distance=True):
 
 def energy_breakdown(positions, prepared, sigma=None):
     """Per-term restraint energies (same maths + gating as ``total_energy``), as a
-    ``{bond, angle, chiral, dihedral, vdw, distance, rmsd}`` float dict for callers
+    ``{bond, angle, chiral, cistrans, vdw, distance, rmsd}`` float dict for callers
     that report each term's contribution (e.g. ``finalize`` logging)."""
     cg, sigma_gate = _gates(prepared, sigma)
     out = dict.fromkeys(BREAKDOWN_KEYS, 0.0)

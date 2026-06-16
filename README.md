@@ -6,7 +6,7 @@ Restraint-Guided Inference (RGI) utilities for diffusion-based structure predict
 
 Five restraint types, all minimized during the denoising loop to guide coordinate optimization:
 
-- **conformer** — ligand bond / angle / chiral-volume / dihedral (cis/trans) toward an
+- **conformer** — ligand bond / angle / chiral-volume / cistrans (E/Z) toward an
   ideal RDKit geometry, plus **VdW** non-bonded clash avoidance (intramolecular and/or
   dynamic ligand-protein; `mode` defaults to `both`).
 - **RMSD** — Kabsch-superposed RMSD of a group toward a reference PDB.
@@ -65,7 +65,7 @@ restraints_config = {
         "bond": {"weight": 1.0},
         "angle": {"weight": 1.0},
         "chiral": {"weight": 1.0},
-        "dihedral": {"weight": 1.0},         # ligand cis/trans (acyclic C=C only)
+        "cistrans": {"weight": 1.0},         # ligand cis/trans (acyclic C=C only)
         "vdw": {"weight": 1.0},              # mode defaults to "both"
     },
     # "rmsd_restraints_config": [{"ref_pdb": "ref.pdb", "target_rmsd": 0.0}],
@@ -128,7 +128,7 @@ fixed pocket).
 
 `angle_restraints_config` (3 groups, vertex = group 2) and `dihedral_restraints_config`
 (4 groups, axis = group 2–3) restrain the angle/dihedral of the groups' centroids — distinct
-from the per-atom `angle` / `dihedral` *conformer* terms (internally these are the
+from the per-atom `angle` / `cistrans` *conformer* terms (internally these are the
 `group_angle` / `group_dihedral` energy terms). Same four
 types as distance (`harmonic` / `flat-bottomed` / `flat-bottomed1` / `flat-bottomed2`),
 but targets are in **degrees** (`target_angle` / `target_dihedral`). `weight` defaults to

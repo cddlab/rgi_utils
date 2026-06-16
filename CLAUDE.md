@@ -38,11 +38,11 @@ Design = **3 layers + autodiff + static shapes + GPU-complete optimization**:
 
 2. **Energy layer** (`energy/{numpy,torch,jax}_energy.py`, differentiable pure
    functions): identical flat-bottomed maths in all three backends —
-   `bond/angle/chiral/dihedral/vdw/distance/rmsd/group_angle/group_dihedral` (dihedral =
+   `bond/angle/chiral/cistrans/vdw/distance/rmsd/group_angle/group_dihedral` (cistrans =
    periodicity-safe torsion for cis/trans; rmsd = Kabsch-superposed RMSD toward a target,
    fit/calc separable; `group_angle`/`group_dihedral` = the angle/dihedral of 3/4 atom
    GROUPS' centroids — the angular analogue of the centroid-distance restraint, distinct from the
-   per-atom `angle`/`dihedral` conformer terms). `prepare_spec(spec)` → backend arrays;
+   per-atom `angle`/`cistrans` conformer terms). `prepare_spec(spec)` → backend arrays;
    `total_energy(positions, prepared)` → scalar. Gradients come from autodiff
    (no hand-written grad). `numpy_energy` is the reference;
    `tests/test_backend_parity.py` checks energy+grad agreement across backends.
@@ -65,12 +65,12 @@ Design = **3 layers + autodiff + static shapes + GPU-complete optimization**:
 Supporting modules:
 - **`featurizer.py`**: `build_spec(ligand_confs, distance_restraints, conformer_config,
   elements, conf_start_sigma, rmsd_restraints)` — the single place RDKit mols become bond/angle/
-  chiral/dihedral restraints (global indices, multi-ligand) and the dynamic
-  ligand-protein `VdwConfig` is assembled. Dihedral (cis/trans) detection keys on
+  chiral/cistrans restraints (global indices, multi-ligand) and the dynamic
+  ligand-protein `VdwConfig` is assembled. Cis/trans detection keys on
   acyclic, non-aromatic `BondType.DOUBLE` bonds and targets the reference-conformer
   torsion; it needs real bond orders, which every tool supplies — chai via its adapter's
   source-SMILES path (`chai/adapter.py` `_mol_from_smiles`, Kekulized orders), the
-  geometry-perceived fallback (no SMILES) being all-single so `dihedrals=0`.
+  geometry-perceived fallback (no SMILES) being all-single so `cistrans=0`.
 - **`config.py`**: `RestraintsConfig.from_dict()` parses the shared
   `restraints_config` (one source of truth for boltz YAML / protenix JSON / AF3).
 - **`combined.py`**: `CombinedRestraints` entry point — **instance-scoped, one per
@@ -145,7 +145,7 @@ Supporting modules:
 
 VdW is **not a sixth restraint type** — it is the non-bonded term of the **conformer**
 restraint, configured under `conformer_restraints_config.vdw` (one of bond/angle/chiral/
-dihedral/vdw). It has two flavours:
+cistrans/vdw). It has two flavours:
 
 - **Intramolecular** (`mode: intramolecular`): static non-bonded ligand-internal pairs
   (topo distance > 2, within `dmax`), built in `featurizer.py` and carried in `spec.vdw`
@@ -231,7 +231,7 @@ parity across backends.
   its grad parity is torch-vs-jax (not numpy-FD) — the rmsd carve-out (`test_optim`).
   Caveat: a degenerate geometry — coincident centroids, or centroid1-centroid2-centroid3 collinear for the
   dihedral — gives a near-zero / ill-defined gradient (same failure mode as the conformer
-  dihedral; the clip/atan2 guards keep it finite but it won't move), so pick groups whose
+  cistrans; the clip/atan2 guards keep it finite but it won't move), so pick groups whose
   centroids are non-collinear. **Rigid group motion / weight independence** (`_move_centroid`
   `centroid_eff`): the centroid gradient is naturally `1/N` per atom (dcentroid/datom = 1/N), so a large
   group would barely move per CG step (needing weight ~ N). `_move_centroid` cancels the `1/N`

@@ -29,7 +29,7 @@ boltz reads RGI from a **top-level `restraints_config:` key nested inside the in
 same YAML that lists the sequences). Two things turn restraints on:
 
 1. **Per ligand** — add `conformer_restraints: true` next to the ligand's `ccd`/`smiles` to enable
-   the bond/angle/chiral/dihedral/VdW conformer restraints for that ligand.
+   the bond/angle/chiral/cistrans/VdW conformer restraints for that ligand.
 2. **The `restraints_config:` block** — the distance / angle / dihedral / conformer /
    RMSD restraints. The example below writes **every usable variable** with a concrete value; see
    [`config.md`](config.md) for what each does, the alternative restraint types (`flat-bottomed`
@@ -98,7 +98,7 @@ restraints_config:
     bond: {weight: 1.0, slack: 0.0}
     angle: {weight: 1.0, slack: 0.0}
     chiral: {weight: 1.0, slack: 0.05}
-    dihedral: {weight: 1.0, slack: 0.0}
+    cistrans: {weight: 1.0, slack: 0.0}
     vdw: {weight: 1.0}
   rmsd_restraints_config:
     - ref_pdb: rmsd_ref.pdb

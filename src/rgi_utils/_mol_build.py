@@ -78,9 +78,9 @@ def build_ligand_mol(elements, coords, bonds_local, perceive_bonds=False):
         # NOTE: only CONNECTIVITY is perceived, not bond ORDERS — chai exposes
         # heavy atoms only (no H) and no bonds, so RDKit DetermineBonds cannot
         # solve valences (it reads the H-less skeleton as highly charged and
-        # throws). Consequently every perceived bond is SINGLE, so the dihedral
+        # throws). Consequently every perceived bond is SINGLE, so the cistrans
         # (cis/trans) restraint — which keys on BondType.DOUBLE — finds nothing
-        # via THIS branch (dihedrals=0, graceful). chai's adapter therefore PREFERS
+        # via THIS branch (cistrans=0, graceful). chai's adapter therefore PREFERS
         # its source-SMILES path (chai/adapter.py _mol_from_smiles), which carries
         # real Kekulized bond orders + E/Z, and only falls back to this perceive
         # branch when no SMILES is available; bond/angle/chiral (order-agnostic) work
@@ -119,7 +119,7 @@ def generate_ideal_conformer(mol, target_mol=None):
 
     This is the SMILES-ligand restraint TARGET source. A model's own reference conformer
     (protenix ``atom_array.coord`` / af3,openfold ``ref_pos``) is often not the ideal
-    isomer (e.g. a maleate predicted trans), so its bond/angle/dihedral targets are wrong
+    isomer (e.g. a maleate predicted trans), so its bond/angle/cistrans targets are wrong
     even though the restraint converges to them. Embedding from the correct-stereo mol
     gives the ideal geometry (cis maleate ~0deg) exactly like boltz's ligand_mol
     conformer. It does NOT call AssignStereochemistryFrom3D (that would re-perceive stereo

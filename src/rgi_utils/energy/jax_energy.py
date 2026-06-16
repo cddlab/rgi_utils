@@ -67,11 +67,11 @@ def chiral_energy(positions, idx, vol0, slack, weight, mask):
     return jnp.sum(weight * delta**2 * mask)
 
 
-def dihedral_energy(positions, idx, phi0, slack, weight, mask):
-    """Flat-bottomed dihedral (torsion) energy; bond axis is columns 1-2.
+def cistrans_energy(positions, idx, phi0, slack, weight, mask):
+    """Flat-bottomed cis/trans (E/Z) torsion energy; bond axis is columns 1-2.
 
     Periodicity-safe: the deviation ``phi - phi0`` is wrapped to [-pi, pi] before
-    the flat-bottomed square penalty. Mirrors ``numpy_energy.dihedral_energy``.
+    the flat-bottomed square penalty. Mirrors ``numpy_energy.cistrans_energy``.
     Pure jnp so it stays JIT/vmap-able inside the AF3 scan.
     """
     p0 = positions[..., idx[:, 0], :]
@@ -189,7 +189,7 @@ def _group_delta(val, harmonic_dev, target1, target2, geom_type):
 
 
 def _dihedral_angle(p0, p1, p2, p3):
-    """Torsion angle (radians) about the p1-p2 axis (mirrors ``dihedral_energy``)."""
+    """Torsion angle (radians) about the p1-p2 axis (mirrors ``cistrans_energy``)."""
     b1, b2, b3 = p1 - p0, p2 - p1, p3 - p2
     n1 = jnp.cross(b1, b2)
     n2 = jnp.cross(b2, b3)
@@ -287,7 +287,7 @@ _LEAF_FNS = {
     "bond_energy": bond_energy,
     "angle_energy": angle_energy,
     "chiral_energy": chiral_energy,
-    "dihedral_energy": dihedral_energy,
+    "cistrans_energy": cistrans_energy,
     "vdw_energy": vdw_energy,
     "distance_energy": distance_energy,
     "rmsd_energy": rmsd_energy,
@@ -334,7 +334,7 @@ def total_energy(positions, prepared, sigma=None, include_distance=True):
 
 def energy_breakdown(positions, prepared, sigma=None):
     """Per-term restraint energies (same maths + gating as ``total_energy``), as a
-    ``{bond, angle, chiral, dihedral, vdw, distance, rmsd}`` python-float dict. Not
+    ``{bond, angle, chiral, cistrans, vdw, distance, rmsd}`` python-float dict. Not
     for use inside JIT (the floats force a device->host sync); for diagnostics."""
     cg, sigma_gate = _gates(prepared, positions, sigma)
     out = dict.fromkeys(BREAKDOWN_KEYS, 0.0)

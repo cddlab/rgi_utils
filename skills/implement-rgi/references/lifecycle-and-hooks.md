@@ -35,7 +35,7 @@ exist only as a back-compat singleton shim — do not build new code on them.
 
 ## `finalize(coords, step)`
 - Runs only when `verbose`. Logs the per-term energy
-  `bond=.. angle=.. chiral=.. dihedral=.. vdw=.. distance=.. rmsd=.. group_angle=..
+  `bond=.. angle=.. chiral=.. cistrans=.. vdw=.. distance=.. rmsd=.. group_angle=..
   group_dihedral=.. total=..`, so you can see how
   well each restraint type is satisfied in the final structure. The sum equals
   the total restraint energy (checked against `total_energy`).
@@ -121,7 +121,7 @@ restraints_config:
     bond:     {weight: 1.0}
     angle:    {weight: 1.0}
     chiral:   {weight: 1.0}
-    dihedral: {weight: 1.0}                          # cis/trans (E/Z): holds acyclic, non-aromatic double bonds at their reference dihedral. ON by default; weight<=0 disables. optional slack (radians).
+    cistrans: {weight: 1.0}                          # cis/trans (E/Z): holds acyclic, non-aromatic double bonds at their reference torsion. ON by default; weight<=0 disables. optional slack (radians).
     vdw:      {weight: 1.0}                          # mode defaults to "both" (intramolecular + dynamic ligand-protein); both run on torch AND jax
   rmsd_restraints_config:           # Kabsch-superposed RMSD of a group toward a reference PDB
     - ref_pdb: "ref.pdb"            # required; parsed by the dependency-free read_pdb_atoms
@@ -134,13 +134,13 @@ restraints_config:
       #   (a `backbone` / `name CA` fit superposes on main chain only). All omitted -> whole structure.
 ```
 
-The `dihedral` term needs the ligand mol to carry real bond ORDERS (it keys on
+The `cistrans` term needs the ligand mol to carry real bond ORDERS (it keys on
 `BondType.DOUBLE`). boltz (CCD mol), protenix/openfold (biotite BondList), AF3
 (SMILES/CCD) and esmfold2 (CCD via `get_ligand_ccd_bonds`, SMILES via Kekulized
 3-tuples) all supply them. chai's tokenized context drops bond orders, so its
 adapter rebuilds the mol from the source SMILES (`_mol_from_smiles`, real Kekulized
 orders) when one is supplied; only the no-SMILES fallback perceives an all-single
-topology where `dihedral` finds nothing (graceful: `dihedrals=0`).
+topology where `cistrans` finds nothing (graceful: `cistrans=0`).
 
 The selection DSL (`selection.py`) supports `chain`, `resid N`, `resid A to B`,
 `index`, `name` (atom name, e.g. `name CA` / `name N CA C O`), the molecule-type

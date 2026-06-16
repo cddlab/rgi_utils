@@ -2,7 +2,7 @@
 
 The SMILES-ligand restraint target must keep the SMILES stereo (cis/trans, chirality);
 a model's predicted conformer often does not (e.g. maleate predicted trans). These guard
-that the helper embeds the correct isomer so bond/angle/chiral/dihedral targets are ideal.
+that the helper embeds the correct isomer so bond/angle/chiral/cistrans targets are ideal.
 """
 
 from __future__ import annotations

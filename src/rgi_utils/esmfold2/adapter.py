@@ -22,9 +22,9 @@ Like the other adapters it imports no framework: tensors are duck-typed to numpy
 
 Conformer bonds come from ``token_bonds`` (the real CCD/SMILES connectivity) rather
 than perceived geometry — more reliable than the chai path. ``token_bonds`` is
-binary, so every bond is order 1: bond/angle/chiral apply, but the dihedral
+binary, so every bond is order 1: bond/angle/chiral apply, but the cistrans
 (cis/trans) term — which keys on ``BondType.DOUBLE`` — finds nothing on ESMFold2
-ligands (dihedrals=0), the same limitation as chai.
+ligands (cistrans=0), the same limitation as chai.
 """
 
 from __future__ import annotations

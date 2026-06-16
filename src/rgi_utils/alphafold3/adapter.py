@@ -168,7 +168,7 @@ class AF3RestraintAdapter:
             # here because af3's ligand atoms are in TOKEN order, which differs from the
             # SMILES mol's RDKit-canonical order, and for SYMMETRIC ligands (e.g.
             # fumarate/maleate) a connectivity-only substructure match can't pick the
-            # correct 1:1 atom mapping. So af3 keeps ref_pos as the dihedral target =>
+            # correct 1:1 atom mapping. So af3 keeps ref_pos as the cistrans target =>
             # cis/trans is only partially corrected on af3 (documented limitation).
             if mol.GetNumConformers() == 0 and mol.GetNumAtoms() == len(conf_crds):
                 conf = Chem.Conformer(mol.GetNumAtoms())

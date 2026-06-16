@@ -220,7 +220,7 @@ class TorchRestraintOptimizer:
                         active, prepared["distance"], sigma
                     )
 
-            # 2) Conformer (bond/angle/chiral/dihedral/vdw) + RMSD + group-centroid
+            # 2) Conformer (bond/angle/chiral/cistrans/vdw) + RMSD + group-centroid
             #    angle/dihedral restraints: gradient solver on the non-distance energy
             #    (distance already applied above; total_energy(include_distance=False)
             #    covers conformer, RMSD AND the group terms). Skipped for distance-only.

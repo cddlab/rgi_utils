@@ -15,7 +15,7 @@ from rgi_utils.spec import (
     AngleArrays,
     BondArrays,
     ChiralArrays,
-    DihedralArrays,
+    CisTransArrays,
     DistanceArrays,
     GroupAngleArrays,
     GroupDihedralArrays,
@@ -58,7 +58,7 @@ def _make_spec(include_groups: bool = True) -> RestraintSpec:
     )
     # non-trivial phi0 so the random positions violate the torsion (energy > 0);
     # second entry is masked-out padding (mask=0) to exercise the padding path.
-    dihedral = DihedralArrays(
+    cistrans = CisTransArrays(
         idx=np.array([[0, 1, 2, 3], [4, 5, 6, 7]], dtype=np.int64),
         phi0=np.array([0.7, -2.5]),
         slack=np.array([0.0, 0.2]),
@@ -133,7 +133,7 @@ def _make_spec(include_groups: bool = True) -> RestraintSpec:
         bond=bond,
         angle=angle,
         chiral=chiral,
-        dihedral=dihedral,
+        cistrans=cistrans,
         vdw=vdw,
         distance=distance,
         group_angle=group_angle,
@@ -270,10 +270,10 @@ def test_sigma_gating_parity():
     assert e_all(50.0)[0] <= e_all(3.0)[0]
 
 
-def test_dihedral_degenerate_gradient_parity():
-    """Degenerate dihedral geometry must give FINITE, mutually-equal gradients in
+def test_cistrans_degenerate_gradient_parity():
+    """Degenerate cis/trans geometry must give FINITE, mutually-equal gradients in
     all three backends. Regression for the atan2(0,0) divergence (jax=NaN vs
-    torch=0) at exact collinearity / coincident atoms in dihedral_energy."""
+    torch=0) at exact collinearity / coincident atoms in cistrans_energy."""
     torch = pytest.importorskip("torch")
     jax = pytest.importorskip("jax")
     jax.config.update("jax_enable_x64", True)
@@ -281,11 +281,11 @@ def test_dihedral_degenerate_gradient_parity():
 
     from rgi_utils.energy import jax_energy, torch_energy
 
-    # one dihedral, nonzero target so a degenerate phi still yields a nonzero delta
+    # one cistrans, nonzero target so a degenerate phi still yields a nonzero delta
     spec = RestraintSpec(
         n_active=4,
         active_sites=np.arange(4),
-        dihedral=DihedralArrays(
+        cistrans=CisTransArrays(
             idx=np.array([[0, 1, 2, 3]], dtype=np.int64),
             phi0=np.array([1.0]),
             slack=np.array([0.0]),
@@ -592,7 +592,7 @@ def _rmsd_case(seed=3, n=6):
 def test_rmsd_kabsch_backend_parity():
     """The Kabsch-superposed RMSD energy agrees across numpy/torch/jax, its
     autodiff gradient agrees torch-vs-jax (the detached rotation makes a numpy
-    finite-difference gradient inapplicable, like the dihedral degenerate case),
+    finite-difference gradient inapplicable, like the cistrans degenerate case),
     and the energy is invariant to a rigid motion of the target (the Kabsch
     property)."""
     torch = pytest.importorskip("torch")

@@ -48,6 +48,14 @@ class RestraintsConfig:
             )
         _ALWAYS_ON = float("inf")  # omitted start_sigma -> active at every step
         conformer_config = config.get("conformer_restraints_config", {}) or {}
+        # The conformer cis/trans term was renamed dihedral -> cistrans. Reject the old
+        # key loudly (like the start_sigma / backend:numpy guards) rather than silently
+        # falling back to the default weight, which would weaken or re-enable the term.
+        if "dihedral" in conformer_config:
+            raise ValueError(
+                "conformer_restraints_config: 'dihedral' was renamed to 'cistrans' "
+                "(it restrains acyclic double bonds' cis/trans (E/Z) geometry)."
+            )
         _css = conformer_config.get("start_sigma")
         conf_start_sigma = float(_css) if _css is not None else _ALWAYS_ON
         # shared conformer lower bound: release conformer terms below this noise level
