@@ -79,11 +79,13 @@ def build_ligand_mol(elements, coords, bonds_local, perceive_bonds=False):
         # heavy atoms only (no H) and no bonds, so RDKit DetermineBonds cannot
         # solve valences (it reads the H-less skeleton as highly charged and
         # throws). Consequently every perceived bond is SINGLE, so the dihedral
-        # (cis/trans) restraint — which keys on BondType.DOUBLE — finds nothing on
-        # chai ligands (dihedrals=0, graceful). The proper fix is to thread chai's
-        # source SMILES/ConformerData mol (which carries real bond orders + E/Z)
-        # into the adapter; until then bond/angle/chiral (order-agnostic) work but
-        # cis/trans does not. The other four tools supply real bond orders.
+        # (cis/trans) restraint — which keys on BondType.DOUBLE — finds nothing
+        # via THIS branch (dihedrals=0, graceful). chai's adapter therefore PREFERS
+        # its source-SMILES path (chai/adapter.py _mol_from_smiles), which carries
+        # real Kekulized bond orders + E/Z, and only falls back to this perceive
+        # branch when no SMILES is available; bond/angle/chiral (order-agnostic) work
+        # either way. The other tools supply real bond orders directly (boltz/protenix/
+        # openfold/AF3 via CCD/biotite; esmfold2 via ligand_bond_orders).
         try:
             from rdkit.Chem import rdDetermineBonds
 

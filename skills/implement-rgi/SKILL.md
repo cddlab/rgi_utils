@@ -1,11 +1,12 @@
 ---
 name: implement-rgi
 description: >-
-  Guide for adding restraint-guided inference (RGI) — distance restraints
-  (centroid distance between atom groups) and ligand conformer restraints
-  (bond/angle/chiral/intramolecular-VdW toward an ideal geometry) — to a
-  diffusion-based structure-prediction tool (boltz / protenix / AlphaFold3 and
-  similar samplers). The shared engine `rgi_utils` does all the heavy lifting;
+  Guide for adding restraint-guided inference (RGI) — five restraint types:
+  distance, angle, and dihedral (between atom-group centroids), conformer
+  (ligand bond/angle/chiral/dihedral + VdW toward an ideal geometry), and RMSD
+  (toward a reference structure) — to a diffusion-based structure-prediction tool
+  (boltz / protenix / chai-lab / openfold-3 / esmfold2 / AlphaFold3 and similar
+  samplers). The shared engine `rgi_utils` does all the heavy lifting;
   the tool only needs a small adapter, a few hook lines in its sampling loop,
   and to pass one `restraints_config` dict through. Use this skill whenever
   someone wants to add restraints / 拘束 / RGI / guided sampling to a structure
@@ -23,16 +24,20 @@ description: >-
 Diffusion structure predictors denoise atom coordinates over many steps. RGI
 injects a short gradient-based minimization at each step — right after the model
 produces `positions_denoised`, before the Euler update — that nudges atoms to
-satisfy user restraints:
+satisfy user restraints. Five types:
 
-- **distance restraint**: the centroid distance between two atom groups is
-  pulled toward a target (harmonic / flat-bottomed / lower- / upper-bound).
-- **conformer restraint**: a ligand's bond lengths, bond angles, chiral volumes,
-  and intramolecular non-bonded clashes are pulled toward an ideal RDKit
-  geometry (keeps the ligand chemically sensible while the pocket forms).
+- **distance**: the centroid distance between two atom groups, pulled toward a
+  target (harmonic / flat-bottomed / lower- / upper-bound).
+- **angle** / **dihedral**: the angle (3 groups) / dihedral (4 groups) of the
+  groups' centroids toward a target in degrees — the angular analogue of distance.
+- **conformer**: a ligand's bond lengths, bond angles, chiral volumes, cis/trans
+  dihedrals, and non-bonded clashes (**VdW**) pulled toward an ideal RDKit geometry
+  (keeps the ligand chemically sensible while the pocket forms).
+- **RMSD**: a group's Kabsch-superposed RMSD toward a reference structure (PDB).
 
-Both are flat-bottomed squared penalties minimized on a GPU; the same maths runs
-under PyTorch, JAX, or NumPy.
+These are flat-bottomed squared penalties minimized on GPU (or CPU). The energy
+maths is identical across the torch and jax backends (with a numpy energy
+reference); distance is applied closed-form rather than through the solver.
 
 ## Core principle: rgi_utils does the heavy lifting
 
@@ -62,8 +67,11 @@ rgi_utils one instead.
 
 Install editable into the tool's venv: `uv pip install -e <path>/rgi_utils[torch]`
 for a PyTorch tool, `[jax]` for a JAX tool. You do **not** choose the backend in
-code — `rgi_utils.config` reads `gpu` / `backend` from the restraints_config and
-picks `torch` (gpu) / `jax` (explicit) / `numpy` (cpu fallback).
+code — `rgi_utils.config` reads `gpu` / `backend` from the restraints_config: the
+backend is **torch by default** (or `backend: jax` for a JAX tool), and `gpu`
+selects the *device* (`gpu: false` runs the torch optimizer on CPU). There is **no
+numpy optimizer** — numpy survives only as the energy reference for backend-parity
+tests, so `backend: numpy` raises.
 
 ### Step 2 — Write an adapter
 
@@ -99,7 +107,7 @@ from rgi_utils.combined import CombinedRestraints
 restr = CombinedRestraints()
 restr.setup(YourAdapter(feats), nbatch=multiplicity, config=restraints_config)
 # ... inside the denoising loop, right after positions_denoised, before Euler:
-coords = restr.minimize(coords, step, sigma)   # torch/numpy: mutates+returns
+coords = restr.minimize(coords, step, sigma)   # torch: mutates in place + returns
 # ... after sampling (optional per-term energy log):
 restr.finalize(coords, step)
 ```
@@ -115,8 +123,8 @@ inside the scan. See `references/lifecycle-and-hooks.md`.
 ### Step 4 — Pass the config (do not add flags)
 
 The tool's input (YAML/JSON) already carries a `restraints_config` dict; route
-it unchanged into `setup(config=...)`. Its schema (distance + conformer +
-start_sigma + gpu/method/max_iter) is parsed by
+it unchanged into `setup(config=...)`. Its schema (distance / angle / dihedral /
+conformer / RMSD restraints + start_sigma/stop_sigma + gpu/method/max_iter) is parsed by
 `rgi_utils.config.RestraintsConfig.from_dict`, shared across all tools. **Do not
 define restraint types, parse the config, resolve atoms, or add a new CLI flag
 in the tool** — one dict is enough, and it keeps the tool at parity.
@@ -134,7 +142,7 @@ reference for "how small this should be."
 
 ## Framework selection
 
-- **PyTorch (eager loop)** — boltz, protenix, chai-lab, openfold-3. Adapter can
+- **PyTorch (eager loop)** — boltz, protenix, chai-lab, openfold-3, esmfold2. Adapter can
   live in `rgi_utils/<tool>/adapter.py` (it receives a plain dict/array and never
   imports the framework). Call `minimize` each step. Watch the
   autograd-under-inference_mode gotcha. **What the tool exposes for the ligand
@@ -170,7 +178,8 @@ the setup spec counts (13); undeclared deps / CPU torch builds (14).
   jax agree on energy and gradient, so whichever backend the tool uses is sound.
 - **GPU (real device, usually via the tool's batch/sbatch harness)**:
   - **first, read the `setup` spec counts** (`built spec: bonds=.. angles=..
-    chirals=.. distances=.. vdw=..`) and confirm the count is non-zero for every
+    chirals=.. dihedrals=.. distances=.. rmsd=.. group_angle=.. group_dihedral=..
+    vdw=..`) and confirm the count is non-zero for every
     restraint type you requested — a type that built 0 restraints reports a perfect
     `finalize` energy of `0.00000`, so near-zero energy alone does NOT prove a
     restraint is working (pitfall 13);

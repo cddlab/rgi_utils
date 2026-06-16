@@ -22,19 +22,21 @@ exist only as a back-compat singleton shim — do not build new code on them.
   internally, folding the old `set_config` + `setup` into one call.
 - It resolves distance selections via `adapter.iter_atoms`, builds the conformer
   spec via `adapter.iter_ligand_confs` + the featurizer, and picks the backend
-  from the config (`gpu` → torch, `backend: jax` → jax, else numpy).
+  from the config (`backend: jax` → jax, else **torch**; `gpu` selects the device,
+  so `gpu: false` runs the torch optimizer on CPU — there is no numpy optimizer).
 - Clears `spec`/optimizers up front, so a reused instance never carries a stale
   spec.
 
 ## `minimize(coords, step, sigma)`
-- torch / numpy: optimizes in place and returns `coords`.
+- torch: optimizes in place and returns `coords` (jax is functional — see `get_minimizer`).
 - **Gated**: each restraint contributes only when `sigma <= start_sigma`; when
   `sigma` exceeds every restraint's `start_sigma`, the whole step is skipped
   (cheap at high noise, so you can hook it unconditionally).
 
 ## `finalize(coords, step)`
 - Runs only when `verbose`. Logs the per-term energy
-  `bond=.. angle=.. chiral=.. vdw=.. distance=.. total=..`, so you can see how
+  `bond=.. angle=.. chiral=.. dihedral=.. vdw=.. distance=.. rmsd=.. group_angle=..
+  group_dihedral=.. total=..`, so you can see how
   well each restraint type is satisfied in the final structure. The sum equals
   the total restraint energy (checked against `total_energy`).
 
@@ -80,7 +82,7 @@ glue; the minimizer itself is rgi_utils.
 
 ```yaml
 restraints_config:
-  gpu: true                 # -> torch backend; or set  backend: jax  /  backend: numpy
+  gpu: true                 # device on; backend defaults to torch (or set  backend: jax)
   verbose: true             # print setup + finalize stats
   max_iter: 100             # optimizer iterations per step
   method: "CG"              # jaxopt solver: CG (NonlinearCG) or LBFGS
@@ -120,14 +122,25 @@ restraints_config:
     angle:    {weight: 1.0}
     chiral:   {weight: 1.0}
     dihedral: {weight: 1.0}                          # cis/trans (E/Z): holds acyclic, non-aromatic double bonds at their reference dihedral. ON by default; weight<=0 disables. optional slack (radians).
-    vdw:      {weight: 1.0, mode: "intramolecular"}  # intramolecular = static, works in all backends
+    vdw:      {weight: 1.0}                          # mode defaults to "both" (intramolecular + dynamic ligand-protein); both run on torch AND jax
+  rmsd_restraints_config:           # Kabsch-superposed RMSD of a group toward a reference PDB
+    - ref_pdb: "ref.pdb"            # required; parsed by the dependency-free read_pdb_atoms
+      target_rmsd: 0.0              # required; drive the group's RMSD toward this (Å)
+      # pairing: align              # DEFAULT align (seq-align polymer chains so a homolog ref maps on);
+      #                               set 'identity' for pure (chain, resid, name) ordinal pairing
+      # start_sigma / stop_sigma: optional per-entry gate; stop_sigma>0 releases late so the model
+      #   re-idealises geometry the restraint held distorted (e.g. a broken peptide bond at a free tail)
+      # atom_selection_{target,ref}_{fit,calc}: independently pick superposition vs measured atoms
+      #   (a `backbone` / `name CA` fit superposes on main chain only). All omitted -> whole structure.
 ```
 
 The `dihedral` term needs the ligand mol to carry real bond ORDERS (it keys on
-`BondType.DOUBLE`). boltz (CCD mol), protenix/openfold (biotite BondList) and AF3
-(SMILES/CCD) all supply them. chai's tokenized context exposes only heavy atoms
-with no bonds, so its perceived topology is all-single and `dihedral` finds
-nothing there (graceful: `dihedrals=0`).
+`BondType.DOUBLE`). boltz (CCD mol), protenix/openfold (biotite BondList), AF3
+(SMILES/CCD) and esmfold2 (CCD via `get_ligand_ccd_bonds`, SMILES via Kekulized
+3-tuples) all supply them. chai's tokenized context drops bond orders, so its
+adapter rebuilds the mol from the source SMILES (`_mol_from_smiles`, real Kekulized
+orders) when one is supplied; only the no-SMILES fallback perceives an all-single
+topology where `dihedral` finds nothing (graceful: `dihedrals=0`).
 
 The selection DSL (`selection.py`) supports `chain`, `resid N`, `resid A to B`,
 `index`, `name` (atom name, e.g. `name CA` / `name N CA C O`), the molecule-type
@@ -144,7 +157,7 @@ ints differ across tools — boltz/esm DNA=1/RNA=2 vs chai/openfold RNA=1/DNA=2 
 the string is the only safe cross-tool currency). A ligand / water / untyped atom
 (`mol_type=None`) matches none of the three.
 
-`backbone`/`sidechain` are PyMOL-like polymer selectors, matched by atom name but
+`backbone`/`sidechain` are MDTraj-like polymer selectors, matched by atom name but
 GATED on polymer type: `backbone` = protein N/CA/C/O(/OXT) or the nucleic
 sugar-phosphate; `sidechain` = the polymer complement (so glycine has no sidechain
 heavy atom, and a ligand atom merely named "C"/"N"/"O"/"P" never matches either). The

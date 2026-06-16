@@ -19,7 +19,7 @@ from typing import Iterator
 
 import numpy as np
 
-from rgi_utils._mol_build import atomic_number as _atomic_number
+from rgi_utils._biotite_adapter import biotite_get_elements, biotite_ligand_confs
 from rgi_utils._mol_build import build_ligand_mol as _build_ligand_mol
 from rgi_utils.atom_context import AtomRecord, LigandConf
 
@@ -77,81 +77,48 @@ class ProtenixAdapter:
 
     def get_elements(self) -> np.ndarray:
         """(N_atom,) atomic numbers; padding atoms (beyond the atom_array) are 0."""
-        elements = np.zeros(self._n_atom, dtype=np.int64)
-        aa = self.atom_array
-        if aa is not None:
-            syms = np.asarray(aa.element)
-            n = min(len(aa), self._n_atom)
-            for i in range(n):
-                elements[i] = _atomic_number(syms[i])
-        return elements
+        return biotite_get_elements(self.atom_array, self._n_atom)
 
     def iter_ligand_confs(self) -> Iterator[LigandConf]:
         aa = self.atom_array
         if aa is None:
             return
-        hetero = np.asarray(aa.hetero, dtype=bool)
-        asym = np.asarray(aa.label_asym_id)
-        coords_all = np.asarray(aa.coord, dtype=np.float64)
-        elements_all = np.asarray(aa.element)
-        # per-ligand conformer_restraints flag (annotation set by json_to_feature);
-        # default on when the annotation is absent (older feats / no opt-out).
-        conf_rest_annot = None
-        if "conformer_restraints" in aa.get_annotation_categories():
-            conf_rest_annot = np.asarray(aa.conformer_restraints, dtype=bool)
-        # bonds may be absent (a structure whose only hetero atoms are monatomic
-        # ions has no BondList); treat as no bonds rather than bailing out so the
-        # ions still surface as LigandConf for ligand-protein VdW (matching boltz).
-        bond_arr = (
-            aa.bonds.as_array()  # (n_bond, 3): i, j, order
-            if getattr(aa, "bonds", None) is not None
-            else np.empty((0, 3), dtype=np.int64)
-        )
 
-        for chain_id in np.unique(asym[hetero]):
-            idxs = np.where((asym == chain_id) & hetero)[0]
-            # Emit every hetero chain, including a monatomic ion (1 atom, 0 bonds):
-            # it yields no bond/angle/chiral terms but still joins ligand-protein
-            # VdW, matching boltz. _build_ligand_mol handles a 1-atom, 0-bond mol.
-            g2l = {int(g): li for li, g in enumerate(idxs)}
-            bonds_local = [
-                (g2l[int(i)], g2l[int(j)], int(o))
-                for i, j, o in bond_arr
-                if int(i) in g2l and int(j) in g2l
-            ]
-            coords = coords_all[idxs]
-            mol = _build_ligand_mol(elements_all[idxs], coords, bonds_local)
+        def _post_build(chain_id, mol, coords, idxs, elements_all, bonds_local):
             # SMILES ligand: replace the target with a stereo-correct ETKDG ideal
             # conformer (atom_array.coord may be the wrong isomer, e.g. maleate predicted
             # trans -> the restraint would converge to trans). The atom_array atom order
             # equals the SMILES mol's RDKit order (json_parser builds it from
             # mol.GetAtoms()), so the ideal coords line up with idxs.
             smiles = self._smiles_by_chain.get(str(chain_id))
-            if smiles is not None:
-                from rdkit import Chem
+            if smiles is None:
+                return mol, coords
+            from rdkit import Chem
 
-                from rgi_utils._mol_build import generate_ideal_conformer
+            from rgi_utils._mol_build import generate_ideal_conformer
 
-                smol = Chem.MolFromSmiles(smiles)  # carries the SMILES stereo
-                # target_mol=mol fixes the atom order to atom_array (global_indices) order.
-                ideal = (
-                    generate_ideal_conformer(smol, target_mol=mol)
-                    if smol is not None else None
-                )
-                if ideal is not None and len(ideal) == len(idxs):
-                    coords = ideal
-                    mol = _build_ligand_mol(elements_all[idxs], ideal, bonds_local)
-                else:
-                    logger.warning(
-                        "protenix chain %s: SMILES ETKDG failed; using model coords "
-                        "as the restraint target", chain_id,
-                    )
-            conf_rest = False  # per-ligand opt-in; absent annotation -> off
-            if conf_rest_annot is not None:
-                conf_rest = bool(conf_rest_annot[idxs].any())
-            yield LigandConf(
-                mol=mol,
-                conf_coords=coords,
-                global_indices=idxs.astype(np.int64),
-                conformer_restraints=conf_rest,
+            smol = Chem.MolFromSmiles(smiles)  # carries the SMILES stereo
+            # target_mol=mol fixes the atom order to atom_array (global_indices) order.
+            ideal = (
+                generate_ideal_conformer(smol, target_mol=mol)
+                if smol is not None else None
             )
+            if ideal is not None and len(ideal) == len(idxs):
+                return _build_ligand_mol(elements_all[idxs], ideal, bonds_local), ideal
+            logger.warning(
+                "protenix chain %s: SMILES ETKDG failed; using model coords "
+                "as the restraint target", chain_id,
+            )
+            return mol, coords
+
+        # protenix marks ligand atoms with biotite hetero; chains are label_asym_id;
+        # the conformer target is atom_array.coord (overridden per-SMILES-ligand in
+        # _post_build); conformer_restraints defaults OFF when the annotation is absent.
+        yield from biotite_ligand_confs(
+            aa,
+            ligand_mask=np.asarray(aa.hetero, dtype=bool),
+            chain_attr="label_asym_id",
+            coords_all=np.asarray(aa.coord, dtype=np.float64),
+            conf_rest_default=False,
+            post_build=_post_build,
+        )

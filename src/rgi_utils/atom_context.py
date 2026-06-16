@@ -52,6 +52,18 @@ class LigandConf:
     conformer_restraints: bool = False
 
 
+def decode_atom_name(codes) -> str | None:
+    """Decode ``ord(c)-32`` char codes to an atom name, or None when empty.
+
+    ``codes`` is a 1-D iterable of ints, one per character, encoding ``ord(char)-32``
+    (0 = padding). Several frameworks store atom names this way and their adapters
+    decode them identically — boltz (after a one-hot argmax), esmfold2 and AF3 read
+    the codes directly — so the decode lives here as the single cross-tool kernel.
+    """
+    nm = "".join(chr(int(c) + 32) for c in codes if int(c) != 0).strip()
+    return nm or None
+
+
 @runtime_checkable
 class FrameworkAdapter(Protocol):
     """Minimal protocol: iterate non-padded atoms for distance-restraint selection."""

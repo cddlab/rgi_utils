@@ -82,7 +82,7 @@ class Name(SelectionNode):
         return isinstance(name, str) and name.upper() in self.names
 
 
-# PyMOL-like backbone atom names, by polymer type, matched case-folded against
+# MDTraj-like backbone atom names, by polymer type, matched case-folded against
 # ``mol["name"]``. Protein = the peptide unit; nucleic = the full sugar-phosphate
 # backbone, listing BOTH modern (OP1/OP2/OP3) and legacy (O1P/O2P/O3P) phosphate-oxygen
 # names so a reference PDB written either way classifies the same. Primes ("O5'") are
@@ -116,7 +116,7 @@ def _backbone_names(kind: str) -> frozenset:
 
 
 class Backbone(SelectionNode):
-    """Matches POLYMER backbone atoms (PyMOL ``backbone``): protein N/CA/C/O(/OXT) or
+    """Matches POLYMER backbone atoms (MDTraj ``backbone``): protein N/CA/C/O(/OXT) or
     the nucleic sugar-phosphate. GATED on polymer type, so a ligand atom merely named
     "C"/"N"/"O"/"P" never matches (organic ligands are full of those). Polymer type is
     ``mol_type`` where the adapter sets it (boltz/esm/AF3), else derived from
@@ -133,7 +133,7 @@ class Backbone(SelectionNode):
 
 
 class Sidechain(SelectionNode):
-    """Matches POLYMER non-backbone atoms (PyMOL ``sidechain``): the complement of
+    """Matches POLYMER non-backbone atoms (MDTraj ``sidechain``): the complement of
     ``backbone`` WITHIN a polymer residue. Glycine therefore has no sidechain heavy
     atom, and ligand/water atoms never match (same polymer-type gating + ``resname``
     requirement as ``Backbone``). The backbone sets are heavy-atom, so a present

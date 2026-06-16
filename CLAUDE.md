@@ -68,7 +68,9 @@ Supporting modules:
   chiral/dihedral restraints (global indices, multi-ligand) and the dynamic
   ligand-protein `VdwConfig` is assembled. Dihedral (cis/trans) detection keys on
   acyclic, non-aromatic `BondType.DOUBLE` bonds and targets the reference-conformer
-  torsion; it needs real bond orders (all tools but chai supply them).
+  torsion; it needs real bond orders, which every tool supplies — chai via its adapter's
+  source-SMILES path (`chai/adapter.py` `_mol_from_smiles`, Kekulized orders), the
+  geometry-perceived fallback (no SMILES) being all-single so `dihedrals=0`.
 - **`config.py`**: `RestraintsConfig.from_dict()` parses the shared
   `restraints_config` (one source of truth for boltz YAML / protenix JSON / AF3).
 - **`combined.py`**: `CombinedRestraints` entry point — **instance-scoped, one per
@@ -85,8 +87,10 @@ Supporting modules:
   tools inside `lax.scan` grab the pure minimizer via `get_minimizer()` instead of
   calling `minimize` per step (AF3 forces `backend: jax`, so for AF3 the `gpu` flag is
   inert — to run AF3 restraints on CPU, run the whole process on the JAX CPU platform).
-- **Framework adapters** (`{boltz,protenix,chai,openfold3,esmfold2}/adapter.py`; AF3's lives
-  in-tool because it needs CCD machinery): implement `iter_atoms()` (→
+- **Framework adapters** (`{boltz,protenix,chai,openfold3,esmfold2,alphafold3}/adapter.py` —
+  all framework-free; AF3's CCD/SMILES mol resolution lives in a thin in-tool shim
+  (`alphafold3_restr` `build_af3_adapter`) that feeds `rgi_utils/alphafold3/adapter.py` plain
+  data): implement `iter_atoms()` (→
   `AtomRecord(chain, resid, index)` for distance selection) and optionally
   `num_atoms()`, `get_elements()`, `iter_ligand_confs()` (→
   `LigandConf(mol, conf_coords, global_indices)` for conformer + VdW).
@@ -99,12 +103,13 @@ Supporting modules:
   `AssignStereochemistryFrom3D`, else stereocentres read as 3-coordinate and every
   chiral restraint silently vanishes.
 - **Atom selection DSL** (`selection.py`): `AtomSelector` parses
-  `"(chain A or chain B) and resid 1 to 10"`; tokens are
+  `"(chain A or chain B) and resid 1 to 10"` (an MDTraj-like keyword/range/boolean
+  vocabulary); tokens are
   `chain`/`resid`/`index`/`name`/`protein`/`dna`/`rna`/`backbone`/`sidechain` +
   `and`/`or`/`not`/`()`. Used by `DistanceData` (`distance_restr_data.py`) for centroid
   groups and `RmsdData` for fit/calc; `name CA` (atom-name, case-insensitive,
   alnum-only — a nucleic-acid `C1'` is not selectable but fails loudly) restricts an
-  RMSD superposition to backbone. `backbone`/`sidechain` are PyMOL-like POLYMER
+  RMSD superposition to backbone. `backbone`/`sidechain` are MDTraj-like POLYMER
   selectors (name-based but gated on polymer type via `_moltype.polymer_type`, which
   prefers `AtomRecord.mol_type` and falls back to `resname` — so both flow through the
   candidate dict); a ligand atom named "C"/"N"/"O" never matches them.
@@ -136,7 +141,11 @@ Supporting modules:
   the same knob is available on distance + conformer restraints** (see the start_sigma note
   below). All tools share sigma_data=16, so the value transfers.
 
-### VdW (two flavours)
+### Conformer: VdW (two flavours)
+
+VdW is **not a sixth restraint type** — it is the non-bonded term of the **conformer**
+restraint, configured under `conformer_restraints_config.vdw` (one of bond/angle/chiral/
+dihedral/vdw). It has two flavours:
 
 - **Intramolecular** (`mode: intramolecular`): static non-bonded ligand-internal pairs
   (topo distance > 2, within `dmax`), built in `featurizer.py` and carried in `spec.vdw`

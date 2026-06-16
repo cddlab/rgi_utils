@@ -30,6 +30,12 @@ RNA_RESIDUES = frozenset({"A", "C", "G", "U"})
 
 POLYMER_TYPES = ("protein", "dna", "rna")
 
+# Framework molecule-type enum -> normalized string, for adapters whose enum uses
+# this ordering: boltz ``const.chain_types`` and esmfold2 ``constants`` both number
+# PROTEIN=0, DNA=1, RNA=2, NONPOLYMER=3. NOTE chai/openfold use RNA=1/DNA=2 and do
+# NOT use this table (they leave ``mol_type=None``), so this is the one shared order.
+MOLTYPE_BY_ID = {0: "protein", 1: "dna", 2: "rna", 3: "ligand"}
+
 
 def moltype_from_resname(resname: str | None) -> str | None:
     """Map a PDB residue name to "protein"/"dna"/"rna", else None (ligand / water /

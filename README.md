@@ -4,15 +4,15 @@ Restraint-Guided Inference (RGI) utilities for diffusion-based structure predict
 (PyTorch and JAX). Integrated into boltz, protenix, chai-lab, openfold-3, esmfold2
 (torch) and alphafold3 (jax).
 
-Restraint types, all minimized during the denoising loop to guide coordinate optimization:
+Five restraint types, all minimized during the denoising loop to guide coordinate optimization:
 
 - **distance** — centroid distance between two atom groups (applied closed-form).
-- **group angle / dihedral** — the angle (3 groups) / dihedral (4 groups) of the groups'
-  centroids, in degrees; the angular analogue of the distance restraint.
+- **angle** — the angle of three atom groups' centroids (vertex = group 2), in degrees;
+  the angular analogue of the distance restraint.
+- **dihedral** — the dihedral of four atom groups' centroids (axis = groups 2–3), in degrees.
 - **conformer** — ligand bond / angle / chiral-volume / dihedral (cis/trans) toward an
-  ideal RDKit geometry.
-- **VdW** — non-bonded clash avoidance, intramolecular and/or dynamic ligand-protein
-  (`mode` defaults to `both`).
+  ideal RDKit geometry, plus **VdW** non-bonded clash avoidance (intramolecular and/or
+  dynamic ligand-protein; `mode` defaults to `both`).
 - **RMSD** — Kabsch-superposed RMSD of a group toward a reference PDB.
 
 The default `method='CG'` solver (a nonlinear conjugate gradient with autodiff gradients)
@@ -89,7 +89,10 @@ of `minimize`.
 
 ### Atom selection syntax
 
-Distance restraints use a selection DSL to specify atom groups:
+Distance restraints use a selection DSL to specify atom groups. Its keyword / range /
+boolean vocabulary is **MDTraj-like** (`resid 1 to 5`, `and` / `or` / `not`,
+`protein` / `backbone` / …), though `chain` takes letter ids and `resid` is the
+per-chain 1-based ordinal:
 
 | Example | Meaning |
 |---------|---------|
@@ -100,7 +103,7 @@ Distance restraints use a selection DSL to specify atom groups:
 | `index 42` | atom at padded index 42 |
 | `name CA` | atoms named CA (case-insensitive) |
 | `protein` / `dna` / `rna` | polymer-type selectors |
-| `backbone` / `sidechain` | PyMOL-like polymer selectors (gated on polymer type) |
+| `backbone` / `sidechain` | MDTraj-like polymer selectors (gated on polymer type) |
 | `chain A and resid 1 to 5` | boolean AND |
 | `chain A or chain B` | boolean OR |
 | `not chain A` | negation |
@@ -121,10 +124,12 @@ The per-entry `move` key picks which group the closed-form centroid shift moves:
 (default, both move) / `1` / `2` (pin the other group — e.g. move only a ligand toward a
 fixed pocket).
 
-### Group angle / dihedral restraints
+### Angle / dihedral restraints
 
 `angle_restraints_config` (3 groups, vertex = group 2) and `dihedral_restraints_config`
-(4 groups, axis = group 2–3) restrain the angle/dihedral of the groups' centroids. Same four
+(4 groups, axis = group 2–3) restrain the angle/dihedral of the groups' centroids — distinct
+from the per-atom `angle` / `dihedral` *conformer* terms (internally these are the
+`group_angle` / `group_dihedral` energy terms). Same four
 types as distance (`harmonic` / `flat-bottomed` / `flat-bottomed1` / `flat-bottomed2`),
 but targets are in **degrees** (`target_angle` / `target_dihedral`). `weight` defaults to
 1.0 and translates any group size rigidly. `move` selects which groups are free (default:

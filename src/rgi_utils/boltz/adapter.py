@@ -6,14 +6,10 @@ from typing import Iterator
 import numpy as np
 import torch
 
-from rgi_utils.atom_context import AtomRecord, LigandConf
+from rgi_utils._moltype import MOLTYPE_BY_ID
+from rgi_utils.atom_context import AtomRecord, LigandConf, decode_atom_name
 
 logger = logging.getLogger(__name__)
-
-# boltz const.chain_types order: PROTEIN=0, DNA=1, RNA=2, NONPOLYMER=3. NOTE the
-# DNA/RNA order is the OPPOSITE of chai/openfold (RNA=1, DNA=2) — normalize to the
-# shared string so one `dna`/`rna` selector means the same atom in every tool.
-_BOLTZ_MOLTYPE = {0: "protein", 1: "dna", 2: "rna", 3: "ligand"}
 
 
 class BoltzFeatsAdapter:
@@ -105,7 +101,7 @@ class BoltzFeatsAdapter:
                     resid=tok2resid[t],
                     index=int(gidx),
                     name=name_of(int(gidx)),
-                    mol_type=(None if mt0 is None else _BOLTZ_MOLTYPE.get(int(mt0[t]))),
+                    mol_type=(None if mt0 is None else MOLTYPE_BY_ID.get(int(mt0[t]))),
                     resname=(
                         None if res_type_idx is None
                         else self.token_names[int(res_type_idx[t])]
@@ -145,8 +141,7 @@ class BoltzFeatsAdapter:
         def f(gidx):
             if gidx < 0 or gidx >= codes.shape[0]:
                 return None
-            nm = "".join(chr(int(c) + 32) for c in codes[gidx] if int(c) != 0).strip()
-            return nm or None
+            return decode_atom_name(codes[gidx])
 
         return f
 

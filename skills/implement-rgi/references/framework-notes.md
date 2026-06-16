@@ -1,6 +1,6 @@
 # Framework notes
 
-## PyTorch (eager loop) — boltz, protenix
+## PyTorch (eager loop) — boltz, protenix, chai-lab, openfold-3, esmfold2
 
 - **autograd under `inference_mode`**: predict loops often run inside
   `torch.inference_mode()`, where autograd backward fails with "element does not
@@ -11,10 +11,10 @@
   inference-mode coordinate tensor to `minimize` is fine.
 - **adapter placement**: `rgi_utils/<tool>/adapter.py` (receives a plain
   dict/array, imports no framework code).
-- **VdW flavours**: the dynamic ligand-protein VdW (a per-step radius search) is
-  torch-only; the intramolecular VdW (`vdw: {mode: intramolecular}`) is static
-  and works in every backend. Pick intramolecular unless you specifically want
-  ligand-protein declashing.
+- **VdW flavours**: the conformer `vdw` term has two flavours — static
+  intramolecular (ligand-internal pairs) and dynamic ligand-protein (a per-step
+  radius search). `mode` defaults to **`both`** (run them together); both now run
+  on **torch AND jax**, so a JAX tool gets the full VdW too.
 
 ## JAX (JIT / `lax.scan`) — AlphaFold3
 
@@ -46,7 +46,8 @@ you integrate a JAX tool, use `get_minimizer()`; do not reach for scipy or
 
 ## Backend selection recap
 
-`config.gpu: true` → torch; `config.backend: jax` → jax (set this for a JAX
-tool); otherwise numpy (CPU reference / fallback). The energies are the same
-maths across all three (checked by `tests/test_backend_parity.py`), so a tool
-gets identical restraint behaviour regardless of backend — only speed differs.
+`config.backend: jax` → jax (set this for a JAX tool); otherwise **torch** (the
+default). `config.gpu` selects the *device*, not the backend: `gpu: false` runs
+the torch optimizer on CPU. There is **no numpy optimizer** — numpy remains only
+as the energy reference for `tests/test_backend_parity.py` (torch and jax compute
+identical energies/gradients), so an explicit `backend: numpy` raises.

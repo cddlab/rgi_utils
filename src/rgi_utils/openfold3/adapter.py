@@ -29,8 +29,7 @@ from typing import Iterator
 
 import numpy as np
 
-from rgi_utils._mol_build import atomic_number as _atomic_number
-from rgi_utils._mol_build import build_ligand_mol as _build_ligand_mol
+from rgi_utils._biotite_adapter import biotite_get_elements, biotite_ligand_confs
 from rgi_utils.atom_context import AtomRecord, LigandConf
 
 logger = logging.getLogger(__name__)
@@ -116,22 +115,12 @@ class Openfold3Adapter:
 
     def get_elements(self) -> np.ndarray:
         """(num_atoms,) atomic numbers; padding atoms (beyond the AtomArray) are 0."""
-        elements = np.zeros(self._n_atom, dtype=np.int64)
-        aa = self.atom_array
-        if aa is not None:
-            syms = np.asarray(aa.element)
-            n = min(len(aa), self._n_atom)
-            for i in range(n):
-                elements[i] = _atomic_number(syms[i])
-        return elements
+        return biotite_get_elements(self.atom_array, self._n_atom)
 
     def iter_ligand_confs(self) -> Iterator[LigandConf]:
         aa = self.atom_array
         if aa is None:
             return
-        is_lig = self._ligand_mask()
-        chains = np.asarray(aa.chain_id)
-        elements_all = np.asarray(aa.element)
         # Conformer geometry: real reference coords (ref_pos) when supplied; else
         # atom_array.coord (zeroed by OpenFold -> degenerate, warn once).
         if self._ref_coords is not None:
@@ -143,37 +132,15 @@ class Openfold3Adapter:
                 "atom_array.coord which OpenFold zeroes — bond/angle/chiral "
                 "restraints will be degenerate. Pass batch['ref_pos'] to fix."
             )
-        # per-ligand conformer_restraints opt-out (annotation); default on when
-        # absent (OpenFold-3 v1 does not set it -> every ligand restrained).
-        conf_rest_annot = None
-        if "conformer_restraints" in aa.get_annotation_categories():
-            conf_rest_annot = np.asarray(aa.conformer_restraints, dtype=bool)
-        # bonds may be absent (monatomic ions have no BondList); treat as no bonds
-        # so the ion still surfaces as LigandConf for ligand-protein VdW.
-        bond_arr = (
-            aa.bonds.as_array()  # (n_bond, 3): i, j, order
-            if getattr(aa, "bonds", None) is not None
-            else np.empty((0, 3), dtype=np.int64)
+        # openfold marks ligand atoms via molecule_type_id (see _ligand_mask); chains
+        # are chain_id; openfold-3 has no per-ligand conformer_restraints input flag, so
+        # opt-in defaults ON (governed by conformer_restraints_config presence) unless
+        # the AtomArray carries the annotation.
+        yield from biotite_ligand_confs(
+            aa,
+            ligand_mask=self._ligand_mask(),
+            chain_attr="chain_id",
+            coords_all=coords_all,
+            conf_rest_default=True,
+            post_build=None,
         )
-
-        for chain_id in np.unique(chains[is_lig]):
-            idxs = np.where((chains == chain_id) & is_lig)[0]
-            g2l = {int(g): li for li, g in enumerate(idxs)}
-            bonds_local = [
-                (g2l[int(i)], g2l[int(j)], int(o))
-                for i, j, o in bond_arr
-                if int(i) in g2l and int(j) in g2l
-            ]
-            coords = coords_all[idxs]
-            mol = _build_ligand_mol(elements_all[idxs], coords, bonds_local)
-            # openfold-3 has no per-ligand conformer_restraints input flag, so opt-in is
-            # governed by conformer_restraints_config presence (the build_spec gate).
-            conf_rest = True
-            if conf_rest_annot is not None:
-                conf_rest = bool(conf_rest_annot[idxs].any())
-            yield LigandConf(
-                mol=mol,
-                conf_coords=coords,
-                global_indices=idxs.astype(np.int64),
-                conformer_restraints=conf_rest,
-            )
