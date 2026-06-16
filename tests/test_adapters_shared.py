@@ -1,13 +1,13 @@
 """Tests for the consolidated adapter helpers (no framework / no GPU):
 
-  - ``decode_atom_name`` (boltz/esm/AF3 shared ord(c)-32 kernel)
-  - ``MOLTYPE_BY_ID`` (boltz/esm shared enum)
-  - ``rgi_utils.alphafold3.adapter.AF3RestraintAdapter`` (framework-free, fed plain
-    data by the in-tool shim) — verifies it imports NO alphafold3 and that
-    iter_atoms / iter_ligand_confs (SMILES positional + CCD by-name leaving-atom drop)
-    produce the expected records.
-  - ``rgi_utils._biotite_adapter`` (protenix/openfold shared core) over a duck-typed
-    fake AtomArray, covering both tools' parameterisation.
+- ``decode_atom_name`` (boltz/esm/AF3 shared ord(c)-32 kernel)
+- ``MOLTYPE_BY_ID`` (boltz/esm shared enum)
+- ``rgi_utils.alphafold3.adapter.AF3RestraintAdapter`` (framework-free, fed plain
+  data by the in-tool shim) — verifies it imports NO alphafold3 and that
+  iter_atoms / iter_ligand_confs (SMILES positional + CCD by-name leaving-atom drop)
+  produce the expected records.
+- ``rgi_utils._biotite_adapter`` (protenix/openfold shared core) over a duck-typed
+  fake AtomArray, covering both tools' parameterisation.
 """
 
 from __future__ import annotations
@@ -80,9 +80,7 @@ def test_af3_adapter_imports_no_alphafold3():
 
 
 def test_af3_iter_atoms():
-    ad = AF3RestraintAdapter(
-        _af3_batch(), {"A": 1, "B": 2}, _POLY, ligand_mols=[]
-    )
+    ad = AF3RestraintAdapter(_af3_batch(), {"A": 1, "B": 2}, _POLY, ligand_mols=[])
     recs = list(ad.iter_atoms())
     # 2 real atoms in token0 + 1 in token1 (padding atoms skipped)
     assert [(r.chain, r.resid, r.index, r.name) for r in recs] == [
@@ -182,7 +180,9 @@ def test_biotite_get_elements():
     assert biotite_get_elements(None, 3).tolist() == [0, 0, 0]
 
 
-def test_biotite_ligand_confs_openfold_style():
+def test_biotite_ligand_confs_default_on():
+    # helper contract: honor an explicit conf_rest_default=True (no tool uses this now --
+    # protenix + openfold both pass False -- but the helper must still respect it).
     aa = _fake_aa()
     confs = list(
         biotite_ligand_confs(
@@ -190,7 +190,7 @@ def test_biotite_ligand_confs_openfold_style():
             ligand_mask=aa.molecule_type_id == 3,
             chain_attr="chain_id",
             coords_all=aa.coord,
-            conf_rest_default=True,  # openfold default ON
+            conf_rest_default=True,  # helper honors an explicit default-on
             post_build=None,
         )
     )
@@ -290,4 +290,20 @@ def test_openfold3_adapter_delegation():
     confs = list(ad.iter_ligand_confs())
     assert len(confs) == 1
     assert confs[0].global_indices.tolist() == [0, 1]
-    assert confs[0].conformer_restraints is True  # openfold default ON
+    # no conformer_restraints annotation -> default OFF (opt-in required, like every tool)
+    assert confs[0].conformer_restraints is False
+
+    # conformer_restraints annotation present -> the flagged ligand opts in
+    aa_optin = _FakeAtomArray(
+        element=["C", "C", "N"],
+        coord=[[0, 0, 0], [1.5, 0, 0], [9, 9, 9]],
+        bonds=[[0, 1, 1]],
+        annots=["molecule_type_id", "conformer_restraints"],
+        chain_id=["L", "L", "P"],
+        hetero=[True, True, False],
+        molecule_type_id=[3, 3, 0],
+        conformer_restraints=[True, True, False],
+    )
+    ad_optin = Openfold3Adapter(aa_optin, num_atoms=5, ref_coords=aa_optin.coord)
+    confs_optin = list(ad_optin.iter_ligand_confs())
+    assert confs_optin[0].conformer_restraints is True

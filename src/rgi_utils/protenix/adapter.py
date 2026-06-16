@@ -26,6 +26,19 @@ from rgi_utils.atom_context import AtomRecord, LigandConf
 logger = logging.getLogger(__name__)
 
 
+# protenix biotite AtomArray.mol_type is already a normalized string
+# ("protein"/"rna"/"dna"/"ligand"); pass the polymer/ligand values through and map
+# anything else (water/empty/unknown) to None. mol_type is entity-derived, so a MODIFIED
+# residue in a protein chain reads "protein" -> forwarding it powers protein/dna/rna +
+# backbone/sidechain selectors and RMSD align pairing for modified residues.
+_VALID_MOLTYPES = {"protein", "dna", "rna", "ligand"}
+
+
+def _norm_moltype(v) -> "str | None":
+    s = str(v).strip().lower()
+    return s if s in _VALID_MOLTYPES else None
+
+
 class ProtenixAdapter:
     def __init__(self, input_feature_dict: dict) -> None:
         self.feats = input_feature_dict
@@ -46,6 +59,7 @@ class ProtenixAdapter:
         hetero = np.asarray(aa.hetero, dtype=bool)
         names = np.asarray(aa.atom_name) if hasattr(aa, "atom_name") else None
         resnames = np.asarray(aa.res_name) if hasattr(aa, "res_name") else None
+        mtypes = np.asarray(aa.mol_type) if hasattr(aa, "mol_type") else None
         # Per-chain 1-based residue/token ordinal, matching boltz/AF3 so one
         # selection string means the same atom in every tool. protenix tokenizes a
         # ligand per atom but sets res_id=1 for ALL atoms of a single-CCD ligand,
@@ -67,8 +81,14 @@ class ProtenixAdapter:
                 ordinal = seen[rid]
             nm = str(names[i]).strip() if names is not None else None
             rnm = str(resnames[i]).strip() if resnames is not None else None
+            mt = _norm_moltype(mtypes[i]) if mtypes is not None else None
             yield AtomRecord(
-                chain=ch, resid=ordinal, index=int(i), name=nm, resname=rnm
+                chain=ch,
+                resid=ordinal,
+                index=int(i),
+                name=nm,
+                resname=rnm,
+                mol_type=mt,
             )
 
     # --- ConformerAdapter -----------------------------------------------------
@@ -101,13 +121,15 @@ class ProtenixAdapter:
             # target_mol=mol fixes the atom order to atom_array (global_indices) order.
             ideal = (
                 generate_ideal_conformer(smol, target_mol=mol)
-                if smol is not None else None
+                if smol is not None
+                else None
             )
             if ideal is not None and len(ideal) == len(idxs):
                 return _build_ligand_mol(elements_all[idxs], ideal, bonds_local), ideal
             logger.warning(
                 "protenix chain %s: SMILES ETKDG failed; using model coords "
-                "as the restraint target", chain_id,
+                "as the restraint target",
+                chain_id,
             )
             return mol, coords
 

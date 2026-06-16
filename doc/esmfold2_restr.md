@@ -48,6 +48,10 @@ ESMFold2's API is **Pythonic**: `restraints_config` is a plain **Python dict** p
 `ESMFold2InputBuilder().fold(model, spi, restraints_config=...)` — not a YAML/JSON sidecar. The dict
 schema is identical to the other tools.
 
+Conformer restraints are **per-ligand opt-in**: set `conformer_restraints=True` on a `LigandInput`
+to enable its bond/angle/chiral/cistrans/VdW restraints. A ligand left at the default (`False`) is
+unrestrained even when a `conformer_restraints_config` block is present.
+
 A ligand = one token/atom, so `token_bonds` carries intra-ligand connectivity and bond ORDERS ride
 on `ChainInfo.ligand_bond_orders` (CCD via `get_ligand_ccd_bonds`, SMILES via Kekulized 3-tuples) —
 so the conformer cistrans term works for both CCD and SMILES ligands.
@@ -157,7 +161,7 @@ def main() -> None:
     spi = StructurePredictionInput(
         sequences=[
             ProteinInput(id="A", sequence=QBP),
-            LigandInput(id="B", ccd=["GLN"]),  # glutamine — QBP's natural ligand
+            LigandInput(id="B", ccd=["GLN"], conformer_restraints=True),  # glutamine — QBP's natural ligand
         ]
     )
 

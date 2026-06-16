@@ -26,10 +26,13 @@ chai is the **odd one out**: the file you pass to `--restraints-config-path` **I
 the boltz/protenix style). chai loads it verbatim with `yaml.safe_load`. The sequences live in a
 separate FASTA (the ligand is a SMILES string).
 
-chai has **no per-ligand opt-in flag** in the FASTA: simply including a `conformer_restraints_config`
-block in the sidecar enables conformer restraints for the ligand(s). chai drops intra-ligand bond
-orders at every layer, so the adapter rebuilds the molecule from the source SMILES (Kekulized →
-correct valence + aromaticity + stereo) — bond/angle/chiral all apply.
+chai's FASTA can't carry a per-ligand flag (the header parser accepts only `name=`), so chai's
+conformer opt-in lives **in the sidecar** as a `conformer_restraints` map keyed by ligand chain id
+(the same chain id you use in `atom_selection`, e.g. `B`): set it `true` to enable that ligand's
+bond/angle/chiral/cistrans/VdW conformer restraints. A ligand absent from the map (or set `false`)
+is left unrestrained even when a `conformer_restraints_config` block is present. chai drops
+intra-ligand bond orders at every layer, so the adapter rebuilds the molecule from the source SMILES
+(Kekulized → correct valence + aromaticity + stereo) — bond/angle/chiral all apply.
 
 The sidecar below writes **every usable variable** with a concrete value; see
 [`config.md`](config.md) for the alternatives (restraint types, RMSD `atom_selection`
@@ -87,6 +90,8 @@ dihedral_restraints_config:
     weight: 1.0
     harmonic:
       target_dihedral: 180.0
+conformer_restraints:
+  B: true                      # opt the ligand (chain B) into conformer restraints
 conformer_restraints_config:
   start_sigma: 99999999
   stop_sigma: -1

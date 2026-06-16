@@ -19,21 +19,38 @@ def _cc_torsion(mol, coords):
     m.RemoveAllConformers()
     conf = Chem.Conformer(m.GetNumAtoms())
     for i in range(len(coords)):
-        conf.SetAtomPosition(i, (float(coords[i, 0]), float(coords[i, 1]), float(coords[i, 2])))
+        conf.SetAtomPosition(
+            i, (float(coords[i, 0]), float(coords[i, 1]), float(coords[i, 2]))
+        )
     m.AddConformer(conf, assignId=True)
     for b in m.GetBonds():
         a2, a3 = b.GetBeginAtom(), b.GetEndAtom()
-        if b.GetBondType() == Chem.BondType.DOUBLE and a2.GetSymbol() == "C" and a3.GetSymbol() == "C":
+        if (
+            b.GetBondType() == Chem.BondType.DOUBLE
+            and a2.GetSymbol() == "C"
+            and a3.GetSymbol() == "C"
+        ):
+
             def cn(a, o):
                 return [
-                    n for n in a.GetNeighbors()
-                    if n.GetIdx() != o.GetIdx() and n.GetSymbol() == "C"
+                    n
+                    for n in a.GetNeighbors()
+                    if n.GetIdx() != o.GetIdx()
+                    and n.GetSymbol() == "C"
                     and any(x.GetSymbol() == "O" for x in n.GetNeighbors())
                 ]
+
             c2, c4 = cn(a2, a3), cn(a3, a2)
             if c2 and c4:
-                return abs(rdMolTransforms.GetDihedralDeg(
-                    m.GetConformer(), c2[0].GetIdx(), a2.GetIdx(), a3.GetIdx(), c4[0].GetIdx()))
+                return abs(
+                    rdMolTransforms.GetDihedralDeg(
+                        m.GetConformer(),
+                        c2[0].GetIdx(),
+                        a2.GetIdx(),
+                        a3.GetIdx(),
+                        c4[0].GetIdx(),
+                    )
+                )
     return None
 
 

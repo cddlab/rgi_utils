@@ -91,41 +91,51 @@ def _make_spec(include_groups: bool = True) -> RestraintSpec:
     # move_free all 1 (every group free) so the numpy-FD gradient parity below holds
     # (a pinned group diverges from FD; tested torch-vs-jax in test_optim). start_sigma
     # [100, 5] keeps the gating-test invariants.
-    group_angle = None if not include_groups else GroupAngleArrays(
-        grp1_idx=np.array([[0, 1], [6, 0]], dtype=np.int64),
-        grp2_idx=np.array([[2, 3], [7, 0]], dtype=np.int64),
-        grp3_idx=np.array([[4, 5], [8, 0]], dtype=np.int64),
-        grp1_mask=np.array([[1.0, 1.0], [1.0, 0.0]]),  # row1: group of 1
-        grp2_mask=np.array([[1.0, 1.0], [1.0, 0.0]]),
-        grp3_mask=np.array([[1.0, 1.0], [1.0, 0.0]]),
-        target1=np.array([1.2, 2.0]),  # harmonic target / flat-bottomed lower
-        target2=np.array([0.0, 2.4]),  # flat-bottomed upper (unused for harmonic)
-        geom_type=np.array([0, 1], dtype=np.int64),  # harmonic + flat-bottomed
-        move_free=np.ones((2, 3)),  # all groups free (FD-grad parity needs it)
-        weight=np.array([1.0, 0.5]),
-        mask=np.array([1.0, 1.0]),
-        start_sigma=np.array([100.0, 5.0]),  # different per-restraint start_sigma
-        stop_sigma=np.array([-1.0, -1.0]),
+    group_angle = (
+        None
+        if not include_groups
+        else GroupAngleArrays(
+            grp1_idx=np.array([[0, 1], [6, 0]], dtype=np.int64),
+            grp2_idx=np.array([[2, 3], [7, 0]], dtype=np.int64),
+            grp3_idx=np.array([[4, 5], [8, 0]], dtype=np.int64),
+            grp1_mask=np.array([[1.0, 1.0], [1.0, 0.0]]),  # row1: group of 1
+            grp2_mask=np.array([[1.0, 1.0], [1.0, 0.0]]),
+            grp3_mask=np.array([[1.0, 1.0], [1.0, 0.0]]),
+            target1=np.array([1.2, 2.0]),  # harmonic target / flat-bottomed lower
+            target2=np.array([0.0, 2.4]),  # flat-bottomed upper (unused for harmonic)
+            geom_type=np.array([0, 1], dtype=np.int64),  # harmonic + flat-bottomed
+            move_free=np.ones((2, 3)),  # all groups free (FD-grad parity needs it)
+            weight=np.array([1.0, 0.5]),
+            mask=np.array([1.0, 1.0]),
+            start_sigma=np.array([100.0, 5.0]),  # different per-restraint start_sigma
+            stop_sigma=np.array([-1.0, -1.0]),
+        )
     )
     # group-centroid dihedral: 1 harmonic restraint + 1 masked padding row (per-restraint
     # mask path). axis = group2-group3; harmonic is periodicity-safe.
-    group_dihedral = None if not include_groups else GroupDihedralArrays(
-        grp1_idx=np.array([[0, 1], [4, 5]], dtype=np.int64),
-        grp2_idx=np.array([[2, 3], [6, 7]], dtype=np.int64),
-        grp3_idx=np.array([[4, 5], [8, 9]], dtype=np.int64),
-        grp4_idx=np.array([[6, 7], [10, 11]], dtype=np.int64),
-        grp1_mask=np.array([[1.0, 1.0], [1.0, 1.0]]),
-        grp2_mask=np.array([[1.0, 1.0], [1.0, 1.0]]),
-        grp3_mask=np.array([[1.0, 1.0], [1.0, 1.0]]),
-        grp4_mask=np.array([[1.0, 1.0], [1.0, 1.0]]),
-        target1=np.array([0.7, -1.0]),
-        target2=np.array([0.0, 1.0]),
-        geom_type=np.array([0, 1], dtype=np.int64),  # harmonic (active) + flat (masked)
-        move_free=np.ones((2, 4)),
-        weight=np.array([0.8, 0.8]),
-        mask=np.array([1.0, 0.0]),  # second restraint is masked padding
-        start_sigma=np.array([100.0, 100.0]),
-        stop_sigma=np.array([-1.0, -1.0]),
+    group_dihedral = (
+        None
+        if not include_groups
+        else GroupDihedralArrays(
+            grp1_idx=np.array([[0, 1], [4, 5]], dtype=np.int64),
+            grp2_idx=np.array([[2, 3], [6, 7]], dtype=np.int64),
+            grp3_idx=np.array([[4, 5], [8, 9]], dtype=np.int64),
+            grp4_idx=np.array([[6, 7], [10, 11]], dtype=np.int64),
+            grp1_mask=np.array([[1.0, 1.0], [1.0, 1.0]]),
+            grp2_mask=np.array([[1.0, 1.0], [1.0, 1.0]]),
+            grp3_mask=np.array([[1.0, 1.0], [1.0, 1.0]]),
+            grp4_mask=np.array([[1.0, 1.0], [1.0, 1.0]]),
+            target1=np.array([0.7, -1.0]),
+            target2=np.array([0.0, 1.0]),
+            geom_type=np.array(
+                [0, 1], dtype=np.int64
+            ),  # harmonic (active) + flat (masked)
+            move_free=np.ones((2, 4)),
+            weight=np.array([0.8, 0.8]),
+            mask=np.array([1.0, 0.0]),  # second restraint is masked padding
+            start_sigma=np.array([100.0, 100.0]),
+            stop_sigma=np.array([-1.0, -1.0]),
+        )
     )
     return RestraintSpec(
         n_active=N_ACTIVE,
@@ -580,8 +590,12 @@ def _rmsd_case(seed=3, n=6):
     m = np.ones((1, n))
     refc = ref.reshape(1, n, 3)
     args = dict(  # fit == calc (plain superposed RMSD)
-        fit_idx=idx, fit_mask=m, fit_ref=refc,
-        calc_idx=idx, calc_mask=m, calc_ref=refc,
+        fit_idx=idx,
+        fit_mask=m,
+        fit_ref=refc,
+        calc_idx=idx,
+        calc_mask=m,
+        calc_ref=refc,
         target_rmsd=np.array([0.0]),
         weight=np.array([1.0]),
         mask=np.array([1.0]),
@@ -660,7 +674,8 @@ def test_energy_breakdown_sums_to_total():
     for name, mod, prep, p in (
         ("numpy", numpy_energy, numpy_energy.prepare_spec(spec), pos),
         (
-            "torch", torch_energy,
+            "torch",
+            torch_energy,
             torch_energy.prepare_spec(spec, dtype=torch.float64),
             torch.tensor(pos, dtype=torch.float64),
         ),
@@ -722,7 +737,12 @@ def test_rmsd_known_value_and_target():
     e = float(
         numpy_energy.rmsd_energy(
             ref,
-            idx, m, refc, idx, m, refc,
+            idx,
+            m,
+            refc,
+            idx,
+            m,
+            refc,
             target_rmsd=np.array([2.0]),
             weight=np.array([1.5]),
             mask=np.array([1.0]),
@@ -751,24 +771,35 @@ def test_rmsd_stop_sigma_release_window():
     pos = ref + rng.standard_normal((n, 3)) * 0.5  # nonzero rmsd -> nonzero energy
     idx = np.arange(n).reshape(1, n)
     spec = RestraintSpec(
-        n_active=n, active_sites=np.arange(n),
+        n_active=n,
+        active_sites=np.arange(n),
         rmsd=RmsdArrays(
-            fit_idx=idx, fit_mask=np.ones((1, n)), fit_ref=ref.reshape(1, n, 3),
-            calc_idx=idx, calc_mask=np.ones((1, n)), calc_ref=ref.reshape(1, n, 3),
-            target_rmsd=np.array([0.0]), weight=np.array([1.0]),
-            start_sigma=np.array([10.0]), stop_sigma=np.array([2.0]),
+            fit_idx=idx,
+            fit_mask=np.ones((1, n)),
+            fit_ref=ref.reshape(1, n, 3),
+            calc_idx=idx,
+            calc_mask=np.ones((1, n)),
+            calc_ref=ref.reshape(1, n, 3),
+            target_rmsd=np.array([0.0]),
+            weight=np.array([1.0]),
+            start_sigma=np.array([10.0]),
+            stop_sigma=np.array([2.0]),
             mask=np.array([1.0]),
         ),
         conf_start_sigma=-1.0,
     )
     for name, mod, p, prep in (
         ("numpy", numpy_energy, pos, numpy_energy.prepare_spec(spec)),
-        ("torch", torch_energy, torch.tensor(pos),
-         torch_energy.prepare_spec(spec, dtype=torch.float64)),
+        (
+            "torch",
+            torch_energy,
+            torch.tensor(pos),
+            torch_energy.prepare_spec(spec, dtype=torch.float64),
+        ),
         ("jax", jax_energy, jnp.asarray(pos), jax_energy.prepare_spec(spec)),
     ):
-        e_below = float(mod.total_energy(p, prep, sigma=1.0))   # < stop -> released
-        e_in = float(mod.total_energy(p, prep, sigma=5.0))      # in window -> active
+        e_below = float(mod.total_energy(p, prep, sigma=1.0))  # < stop -> released
+        e_in = float(mod.total_energy(p, prep, sigma=5.0))  # in window -> active
         e_above = float(mod.total_energy(p, prep, sigma=20.0))  # > start -> not on yet
         assert e_below == pytest.approx(0.0, abs=1e-9), (name, e_below)
         assert e_in > 1e-3, (name, e_in)
@@ -791,31 +822,44 @@ def test_conformer_distance_stop_sigma_window():
     # bond 0-1 stretched (3 vs r0 1.5) and dist groups off target (centroid gap 8 vs 2)
     pos = np.array([[0.0, 0, 0], [3.0, 0, 0], [0, 5.0, 0], [0, 8.0, 0]])
     spec = RestraintSpec(
-        n_active=4, active_sites=np.arange(4),
+        n_active=4,
+        active_sites=np.arange(4),
         bond=BondArrays(
-            idx=np.array([[0, 1]], dtype=np.int64), r0=np.array([1.5]),
-            slack=np.array([0.0]), weight=np.array([1.0]), half=np.array([0.0]),
+            idx=np.array([[0, 1]], dtype=np.int64),
+            r0=np.array([1.5]),
+            slack=np.array([0.0]),
+            weight=np.array([1.0]),
+            half=np.array([0.0]),
             mask=np.array([1.0]),
         ),
         distance=DistanceArrays(
             grp1_idx=np.array([[0, 1]], dtype=np.int64),
             grp2_idx=np.array([[2, 3]], dtype=np.int64),
-            grp1_mask=np.array([[1.0, 1.0]]), grp2_mask=np.array([[1.0, 1.0]]),
-            target1=np.array([2.0]), target2=np.array([0.0]),
+            grp1_mask=np.array([[1.0, 1.0]]),
+            grp2_mask=np.array([[1.0, 1.0]]),
+            target1=np.array([2.0]),
+            target2=np.array([0.0]),
             dist_type=np.array([0], dtype=np.int64),
-            move_mode=np.array([0], dtype=np.int64), mask=np.array([1.0]),
-            start_sigma=np.array([10.0]), stop_sigma=np.array([2.0]),
+            move_mode=np.array([0], dtype=np.int64),
+            mask=np.array([1.0]),
+            start_sigma=np.array([10.0]),
+            stop_sigma=np.array([2.0]),
         ),
-        conf_start_sigma=10.0, conf_stop_sigma=2.0,
+        conf_start_sigma=10.0,
+        conf_stop_sigma=2.0,
     )
     for name, mod, p, prep in (
         ("numpy", numpy_energy, pos, numpy_energy.prepare_spec(spec)),
-        ("torch", torch_energy, torch.tensor(pos),
-         torch_energy.prepare_spec(spec, dtype=torch.float64)),
+        (
+            "torch",
+            torch_energy,
+            torch.tensor(pos),
+            torch_energy.prepare_spec(spec, dtype=torch.float64),
+        ),
         ("jax", jax_energy, jnp.asarray(pos), jax_energy.prepare_spec(spec)),
     ):
-        e_below = float(mod.total_energy(p, prep, sigma=1.0))   # < stop -> released
-        e_in = float(mod.total_energy(p, prep, sigma=5.0))      # in window -> active
+        e_below = float(mod.total_energy(p, prep, sigma=1.0))  # < stop -> released
+        e_in = float(mod.total_energy(p, prep, sigma=5.0))  # in window -> active
         e_above = float(mod.total_energy(p, prep, sigma=20.0))  # > start -> off
         assert e_below == pytest.approx(0.0, abs=1e-9), (name, e_below)
         assert e_in > 1e-3, (name, e_in)
@@ -853,7 +897,9 @@ def test_chiral_flat_bottom_zero_at_reference():
     prep_np = numpy_energy.prepare_spec(spec)
     # at the reference geometry vol == vol0 -> inside the band -> ZERO (old code
     # returned weight*slack**2 = 2.5e-4 here)
-    assert float(numpy_energy.total_energy(pos, prep_np)) == pytest.approx(0.0, abs=1e-12)
+    assert float(numpy_energy.total_energy(pos, prep_np)) == pytest.approx(
+        0.0, abs=1e-12
+    )
 
     # outside the band the penalty is non-zero and identical across backends
     pos2 = pos.copy()
@@ -861,7 +907,9 @@ def test_chiral_flat_bottom_zero_at_reference():
     prep_t = torch_energy.prepare_spec(spec, dtype=torch.float64)
     prep_j = jax_energy.prepare_spec(spec)
     e_np = float(numpy_energy.total_energy(pos2, prep_np))
-    e_t = float(torch_energy.total_energy(torch.tensor(pos2, dtype=torch.float64), prep_t))
+    e_t = float(
+        torch_energy.total_energy(torch.tensor(pos2, dtype=torch.float64), prep_t)
+    )
     e_j = float(jax_energy.total_energy(jnp.asarray(pos2), prep_j))
     assert e_np > 0.0
     assert abs(e_np - e_t) < 1e-6 and abs(e_np - e_j) < 1e-6
@@ -882,10 +930,15 @@ def test_rmsd_fit_calc_separation():
     e = float(
         numpy_energy.rmsd_energy(
             pos,
-            np.arange(nf).reshape(1, nf), np.ones((1, nf)), ref[:nf].reshape(1, nf, 3),
-            np.arange(nf, nf + nc).reshape(1, nc), np.ones((1, nc)),
+            np.arange(nf).reshape(1, nf),
+            np.ones((1, nf)),
+            ref[:nf].reshape(1, nf, 3),
+            np.arange(nf, nf + nc).reshape(1, nc),
+            np.ones((1, nc)),
             ref[nf:].reshape(1, nc, 3),
-            target_rmsd=np.array([0.0]), weight=np.array([1.0]), mask=np.array([1.0]),
+            target_rmsd=np.array([0.0]),
+            weight=np.array([1.0]),
+            mask=np.array([1.0]),
         )
     )
     assert e < 1e-6, e

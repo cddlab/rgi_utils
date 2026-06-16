@@ -207,8 +207,19 @@ def _dihedral_angle(p0, p1, p2, p3):
 
 
 def group_angle_energy(
-    positions, grp1_idx, grp2_idx, grp3_idx, grp1_mask, grp2_mask, grp3_mask,
-    target1, target2, geom_type, move_free, weight, mask,
+    positions,
+    grp1_idx,
+    grp2_idx,
+    grp3_idx,
+    grp1_mask,
+    grp2_mask,
+    grp3_mask,
+    target1,
+    target2,
+    geom_type,
+    move_free,
+    weight,
+    mask,
 ):
     """Distance-style flat-bottomed angle between three group centroids (vertex = group 2).
     ``geom_type`` 0=harmonic / 1=flat-bottomed / 2=lower / 3=upper, bounds
@@ -230,9 +241,21 @@ def group_angle_energy(
 
 
 def group_dihedral_energy(
-    positions, grp1_idx, grp2_idx, grp3_idx, grp4_idx,
-    grp1_mask, grp2_mask, grp3_mask, grp4_mask,
-    target1, target2, geom_type, move_free, weight, mask,
+    positions,
+    grp1_idx,
+    grp2_idx,
+    grp3_idx,
+    grp4_idx,
+    grp1_mask,
+    grp2_mask,
+    grp3_mask,
+    grp4_mask,
+    target1,
+    target2,
+    geom_type,
+    move_free,
+    weight,
+    mask,
 ):
     """Distance-style flat-bottomed dihedral between four group centroids (axis = group2-3).
     ``harmonic`` (geom_type 0) is periodicity-safe: the deviation ``phi - target1`` is
@@ -266,8 +289,16 @@ def _kabsch_R(Q0, P0):
 
 
 def rmsd_energy(
-    positions, fit_idx, fit_mask, fit_ref, calc_idx, calc_mask, calc_ref,
-    target_rmsd, weight, mask,
+    positions,
+    fit_idx,
+    fit_mask,
+    fit_ref,
+    calc_idx,
+    calc_mask,
+    calc_ref,
+    target_rmsd,
+    weight,
+    mask,
 ):
     """Fit/calc Kabsch RMSD restraint: ``sum_r weight_r (rmsd_r - target_rmsd_r)^2``.
 

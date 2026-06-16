@@ -155,7 +155,9 @@ class AF3RestraintAdapter:
         for chain_id, mol, is_smiles in self.ligand_mols:
             if mol is None:
                 continue
-            flat_indices, mol = self._ligand_flat_indices(chain_id, mol, is_smiles, Chem)
+            flat_indices, mol = self._ligand_flat_indices(
+                chain_id, mol, is_smiles, Chem
+            )
             if mol is None or len(flat_indices) == 0:
                 continue
             conf_crds = pos_flat[flat_indices]  # (n_atoms, 3) reference coords
@@ -164,18 +166,26 @@ class AF3RestraintAdapter:
             # GetChiralTag. Attach the reference conformer and perceive stereo from it
             # (matching the CCD path, which assigns stereo from the ideal conformer) so
             # an unannotated SMILES stereocentre still gets chiral restraints.
-            # NOTE: an ETKDG ideal-conformer target (like boltz/protenix) is NOT used
-            # here because af3's ligand atoms are in TOKEN order, which differs from the
-            # SMILES mol's RDKit-canonical order, and for SYMMETRIC ligands (e.g.
-            # fumarate/maleate) a connectivity-only substructure match can't pick the
-            # correct 1:1 atom mapping. So af3 keeps ref_pos as the cistrans target =>
-            # cis/trans is only partially corrected on af3 (documented limitation).
+            # NOTE: af3 keeps ref_pos ITSELF as the conformer/cistrans target (no ETKDG-
+            # ideal substitution like boltz/protenix) because it needs none. af3 does NOT
+            # canonicalize SMILES: the featurised ligand atoms are in Chem.MolFromSmiles
+            # order (assign_atom_names_from_graph names them <element><counter> in that
+            # order), which matches this shim's bare MolFromSmiles mol POSITIONALLY
+            # (token i == mol atom i; see _smiles_flat_indices), and ref_pos is a stereo-
+            # correct ETKDGv3 conformer encoding the SMILES @/@@ and /\. So bond/angle/
+            # chiral AND cistrans all target the correct geometry. E2E-verified on af3:
+            # SMILES fumarate (E) keeps its C=C at -180 deg and maleate (Z) at ~0 deg,
+            # both with cistrans=1 — so cis/trans is fully (not partially) handled.
             if mol.GetNumConformers() == 0 and mol.GetNumAtoms() == len(conf_crds):
                 conf = Chem.Conformer(mol.GetNumAtoms())
                 for i in range(len(conf_crds)):
                     conf.SetAtomPosition(
                         i,
-                        (float(conf_crds[i, 0]), float(conf_crds[i, 1]), float(conf_crds[i, 2])),
+                        (
+                            float(conf_crds[i, 0]),
+                            float(conf_crds[i, 1]),
+                            float(conf_crds[i, 2]),
+                        ),
                     )
                 mol.AddConformer(conf, assignId=True)
                 try:

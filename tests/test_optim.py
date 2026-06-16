@@ -26,7 +26,10 @@ def _distorted_ethane():
     # non-empty conformer_config so the opt-in gate builds conformer terms;
     # conf_start_sigma large so they are active at any sigma
     spec = build_spec(
-        [lc], [], {"bond": {"weight": 1.0}, "angle": {"weight": 1.0}}, conf_start_sigma=1e30
+        [lc],
+        [],
+        {"bond": {"weight": 1.0}, "angle": {"weight": 1.0}},
+        conf_start_sigma=1e30,
     )
 
     n_atom = n + 5  # padding atoms beyond the ligand
@@ -94,7 +97,9 @@ def test_jax_minimizer_move_mode_end_to_end():
     assert list(spec.distance.move_mode) == [2]  # flowed into the spec via featurizer
 
     coords_np = np.zeros((1, 4, 3))
-    coords_np[0, 2:, 0] = 20.0  # centroid1 (group1) x=0, centroid2 (group2) x=20 -> dist 20
+    coords_np[0, 2:, 0] = (
+        20.0  # centroid1 (group1) x=0, centroid2 (group2) x=20 -> dist 20
+    )
     coords = jnp.asarray(coords_np)
     g1_before = np.asarray(coords[0, :2])
     minimize = make_minimizer(spec, max_iter=100)
@@ -449,10 +454,16 @@ def _rmsd_spec(n=6, seed=3):
         n_active=n,
         active_sites=np.arange(n),
         rmsd=RmsdArrays(
-            fit_idx=idx, fit_mask=np.ones((1, n)), fit_ref=ref.reshape(1, n, 3),
-            calc_idx=idx, calc_mask=np.ones((1, n)), calc_ref=ref.reshape(1, n, 3),
-            target_rmsd=np.array([0.0]), weight=np.array([1.0]),
-            start_sigma=np.array([1e30]), stop_sigma=np.array([0.0]),
+            fit_idx=idx,
+            fit_mask=np.ones((1, n)),
+            fit_ref=ref.reshape(1, n, 3),
+            calc_idx=idx,
+            calc_mask=np.ones((1, n)),
+            calc_ref=ref.reshape(1, n, 3),
+            target_rmsd=np.array([0.0]),
+            weight=np.array([1.0]),
+            start_sigma=np.array([1e30]),
+            stop_sigma=np.array([0.0]),
             mask=np.array([1.0]),
         ),
         conf_start_sigma=1e30,
@@ -476,7 +487,9 @@ def test_func_grad_matches_backward_conformer():
     a0 = torch.tensor(coords_np[0, spec.active_sites, :], dtype=torch.float64)
 
     def e_of(a):
-        return torch_energy.total_energy(a, prepared, sigma=None, include_distance=False)
+        return torch_energy.total_energy(
+            a, prepared, sigma=None, include_distance=False
+        )
 
     ab = a0.clone().requires_grad_(True)
     e_of(ab).backward()
@@ -498,7 +511,12 @@ def test_func_grad_matches_backward_rmsd():
     m = torch.ones((1, n), dtype=torch.float64)
     refc = torch.tensor(ref, dtype=torch.float64)
     kw = dict(
-        fit_idx=idx, fit_mask=m, fit_ref=refc, calc_idx=idx, calc_mask=m, calc_ref=refc,
+        fit_idx=idx,
+        fit_mask=m,
+        fit_ref=refc,
+        calc_idx=idx,
+        calc_mask=m,
+        calc_ref=refc,
         target_rmsd=torch.zeros(1, dtype=torch.float64),
         weight=torch.ones(1, dtype=torch.float64),
         mask=torch.ones(1, dtype=torch.float64),
@@ -527,7 +545,9 @@ def test_sync_free_cg_reduces_conformer_energy():
     a0 = torch.tensor(coords_np[0, spec.active_sites, :], dtype=torch.float64)
 
     def e_of(a):
-        return torch_energy.total_energy(a, prepared, sigma=None, include_distance=False)
+        return torch_energy.total_energy(
+            a, prepared, sigma=None, include_distance=False
+        )
 
     e0 = float(e_of(a0))
     a1 = gpu_cg(prepared, a0, 200)
@@ -546,7 +566,9 @@ def test_sync_free_cg_reduces_rmsd_energy():
     a0 = torch.tensor(pos[0], dtype=torch.float64)
 
     def e_of(a):
-        return torch_energy.total_energy(a, prepared, sigma=None, include_distance=False)
+        return torch_energy.total_energy(
+            a, prepared, sigma=None, include_distance=False
+        )
 
     e0 = float(e_of(a0))
     a1 = gpu_cg(prepared, a0, 500)
@@ -572,7 +594,8 @@ def test_gpu_cg_converges_stiff_chiral():
         mol=m, conf_coords=c, global_indices=np.arange(n), conformer_restraints=True
     )
     spec = build_spec(
-        [lc], [],
+        [lc],
+        [],
         {"bond": {"weight": 1.0}, "angle": {"weight": 1.0}, "chiral": {"weight": 1.0}},
         conf_start_sigma=1e30,
     )
@@ -586,7 +609,9 @@ def test_gpu_cg_converges_stiff_chiral():
     )
 
     def e_of(a):
-        return torch_energy.total_energy(a, prepared, sigma=None, include_distance=False)
+        return torch_energy.total_energy(
+            a, prepared, sigma=None, include_distance=False
+        )
 
     def chiral_e(a):
         ch = prepared["chiral"]
@@ -616,16 +641,27 @@ def test_gated_prepared_matches_energy_gate():
     ref = rng.standard_normal((n, 3)) * 3.0
     idx = np.arange(n).reshape(1, n)
     spec = RestraintSpec(
-        n_active=n, active_sites=np.arange(n),
+        n_active=n,
+        active_sites=np.arange(n),
         bond=BondArrays(
-            idx=np.array([[0, 1], [2, 3]], dtype=np.int64), r0=np.array([1.0, 1.5]),
-            slack=np.zeros(2), weight=np.ones(2), half=np.zeros(2), mask=np.ones(2),
+            idx=np.array([[0, 1], [2, 3]], dtype=np.int64),
+            r0=np.array([1.0, 1.5]),
+            slack=np.zeros(2),
+            weight=np.ones(2),
+            half=np.zeros(2),
+            mask=np.ones(2),
         ),
         rmsd=RmsdArrays(
-            fit_idx=idx, fit_mask=np.ones((1, n)), fit_ref=ref.reshape(1, n, 3),
-            calc_idx=idx, calc_mask=np.ones((1, n)), calc_ref=ref.reshape(1, n, 3),
-            target_rmsd=np.array([0.0]), weight=np.array([1.0]),
-            start_sigma=np.array([5.0]), stop_sigma=np.array([0.0]),
+            fit_idx=idx,
+            fit_mask=np.ones((1, n)),
+            fit_ref=ref.reshape(1, n, 3),
+            calc_idx=idx,
+            calc_mask=np.ones((1, n)),
+            calc_ref=ref.reshape(1, n, 3),
+            target_rmsd=np.array([0.0]),
+            weight=np.array([1.0]),
+            start_sigma=np.array([5.0]),
+            stop_sigma=np.array([0.0]),
             mask=np.array([1.0]),
         ),
         conf_start_sigma=10.0,
@@ -633,7 +669,12 @@ def test_gated_prepared_matches_energy_gate():
     opt = TorchRestraintOptimizer(spec)
     opt._ensure(torch.device("cpu"), torch.float64)
     pos = torch.tensor(rng.standard_normal((n, 3)), dtype=torch.float64)
-    for sigma in (50.0, 8.0, 3.0, None):  # conf+rmsd off / conf-on-rmsd-off / both / both
+    for sigma in (
+        50.0,
+        8.0,
+        3.0,
+        None,
+    ):  # conf+rmsd off / conf-on-rmsd-off / both / both
         pg = opt._gated_prepared(sigma)
         e_gpu = float(_energy(pos, pg))
         e_ref = float(
@@ -662,22 +703,38 @@ def test_compiled_energy_matches_eager():
     # (torch.where + .detach) UNDER torch.compile — the one inductor path the rmsd
     # precedent doesn't cover.
     spec.group_angle = GroupAngleArrays(
-        grp1_idx=np.array([[0, 1]]), grp2_idx=np.array([[2, 3]]),
-        grp3_idx=np.array([[4, 5]]), grp1_mask=np.array([[1.0, 1.0]]),
-        grp2_mask=np.array([[1.0, 1.0]]), grp3_mask=np.array([[1.0, 1.0]]),
-        target1=np.array([1.3]), target2=np.array([0.0]),
-        geom_type=np.array([0]), move_free=np.array([[0.0, 1.0, 0.0]]),
+        grp1_idx=np.array([[0, 1]]),
+        grp2_idx=np.array([[2, 3]]),
+        grp3_idx=np.array([[4, 5]]),
+        grp1_mask=np.array([[1.0, 1.0]]),
+        grp2_mask=np.array([[1.0, 1.0]]),
+        grp3_mask=np.array([[1.0, 1.0]]),
+        target1=np.array([1.3]),
+        target2=np.array([0.0]),
+        geom_type=np.array([0]),
+        move_free=np.array([[0.0, 1.0, 0.0]]),
         weight=np.array([1.0]),
-        mask=np.array([1.0]), start_sigma=np.array([1e30]), stop_sigma=np.array([-1.0]),
+        mask=np.array([1.0]),
+        start_sigma=np.array([1e30]),
+        stop_sigma=np.array([-1.0]),
     )
     spec.group_dihedral = GroupDihedralArrays(
-        grp1_idx=np.array([[0]]), grp2_idx=np.array([[1]]), grp3_idx=np.array([[2]]),
-        grp4_idx=np.array([[3]]), grp1_mask=np.array([[1.0]]),
-        grp2_mask=np.array([[1.0]]), grp3_mask=np.array([[1.0]]),
-        grp4_mask=np.array([[1.0]]), target1=np.array([0.5]), target2=np.array([0.0]),
-        geom_type=np.array([0]), move_free=np.array([[1.0, 1.0, 1.0, 1.0]]),
+        grp1_idx=np.array([[0]]),
+        grp2_idx=np.array([[1]]),
+        grp3_idx=np.array([[2]]),
+        grp4_idx=np.array([[3]]),
+        grp1_mask=np.array([[1.0]]),
+        grp2_mask=np.array([[1.0]]),
+        grp3_mask=np.array([[1.0]]),
+        grp4_mask=np.array([[1.0]]),
+        target1=np.array([0.5]),
+        target2=np.array([0.0]),
+        geom_type=np.array([0]),
+        move_free=np.array([[1.0, 1.0, 1.0, 1.0]]),
         weight=np.array([1.0]),
-        mask=np.array([1.0]), start_sigma=np.array([1e30]), stop_sigma=np.array([-1.0]),
+        mask=np.array([1.0]),
+        start_sigma=np.array([1e30]),
+        stop_sigma=np.array([-1.0]),
     )
     prepared = torch_energy.prepare_spec(spec, dtype=torch.float64)
     pos = torch.tensor(pos_np[0], dtype=torch.float64)
@@ -710,7 +767,9 @@ def test_dynamic_vdw_pair_energy_matches_optimizer():
     for i, atom in enumerate(m.GetAtoms()):
         elements[i] = atom.GetAtomicNum()
     elements[n] = 6  # a heavy "protein" background atom
-    spec = build_spec([lc], [], {"vdw": {"weight": 1.0, "scale": 0.9}}, elements=elements)
+    spec = build_spec(
+        [lc], [], {"vdw": {"weight": 1.0, "scale": 0.9}}, elements=elements
+    )
     assert spec.vdw_config is not None  # dynamic ligand-protein VdW
 
     coords = torch.zeros((1, n_atom, 3), dtype=torch.float64)
@@ -725,8 +784,13 @@ def test_dynamic_vdw_pair_energy_matches_optimizer():
     e_method = float(opt._vdw_energy(active, prot_pos))
     e_pure = float(
         _vdw_pair_energy(
-            active, prot_pos, v["lig_local"], v["lig_r"], v["prot_r"],
-            v["scale"], v["weight"],
+            active,
+            prot_pos,
+            v["lig_local"],
+            v["lig_r"],
+            v["prot_r"],
+            v["scale"],
+            v["weight"],
         )
     )
     assert e_method > 0.0 and abs(e_method - e_pure) < 1e-10, (e_method, e_pure)

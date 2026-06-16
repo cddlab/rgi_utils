@@ -153,8 +153,13 @@ class TorchRestraintOptimizer:
 
         v = self._vdw
         return _vdw_pair_energy(
-            active, prot_pos, v["lig_local"], v["lig_r"], v["prot_r"],
-            v["scale"], v["weight"],
+            active,
+            prot_pos,
+            v["lig_local"],
+            v["lig_r"],
+            v["prot_r"],
+            v["scale"],
+            v["weight"],
         )
 
     def minimize(self, coords, sigma=None, start_sigma=None, max_iter=None):
@@ -207,7 +212,8 @@ class TorchRestraintOptimizer:
         with torch.inference_mode(False), torch.enable_grad():
             active = torch.empty(
                 coords[..., self._active_idx, :].shape,
-                dtype=work_dtype, device=coords.device,
+                dtype=work_dtype,
+                device=coords.device,
             )
             active.copy_(coords[..., self._active_idx, :])  # casts bf16/fp16 -> fp32
 
@@ -231,7 +237,8 @@ class TorchRestraintOptimizer:
                 if vdw_active:
                     prot_pos = torch.empty(
                         coords[..., self._vdw["prot_global"], :].shape,
-                        dtype=work_dtype, device=coords.device,
+                        dtype=work_dtype,
+                        device=coords.device,
                     )
                     prot_pos.copy_(coords[..., self._vdw["prot_global"], :])
 

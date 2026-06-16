@@ -217,14 +217,10 @@ def _group_geom_params(restraints):
     (``DIST_TYPE_CODES``: harmonic=0 / flat-bottomed=1 / flat-bottomed1=2 (lower) /
     flat-bottomed2=3 (upper)); target1/target2 are radians (0.0 where unused). move_free
     is an (n, n_groups) {0,1} mask (1 = that group is free to move)."""
-    codes = np.array(
-        [DIST_TYPE_CODES[r.geom_type] for r in restraints], dtype=np.int64
-    )
+    codes = np.array([DIST_TYPE_CODES[r.geom_type] for r in restraints], dtype=np.int64)
     t1 = np.array([float(r.target1) for r in restraints])
     t2 = np.array([float(r.target2) for r in restraints])
-    move_free = np.array(
-        [[1.0 if f else 0.0 for f in r.move_free] for r in restraints]
-    )
+    move_free = np.array([[1.0 if f else 0.0 for f in r.move_free] for r in restraints])
     return codes, t1, t2, move_free
 
 
@@ -234,7 +230,8 @@ def _group_sigmas(restraints, conf_start_sigma):
     ``conf_start_sigma`` (from_dict normally pre-fills +inf), stop_sigma defaults -1."""
     start = np.array(
         [
-            float(r.start_sigma) if getattr(r, "start_sigma", None) is not None
+            float(r.start_sigma)
+            if getattr(r, "start_sigma", None) is not None
             else conf_start_sigma
             for r in restraints
         ]
@@ -401,14 +398,25 @@ def build_spec(
     # Conformer restraints are OPT-IN -- this is the single enforcement point for every
     # tool: (1) with no conformer_restraints_config (e.g. a distance-only run) build no
     # conformer at all; (2) otherwise restrain only ligands flagged
-    # conformer_restraints=True. Adapters with a per-ligand flag default it to False;
-    # chai/esm (no per-ligand flag) pass True, so for them (1) is the gate.
+    # conformer_restraints=True. EVERY tool defaults the per-ligand flag to False, so a
+    # ligand must explicitly opt in (boltz/protenix/af3/openfold/esm via a per-ligand
+    # input field; chai via the sidecar conformer_restraints map).
     # A config holding only documentation keys ("_comment") counts as absent.
-    if not any(not str(k).startswith("_") for k in cfg):
+    cfg_present = any(not str(k).startswith("_") for k in cfg)
+    if not cfg_present:
         ligand_confs = []
+    _n_before = len(ligand_confs)
     ligand_confs = [
         lc for lc in ligand_confs if getattr(lc, "conformer_restraints", False)
     ]
+    # Loud signal for the silent no-op: conformer_restraints_config is present and ligands
+    # exist, but none opted in -> zero conformer restraints built (NOT "satisfied"). A
+    # finalize term reading 0.00000 because the spec has 0 of that restraint is a no-op.
+    if cfg_present and _n_before and not ligand_confs:
+        logger.warning(
+            "conformer_restraints_config present but no ligand opted in "
+            "(set conformer_restraints: true on the ligand) -- no conformer restraints built"
+        )
     distance_restraints = [
         dr for dr in (distance_restraints or []) if getattr(dr, "run_restr", False)
     ]
@@ -658,9 +666,16 @@ def build_spec(
         start_sigma, stop_sigma = _group_sigmas(angle_restraints, conf_start_sigma)
         codes, t1, t2, move_free = _group_geom_params(angle_restraints)
         group_angle = GroupAngleArrays(
-            grp1_idx=g1, grp2_idx=g2, grp3_idx=g3,
-            grp1_mask=m1, grp2_mask=m2, grp3_mask=m3,
-            target1=t1, target2=t2, geom_type=codes, move_free=move_free,
+            grp1_idx=g1,
+            grp2_idx=g2,
+            grp3_idx=g3,
+            grp1_mask=m1,
+            grp2_mask=m2,
+            grp3_mask=m3,
+            target1=t1,
+            target2=t2,
+            geom_type=codes,
+            move_free=move_free,
             weight=np.array([float(r.weight) for r in angle_restraints]),
             mask=np.ones(n),
             start_sigma=start_sigma,
@@ -673,9 +688,18 @@ def build_spec(
         start_sigma, stop_sigma = _group_sigmas(dihedral_restraints, conf_start_sigma)
         codes, t1, t2, move_free = _group_geom_params(dihedral_restraints)
         group_dihedral = GroupDihedralArrays(
-            grp1_idx=g1, grp2_idx=g2, grp3_idx=g3, grp4_idx=g4,
-            grp1_mask=m1, grp2_mask=m2, grp3_mask=m3, grp4_mask=m4,
-            target1=t1, target2=t2, geom_type=codes, move_free=move_free,
+            grp1_idx=g1,
+            grp2_idx=g2,
+            grp3_idx=g3,
+            grp4_idx=g4,
+            grp1_mask=m1,
+            grp2_mask=m2,
+            grp3_mask=m3,
+            grp4_mask=m4,
+            target1=t1,
+            target2=t2,
+            geom_type=codes,
+            move_free=move_free,
             weight=np.array([float(r.weight) for r in dihedral_restraints]),
             mask=np.ones(n),
             start_sigma=start_sigma,

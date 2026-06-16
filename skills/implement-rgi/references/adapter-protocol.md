@@ -13,12 +13,17 @@ consumes the records they yield.
     the same atom in every tool — it is NOT a cumulative/global token index.
   - `index`: **global flat index** of this atom in the coordinate tensor handed
     to `minimize` (i.e. its row after reshaping coords to `(n_atom, 3)`).
-- `LigandConf(mol, conf_coords, global_indices, invert_chirality=False)`
+- `LigandConf(mol, conf_coords, global_indices, invert_chirality=False, conformer_restraints=False)`
   - `mol`: RDKit mol of the ligand heavy atoms (`Chem.RemoveHs` if it has Hs).
     Its bonds drive bond/angle restraints; its chiral tags drive chiral volumes.
   - `conf_coords`: `(n_atoms, 3)` reference coordinates — the ideal geometry to
     pull toward — in `mol` atom order.
   - `global_indices`: `(n_atoms,)` global flat indices of those atoms.
+  - `conformer_restraints`: **per-ligand opt-in, default `False`**. The featurizer
+    restrains ONLY ligands with this `True`, so the adapter MUST set it from the tool's
+    per-ligand input flag (e.g. `conformer_restraints: true` on the ligand object). A
+    ligand left `False` gets no conformer restraints even when `conformer_restraints_config`
+    is present (the featurizer logs a warning if a config is present but no ligand opted in).
 
 ## Methods
 

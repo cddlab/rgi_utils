@@ -29,6 +29,16 @@ _LIGAND_ENTITY = 3  # chai EntityType.LIGAND
 _TENSORCODE_PAD = 255  # chai TENSORCODE_PAD_TOKEN
 
 
+# chai EntityType -> normalized polymer string for AtomRecord.mol_type. EntityType is
+# PROTEIN=0/RNA=1/DNA=2/LIGAND=3/POLYMER_HYBRID=4/WATER=5/UNKNOWN=6/MANUAL_GLYCAN=7
+# (RNA BEFORE DNA, so the shared MOLTYPE_BY_ID — DNA=1/RNA=2 — can't be reused).
+# get_entity_type derives it per-entity from gemmi polymer_type, so a MODIFIED residue in
+# a protein chain stays PROTEIN -> forwarding it powers protein/dna/rna +
+# backbone/sidechain selectors and RMSD align pairing for modified residues. Non-polymer
+# kinds (hybrid/water/unknown) map to None.
+_MOLTYPE_BY_ID_CHAI = {0: "protein", 1: "rna", 2: "dna", 3: "ligand", 7: "ligand"}
+
+
 def _decode_tensorcode(codes) -> str:
     """Inverse of chai's string_to_tensorcode: uint8 codes -> ASCII string,
     dropping the pad token (255)."""
@@ -43,7 +53,13 @@ class ChaiStructureAdapter:
     flat index matches the ``atom_pos`` tensor exactly.
     """
 
-    def __init__(self, structure_context, num_atoms: int, smiles_by_subchain=None) -> None:
+    def __init__(
+        self,
+        structure_context,
+        num_atoms: int,
+        smiles_by_subchain=None,
+        conf_restraints_by_subchain=None,
+    ) -> None:
         self.sc = structure_context
         self._n_atom = int(num_atoms)
         # {subchain_id -> SMILES} for ligand chains (chai drops bond ORDERS at every layer,
@@ -51,6 +67,11 @@ class ChaiStructureAdapter:
         # the aromatic-ideal target). The structure_context ligand atoms are in MolFromSmiles
         # heavy-atom order, so a fresh MolFromSmiles maps its bonds back by index.
         self._smiles_by_subchain = dict(smiles_by_subchain or {})
+        # {subchain_id -> bool} per-ligand conformer_restraints opt-in. chai's FASTA can't
+        # carry a per-ligand flag (the parser rejects header fields other than name=), so
+        # this comes from the sidecar `conformer_restraints` map, keyed by chain id = the
+        # subchain_id used in atom_selection and in smiles_by_subchain. Absent -> False.
+        self._conf_restraints_by_subchain = dict(conf_restraints_by_subchain or {})
 
     def _token_chains(self) -> list[str]:
         """Per-token chain id string decoded from the subchain_id tensorcode."""
@@ -69,6 +90,10 @@ class ChaiStructureAdapter:
         # per-token 3-letter residue name (sc.residue_names is a cached_property, NOT a
         # method); powers AtomRecord.resname -> pairing="align" RMSD restraints.
         resn = getattr(sc, "residue_names", None)
+        # per-token entity type -> AtomRecord.mol_type (normalized polymer string);
+        # absent -> None.
+        ent = getattr(sc, "token_entity_type", None)
+        ent = np.asarray(ent) if ent is not None else None
         # per-chain 1-based PER-TOKEN ordinal (the cross-tool convention shared by
         # boltz/protenix/esmfold2): a standard polymer residue is one token, so all
         # its atoms share an ordinal (= residue ordinal); a ligand atom and each atom
@@ -89,8 +114,14 @@ class ChaiStructureAdapter:
                 seen[tok] = chain_counter[ch]
             nm = str(names[i]).strip() if names is not None else None
             rnm = str(resn[tok]).strip() if resn is not None else None
+            mt = _MOLTYPE_BY_ID_CHAI.get(int(ent[tok])) if ent is not None else None
             yield AtomRecord(
-                chain=ch, resid=seen[tok], index=int(i), name=nm, resname=rnm
+                chain=ch,
+                resid=seen[tok],
+                index=int(i),
+                name=nm,
+                resname=rnm,
+                mol_type=mt,
             )
 
     # --- ConformerAdapter -----------------------------------------------------
@@ -243,14 +274,13 @@ class ChaiStructureAdapter:
                         "chai ligand %s: ETKDG target unavailable, using ref_pos", ch
                     )
             if mol is None:
-                mol = _build_ligand_mol(
-                    ref_elem[idxs], coords, [], perceive_bonds=True
-                )
+                mol = _build_ligand_mol(ref_elem[idxs], coords, [], perceive_bonds=True)
             yield LigandConf(
                 mol=mol,
                 conf_coords=coords,
                 global_indices=idxs.astype(np.int64),
-                # chai has no per-ligand conformer_restraints input flag, so opt-in is
-                # governed by conformer_restraints_config presence (the build_spec gate).
-                conformer_restraints=True,
+                # per-ligand opt-in from the sidecar `conformer_restraints` map, keyed by
+                # the same subchain id as smiles_by_subchain (= the chain id used in
+                # atom_selection). Absent -> False, so a ligand opts in explicitly.
+                conformer_restraints=self._conf_restraints_by_subchain.get(str(ch), False),
             )

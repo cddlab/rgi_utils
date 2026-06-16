@@ -45,10 +45,13 @@ class LigandConf:
     global_indices: "np.ndarray"  # (n_lig_atoms,) global padded atom index per mol atom
     invert_chirality: bool = False
     # per-ligand opt-in: conformer restraints (bond/angle/chiral/VdW) are built for
-    # this ligand ONLY when this is True. Adapters with a per-ligand input flag
-    # (boltz/protenix/openfold-3/af3) set it from ``conformer_restraints`` and default
-    # it to False (opt-in); tools without such a flag (chai/esm) pass True and rely on
-    # ``conformer_restraints_config`` being present as the gate.
+    # this ligand ONLY when this is True. EVERY tool now sets it from a per-ligand input
+    # flag and defaults it to False: boltz/protenix/openfold-3 from a ``conformer_restraints``
+    # field, chai from the sidecar ``conformer_restraints`` {chain: bool} map, esm from
+    # ``ChainInfo.conformer_restraints``. (af3 is the one inversion: its in-tool shim DROPS
+    # opted-out ligands upstream and passes True for the ones it keeps.) So a ligand left
+    # without the flag gets NO conformer restraints even when ``conformer_restraints_config``
+    # is present — the featurizer logs a warning in that case.
     conformer_restraints: bool = False
 
 

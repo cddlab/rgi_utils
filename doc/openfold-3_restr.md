@@ -21,10 +21,13 @@ export OPENFOLD_CACHE="$HOME/.openfold3"
 ## Configuring restraints
 
 OpenFold reads RGI from a **`restraints_config` field per query** in the input JSON
-(`queries.<name>.restraints_config`). OpenFold has **no per-ligand opt-in flag** — the example
-ligand only declares `ccd_codes`; including a `conformer_restraints_config` block applies the
-conformer restraints to the query's ligand(s). Ligands are identified by `molecule_type_id ==
-LIGAND` and accept `ccd_codes`.
+(`queries.<name>.restraints_config`). Two things turn conformer restraints on:
+
+1. **Per ligand** — add `"conformer_restraints": true` to the ligand chain to enable its
+   bond/angle/chiral/cistrans/VdW conformer restraints. Without it that ligand is left
+   unrestrained even when a `conformer_restraints_config` block is present.
+2. **The `restraints_config` block** — the distance / angle / dihedral / conformer / RMSD
+   restraints (below). Ligands are identified by `molecule_type_id == LIGAND` and accept `ccd_codes`.
 
 The example below writes **every usable variable** with a concrete value (distance / angle /
 dihedral / conformer / RMSD); see [`config.md`](config.md) for the alternatives
@@ -50,7 +53,8 @@ command passes `--use-msa-server true`, so OpenFold fetches the MSA from the Col
         {
           "molecule_type": "ligand",
           "chain_ids": ["B"],
-          "ccd_codes": "GLN"
+          "ccd_codes": "GLN",
+          "conformer_restraints": true
         }
       ],
       "restraints_config": {

@@ -127,9 +127,12 @@ windows cannot straddle ±180°.
 
 ## `conformer_restraints_config` (single dict)
 
-Holds a **ligand** at ideal RDKit geometry. It is a single dict (not a list); it applies to the
-ligand(s) the tool exposes. For boltz / protenix / AF3 a ligand opts in with `conformer_restraints:
-true`; chai and openfold apply it to all ligands when this block is present.
+Holds a **ligand** at ideal RDKit geometry. It is a single dict (not a list). Conformer restraints
+are **per-ligand opt-in in every tool** — a ligand is restrained only when it is flagged, even with
+this block present. The flag's placement differs by input format: boltz / protenix / AF3 / openfold
+set `conformer_restraints: true` on the ligand object; esmfold2 sets `conformer_restraints=True` on
+the `LigandInput`; chai (whose FASTA can't carry it) uses a sidecar `conformer_restraints` map keyed
+by ligand chain id (e.g. `{B: true}`).
 
 Top-level (shared by all terms): `start_sigma` (`+inf`), `stop_sigma` (`-1`).
 

@@ -196,10 +196,16 @@ def gpu_cg(prepared, x0, max_iter, vdw=None):
     with_vdw = vdw is not None
     cvg = _get_cvg(with_vdw=with_vdw) if x0.is_cuda else None
     if cvg is not None:
-        vg = (lambda x: cvg(x, prepared, *vdw)) if with_vdw else (lambda x: cvg(x, prepared))
+        vg = (
+            (lambda x: cvg(x, prepared, *vdw))
+            if with_vdw
+            else (lambda x: cvg(x, prepared))
+        )
         try:
             return _cg_minimize_torch(vg, x0, max_iter)
-        except Exception as exc:  # this artifact's runtime failure -> eager, permanently
+        except (
+            Exception
+        ) as exc:  # this artifact's runtime failure -> eager, permanently
             logger.warning("GPU CG (compiled) failed at runtime (%s); eager", exc)
             _compile_failed[with_vdw] = True
 

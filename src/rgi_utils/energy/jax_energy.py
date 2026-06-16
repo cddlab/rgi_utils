@@ -169,7 +169,9 @@ def _move_centroid(positions, grp_idx, grp_mask, free):
     centroid = _group_centroid(positions, grp_idx, grp_mask)
     centroid_d = jax.lax.stop_gradient(centroid)
     n = jnp.sum(grp_mask, axis=-1, keepdims=True)  # group size (..., n_restr, 1)
-    centroid_eff = centroid_d + n * (centroid - centroid_d)  # un-suppress the 1/N centroid gradient (rigid step)
+    centroid_eff = centroid_d + n * (
+        centroid - centroid_d
+    )  # un-suppress the 1/N centroid gradient (rigid step)
     return jnp.where((free > 0.5)[..., None], centroid_eff, centroid_d)
 
 
@@ -202,8 +204,19 @@ def _dihedral_angle(p0, p1, p2, p3):
 
 
 def group_angle_energy(
-    positions, grp1_idx, grp2_idx, grp3_idx, grp1_mask, grp2_mask, grp3_mask,
-    target1, target2, geom_type, move_free, weight, mask,
+    positions,
+    grp1_idx,
+    grp2_idx,
+    grp3_idx,
+    grp1_mask,
+    grp2_mask,
+    grp3_mask,
+    target1,
+    target2,
+    geom_type,
+    move_free,
+    weight,
+    mask,
 ):
     """Distance-style flat-bottomed angle between three group centroids (vertex = group 2).
     Mirrors ``numpy_energy.group_angle_energy``; ``move_free`` (n,3) pins groups via the
@@ -223,9 +236,21 @@ def group_angle_energy(
 
 
 def group_dihedral_energy(
-    positions, grp1_idx, grp2_idx, grp3_idx, grp4_idx,
-    grp1_mask, grp2_mask, grp3_mask, grp4_mask,
-    target1, target2, geom_type, move_free, weight, mask,
+    positions,
+    grp1_idx,
+    grp2_idx,
+    grp3_idx,
+    grp4_idx,
+    grp1_mask,
+    grp2_mask,
+    grp3_mask,
+    grp4_mask,
+    target1,
+    target2,
+    geom_type,
+    move_free,
+    weight,
+    mask,
 ):
     """Distance-style flat-bottomed dihedral between 4 group centroids (axis = centroid2-centroid3).
     harmonic (geom_type 0) is periodicity-safe (deviation wrapped). Mirrors
@@ -257,8 +282,16 @@ def _kabsch_R(Q0, P0):
 
 
 def rmsd_energy(
-    positions, fit_idx, fit_mask, fit_ref, calc_idx, calc_mask, calc_ref,
-    target_rmsd, weight, mask,
+    positions,
+    fit_idx,
+    fit_mask,
+    fit_ref,
+    calc_idx,
+    calc_mask,
+    calc_ref,
+    target_rmsd,
+    weight,
+    mask,
 ):
     """Fit/calc Kabsch RMSD restraint (mirrors ``numpy_energy.rmsd_energy``). R +
     centroids from the FIT atoms; RMSD over the CALC atoms. R is stop-gradient'd."""

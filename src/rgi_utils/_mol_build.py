@@ -195,7 +195,9 @@ def uff_relax(mol, coords):
         m = Chem.Mol(mol)
         conf = Chem.Conformer(m.GetNumAtoms())
         for i in range(m.GetNumAtoms()):
-            conf.SetAtomPosition(i, (float(coords[i, 0]), float(coords[i, 1]), float(coords[i, 2])))
+            conf.SetAtomPosition(
+                i, (float(coords[i, 0]), float(coords[i, 1]), float(coords[i, 2]))
+            )
         m.RemoveAllConformers()
         m.AddConformer(conf, assignId=True)
         mh = Chem.AddHs(m, addCoords=True)  # Hs placed from heavy-atom geometry

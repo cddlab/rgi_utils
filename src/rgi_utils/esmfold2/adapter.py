@@ -21,10 +21,13 @@ Like the other adapters it imports no framework: tensors are duck-typed to numpy
 (``.detach().cpu().numpy()`` when present) so ``import rgi_utils`` stays numpy-only.
 
 Conformer bonds come from ``token_bonds`` (the real CCD/SMILES connectivity) rather
-than perceived geometry — more reliable than the chai path. ``token_bonds`` is
-binary, so every bond is order 1: bond/angle/chiral apply, but the cistrans
-(cis/trans) term — which keys on ``BondType.DOUBLE`` — finds nothing on ESMFold2
-ligands (cistrans=0), the same limitation as chai.
+than perceived geometry — more reliable than the chai path. ``token_bonds`` is itself
+binary (connectivity only), but the real bond ORDERS are recovered from
+``ChainInfo.ligand_bond_orders`` (CCD via ``get_ligand_ccd_bonds``; SMILES via the
+Kekulized 3-tuples emitted by ``tokenize_ligand_smiles``) and applied in
+``iter_ligand_confs`` below. So bond/angle/chiral AND the cistrans (cis/trans) term —
+which keys on ``BondType.DOUBLE`` — all work on ESMFold2 ligands (CCD and SMILES alike),
+for any ligand with an acyclic, non-aromatic double bond (e.g. fumarate/maleate).
 """
 
 from __future__ import annotations
@@ -117,6 +120,13 @@ class ESMFold2Adapter:
         # target. Absent (SMILES ligand / older feats) -> orders default to single.
         self._asym_to_bond_orders = {
             int(c.asym_id): list(getattr(c, "ligand_bond_orders", None) or [])
+            for c in (chain_infos or [])
+        }
+        # {asym_id -> bool} per-ligand conformer_restraints opt-in (from
+        # LigandInput.conformer_restraints via ChainInfo); absent -> False (opt-in
+        # required), so a ligand is restrained only when it explicitly opted in.
+        self._asym_to_conf_restraints = {
+            int(c.asym_id): bool(getattr(c, "conformer_restraints", False))
             for c in (chain_infos or [])
         }
         self._tok_ordinal = self._compute_token_ordinals()
@@ -236,7 +246,9 @@ class ESMFold2Adapter:
                 mol=mol,
                 conf_coords=coords,
                 global_indices=idxs,
-                # ESMFold2 has no per-ligand conformer_restraints input flag, so opt-in
-                # is governed by conformer_restraints_config presence (build_spec gate).
-                conformer_restraints=True,
+                # per-ligand opt-in from LigandInput.conformer_restraints (via ChainInfo);
+                # absent -> False, so a ligand is restrained only if it explicitly opted in.
+                conformer_restraints=self._asym_to_conf_restraints.get(
+                    int(asym), False
+                ),
             )

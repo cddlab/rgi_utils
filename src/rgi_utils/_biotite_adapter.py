@@ -55,7 +55,8 @@ def biotite_ligand_confs(
       - ``coords_all`` (n_atom, 3): conformer-geometry source aligned to the atom
         order (protenix ``atom_array.coord``; openfold ``ref_pos``).
       - ``conf_rest_default``: per-ligand opt-in used when the AtomArray has no
-        ``conformer_restraints`` annotation (protenix False, openfold True).
+        ``conformer_restraints`` annotation (protenix + openfold both False -> the
+        per-ligand flag is required; each tool sets the annotation from its input).
       - ``post_build(chain_id, mol, coords, idxs, elements_all, bonds_local) ->
         (mol, coords)``: optional hook to replace the target geometry per ligand
         (protenix rebuilds a stereo-correct SMILES ideal conformer); None = identity.

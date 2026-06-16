@@ -99,7 +99,16 @@ def test_group_angle_dihedral_active_union_and_padding():
 
     spec = build_spec(angle_restraints=[ad], dihedral_restraints=[dd])
     assert {int(x) for x in spec.active_sites} == {
-        10, 11, 12, 20, 30, 31, 40, 50, 60, 70
+        10,
+        11,
+        12,
+        20,
+        30,
+        31,
+        40,
+        50,
+        60,
+        70,
     }
 
     g2l = {int(g): i for i, g in enumerate(spec.active_sites)}

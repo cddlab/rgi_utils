@@ -15,9 +15,9 @@ The backend (numpy/torch/jax) is chosen from the config; torch/jax optimizers ar
 imported lazily so importing this module needs neither. JAX tools that run inside
 ``jax.lax.scan`` should grab the pure minimizer via ``get_minimizer()``.
 
-``get_instance()`` / ``reset()`` are a back-compat singleton shim (kept for
-existing tests and boltz's legacy parse-time builders); new code should use the
-instance-scoped lifecycle above, not the singleton.
+``get_instance()`` / ``reset()`` are a back-compat singleton shim (kept only for
+existing tests); new code should use the instance-scoped lifecycle above, not the
+singleton.
 """
 
 from __future__ import annotations
@@ -271,14 +271,21 @@ class CombinedRestraints:
 
     def _build_optimizer(self) -> None:
         b = self._backend
-        # Dynamic ligand-protein VdW (vdw_config) is implemented in the torch
-        # optimizer only; warn loudly rather than silently dropping it elsewhere.
+        # Dynamic ligand-protein VdW (vdw_config) runs on BOTH supported backends:
+        # the torch optimizer and the jax optimizer (jax_optim._vdw_pair_energy ports
+        # the torch term, so AF3 gets the full VdW too). Only an UNKNOWN backend would
+        # drop it — warn loudly then rather than silently. (numpy is rejected upstream
+        # in from_dict, so torch/jax are the only real backends.)
         vc = self.spec.vdw_config
-        if vc is not None and getattr(vc, "weight", 0) > 0 and b != "torch":
+        if (
+            vc is not None
+            and getattr(vc, "weight", 0) > 0
+            and b not in ("torch", "jax")
+        ):
             logger.warning(
                 "VdW restraint requested but backend=%s ignores it "
-                "(dynamic ligand-protein VdW is implemented for the torch "
-                "backend only); no VdW term will be applied.",
+                "(dynamic ligand-protein VdW is implemented for the torch and jax "
+                "backends only); no VdW term will be applied.",
                 b,
             )
         if b == "torch":
@@ -438,41 +445,3 @@ class CombinedRestraints:
             )
             return torch_energy.energy_breakdown(active, prepared)
         raise ValueError(f"unknown backend: {b}")
-
-    # --- Legacy parse-time builders (boltz schema.py back-compat) -------------
-    # Ligand conformer restraints are now built from LigandConf via the
-    # featurizer, so the ligand-path calls (make_bond/make_angle_restraints and
-    # make_chiral without invert) are intentional no-ops. A few restraint kinds
-    # are NOT yet ported and would otherwise be lost silently — warn loudly.
-    _warned: set = set()
-
-    @classmethod
-    def _warn_unsupported(cls, feature: str) -> None:
-        if feature not in cls._warned:
-            cls._warned.add(feature)
-            logger.warning(
-                "rgi_utils does not yet support %s restraints; they are ignored. "
-                "(distance + ligand bond/angle/chiral/vdw are supported.)",
-                feature,
-            )
-
-    def make_chiral(self, *args, **kwargs) -> None:
-        # invert=True is the polymer D-residue chirality flip (not yet ported);
-        # the plain ligand call is handled by the featurizer.
-        if kwargs.get("invert"):
-            self._warn_unsupported("inverted-chirality (D-residue)")
-
-    def make_bond(self, *args, **kwargs) -> None:
-        pass
-
-    def make_angle_restraints(self, *args, **kwargs) -> None:
-        pass
-
-    def make_link_bond(self, *args, **kwargs) -> None:
-        self._warn_unsupported("inter-chain link-bond")
-
-    def link_bonds_by_conf(self, *args, **kwargs) -> None:
-        # only warn when there is actually link-bond config to apply
-        cfg = args[1] if len(args) > 1 else kwargs.get("config")
-        if cfg:
-            self._warn_unsupported("link_bonds_by_conf")

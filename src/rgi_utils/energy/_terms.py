@@ -16,41 +16,116 @@ from __future__ import annotations
 
 # (prepared_key, spec_attr, [(field_name, kind), ...]); kind "i"=int array, "f"=float.
 _SPEC_SCHEMA = [
-    ("bond", "bond",
-     [("idx", "i"), ("r0", "f"), ("slack", "f"), ("weight", "f"), ("half", "f"),
-      ("mask", "f")]),
-    ("angle", "angle",
-     [("idx", "i"), ("th0", "f"), ("slack", "f"), ("weight", "f"), ("mask", "f")]),
-    ("chiral", "chiral",
-     [("idx", "i"), ("vol0", "f"), ("slack", "f"), ("weight", "f"), ("mask", "f")]),
-    ("cistrans", "cistrans",
-     [("idx", "i"), ("phi0", "f"), ("slack", "f"), ("weight", "f"), ("mask", "f")]),
-    ("vdw", "vdw",
-     [("idx", "i"), ("r_min", "f"), ("weight", "f"), ("mask", "f")]),
-    ("distance", "distance",
-     [("grp1_idx", "i"), ("grp2_idx", "i"), ("grp1_mask", "f"), ("grp2_mask", "f"),
-      ("target1", "f"), ("target2", "f"), ("dist_type", "i"), ("move_mode", "i"),
-      ("mask", "f"), ("start_sigma", "f"), ("stop_sigma", "f")]),
-    ("rmsd", "rmsd",
-     [("fit_idx", "i"), ("fit_mask", "f"), ("fit_ref", "f"), ("calc_idx", "i"),
-      ("calc_mask", "f"), ("calc_ref", "f"), ("target_rmsd", "f"), ("weight", "f"),
-      ("mask", "f"), ("start_sigma", "f"), ("stop_sigma", "f")]),
+    (
+        "bond",
+        "bond",
+        [
+            ("idx", "i"),
+            ("r0", "f"),
+            ("slack", "f"),
+            ("weight", "f"),
+            ("half", "f"),
+            ("mask", "f"),
+        ],
+    ),
+    (
+        "angle",
+        "angle",
+        [("idx", "i"), ("th0", "f"), ("slack", "f"), ("weight", "f"), ("mask", "f")],
+    ),
+    (
+        "chiral",
+        "chiral",
+        [("idx", "i"), ("vol0", "f"), ("slack", "f"), ("weight", "f"), ("mask", "f")],
+    ),
+    (
+        "cistrans",
+        "cistrans",
+        [("idx", "i"), ("phi0", "f"), ("slack", "f"), ("weight", "f"), ("mask", "f")],
+    ),
+    ("vdw", "vdw", [("idx", "i"), ("r_min", "f"), ("weight", "f"), ("mask", "f")]),
+    (
+        "distance",
+        "distance",
+        [
+            ("grp1_idx", "i"),
+            ("grp2_idx", "i"),
+            ("grp1_mask", "f"),
+            ("grp2_mask", "f"),
+            ("target1", "f"),
+            ("target2", "f"),
+            ("dist_type", "i"),
+            ("move_mode", "i"),
+            ("mask", "f"),
+            ("start_sigma", "f"),
+            ("stop_sigma", "f"),
+        ],
+    ),
+    (
+        "rmsd",
+        "rmsd",
+        [
+            ("fit_idx", "i"),
+            ("fit_mask", "f"),
+            ("fit_ref", "f"),
+            ("calc_idx", "i"),
+            ("calc_mask", "f"),
+            ("calc_ref", "f"),
+            ("target_rmsd", "f"),
+            ("weight", "f"),
+            ("mask", "f"),
+            ("start_sigma", "f"),
+            ("stop_sigma", "f"),
+        ],
+    ),
     # group-centroid angle (3 groups, vertex = group 2) / dihedral (4 groups, axis =
     # group2-group3): each group is a padded (n, max_grp) index list + {0,1} mask (same
     # layout as distance). target1/target2/geom_type mirror distance's four
     # types; move_free ((n,n_groups) {0,1}) drives the energy's detach-select (unlike
     # distance, where move lives in the closed-form shift).
     # start_sigma/stop_sigma are per-restraint.
-    ("group_angle", "group_angle",
-     [("grp1_idx", "i"), ("grp2_idx", "i"), ("grp3_idx", "i"),
-      ("grp1_mask", "f"), ("grp2_mask", "f"), ("grp3_mask", "f"),
-      ("target1", "f"), ("target2", "f"), ("geom_type", "i"), ("move_free", "f"),
-      ("weight", "f"), ("mask", "f"), ("start_sigma", "f"), ("stop_sigma", "f")]),
-    ("group_dihedral", "group_dihedral",
-     [("grp1_idx", "i"), ("grp2_idx", "i"), ("grp3_idx", "i"), ("grp4_idx", "i"),
-      ("grp1_mask", "f"), ("grp2_mask", "f"), ("grp3_mask", "f"), ("grp4_mask", "f"),
-      ("target1", "f"), ("target2", "f"), ("geom_type", "i"), ("move_free", "f"),
-      ("weight", "f"), ("mask", "f"), ("start_sigma", "f"), ("stop_sigma", "f")]),
+    (
+        "group_angle",
+        "group_angle",
+        [
+            ("grp1_idx", "i"),
+            ("grp2_idx", "i"),
+            ("grp3_idx", "i"),
+            ("grp1_mask", "f"),
+            ("grp2_mask", "f"),
+            ("grp3_mask", "f"),
+            ("target1", "f"),
+            ("target2", "f"),
+            ("geom_type", "i"),
+            ("move_free", "f"),
+            ("weight", "f"),
+            ("mask", "f"),
+            ("start_sigma", "f"),
+            ("stop_sigma", "f"),
+        ],
+    ),
+    (
+        "group_dihedral",
+        "group_dihedral",
+        [
+            ("grp1_idx", "i"),
+            ("grp2_idx", "i"),
+            ("grp3_idx", "i"),
+            ("grp4_idx", "i"),
+            ("grp1_mask", "f"),
+            ("grp2_mask", "f"),
+            ("grp3_mask", "f"),
+            ("grp4_mask", "f"),
+            ("target1", "f"),
+            ("target2", "f"),
+            ("geom_type", "i"),
+            ("move_free", "f"),
+            ("weight", "f"),
+            ("mask", "f"),
+            ("start_sigma", "f"),
+            ("stop_sigma", "f"),
+        ],
+    ),
 ]
 
 
@@ -65,7 +140,9 @@ def pack_spec(spec, to_int, to_float):
     }
     for key, attr, fields in _SPEC_SCHEMA:
         arr = getattr(spec, attr, None)
-        if arr is None or not (arr.mask.sum() > 0):  # same as old `> 0` include, NaN-safe
+        if arr is None or not (
+            arr.mask.sum() > 0
+        ):  # same as old `> 0` include, NaN-safe
             continue
         prepared[key] = {f: conv[kind](getattr(arr, f)) for f, kind in fields}
     return prepared
@@ -86,19 +163,73 @@ _TERMS = [
     ("chiral", "chiral_energy", ["idx", "vol0", "slack", "weight"], "conf"),
     ("cistrans", "cistrans_energy", ["idx", "phi0", "slack", "weight"], "conf"),
     ("vdw", "vdw_energy", ["idx", "r_min", "weight"], "conf"),
-    ("distance", "distance_energy",
-     ["grp1_idx", "grp2_idx", "grp1_mask", "grp2_mask", "target1", "target2",
-      "dist_type"], "dist"),
-    ("rmsd", "rmsd_energy",
-     ["fit_idx", "fit_mask", "fit_ref", "calc_idx", "calc_mask", "calc_ref",
-      "target_rmsd", "weight"], "rmsd"),
-    ("group_angle", "group_angle_energy",
-     ["grp1_idx", "grp2_idx", "grp3_idx", "grp1_mask", "grp2_mask", "grp3_mask",
-      "target1", "target2", "geom_type", "move_free", "weight"], "group"),
-    ("group_dihedral", "group_dihedral_energy",
-     ["grp1_idx", "grp2_idx", "grp3_idx", "grp4_idx",
-      "grp1_mask", "grp2_mask", "grp3_mask", "grp4_mask",
-      "target1", "target2", "geom_type", "move_free", "weight"], "group"),
+    (
+        "distance",
+        "distance_energy",
+        [
+            "grp1_idx",
+            "grp2_idx",
+            "grp1_mask",
+            "grp2_mask",
+            "target1",
+            "target2",
+            "dist_type",
+        ],
+        "dist",
+    ),
+    (
+        "rmsd",
+        "rmsd_energy",
+        [
+            "fit_idx",
+            "fit_mask",
+            "fit_ref",
+            "calc_idx",
+            "calc_mask",
+            "calc_ref",
+            "target_rmsd",
+            "weight",
+        ],
+        "rmsd",
+    ),
+    (
+        "group_angle",
+        "group_angle_energy",
+        [
+            "grp1_idx",
+            "grp2_idx",
+            "grp3_idx",
+            "grp1_mask",
+            "grp2_mask",
+            "grp3_mask",
+            "target1",
+            "target2",
+            "geom_type",
+            "move_free",
+            "weight",
+        ],
+        "group",
+    ),
+    (
+        "group_dihedral",
+        "group_dihedral_energy",
+        [
+            "grp1_idx",
+            "grp2_idx",
+            "grp3_idx",
+            "grp4_idx",
+            "grp1_mask",
+            "grp2_mask",
+            "grp3_mask",
+            "grp4_mask",
+            "target1",
+            "target2",
+            "geom_type",
+            "move_free",
+            "weight",
+        ],
+        "group",
+    ),
 ]
 
 
@@ -133,8 +264,15 @@ def term_energies(fns, prepared, positions, cg, sigma_gate, include_distance):
 
 # the float keys energy_breakdown reports, in display order (all start at 0.0)
 BREAKDOWN_KEYS = (
-    "bond", "angle", "chiral", "cistrans", "vdw", "distance", "rmsd",
-    "group_angle", "group_dihedral",
+    "bond",
+    "angle",
+    "chiral",
+    "cistrans",
+    "vdw",
+    "distance",
+    "rmsd",
+    "group_angle",
+    "group_dihedral",
 )
 
 # the conformer-gated term keys (gate == "conf"): the single source of truth for which
