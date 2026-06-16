@@ -150,17 +150,6 @@ restraint, every variable spelled out.
 
 ## How to run
 
-### Prerequisite — generate `rmsd_ref.pdb`
-
-The config has an RMSD restraint. Run AF3 once **without** `restraints_config`, then convert to PDB.
-AF3's venv lacks gemmi, so convert with another tool's venv:
-
-```bash
-python run_alphafold.py --run_data_pipeline=False --model_dir=<MODEL_DIR> \
-    --json_path=vanilla.json --output_dir=out_vanilla
-../chai-lab_restr/.venv/bin/python -c "import gemmi,glob; gemmi.read_structure(glob.glob('out_vanilla/**/*.cif',recursive=True)[0]).write_pdb('rmsd_ref.pdb')"
-```
-
 ### Run
 
 Save as `run_restr_example.sh` and run it on a GPU machine (`bash run_restr_example.sh`). Set

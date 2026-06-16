@@ -123,17 +123,6 @@ command passes `--use_msa true`, so protenix runs its (ColabFold-compatible) MSA
 
 ## How to run
 
-### Prerequisite — generate `rmsd_ref.pdb`
-
-The config has an RMSD restraint, so supply the reference first: predict the same complex once
-**without** `restraints_config`, then convert to PDB.
-
-```bash
-protenix pred -i vanilla.json -o out_vanilla --use_default_params true --use_msa true \
-    --seeds 0 --step 200 --sample 1 --cycle 4
-python -c "import gemmi,glob; gemmi.read_structure(glob.glob('out_vanilla/**/*.cif',recursive=True)[0]).write_pdb('rmsd_ref.pdb')"
-```
-
 ### Run
 
 Save as `run_restr_example.sh` and run it on a GPU machine (`bash run_restr_example.sh`):

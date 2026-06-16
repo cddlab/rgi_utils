@@ -116,16 +116,6 @@ restraints_config:
 
 ## How to run
 
-### Prerequisite — generate `rmsd_ref.pdb`
-
-The config has an RMSD restraint (`ref_pdb: rmsd_ref.pdb`), so supply the reference first: predict
-the same complex once **without** restraints, then convert the output to PDB:
-
-```bash
-boltz predict vanilla.yaml --seed 0 --out_dir out_vanilla --model boltz2 --use_msa_server
-python -c "import gemmi,glob; gemmi.read_structure(glob.glob('out_vanilla/**/*.cif',recursive=True)[0]).write_pdb('rmsd_ref.pdb')"
-```
-
 ### Run
 
 Save this as `run_restr_example.sh` and run it on a GPU machine (`bash run_restr_example.sh`):

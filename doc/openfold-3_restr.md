@@ -136,16 +136,6 @@ command passes `--use-msa-server true`, so OpenFold fetches the MSA from the Col
 
 ## How to run
 
-### Prerequisite — generate `rmsd_ref.pdb`
-
-The config has an RMSD restraint. Run once **without** `restraints_config`, then convert to PDB:
-
-```bash
-"$PIXI" run -e openfold3-cuda12 run_openfold predict --query-json vanilla.json \
-    --output-dir out_vanilla --num-diffusion-samples 2 --use-msa-server true --use-templates false
-python -c "import gemmi,glob; gemmi.read_structure(glob.glob('out_vanilla/**/*.cif',recursive=True)[0]).write_pdb('rmsd_ref.pdb')"
-```
-
 ### Run
 
 Save as `run_restr_example.sh` and run it on a GPU machine (`bash run_restr_example.sh`):

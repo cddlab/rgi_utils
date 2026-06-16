@@ -6,14 +6,14 @@ Restraint-Guided Inference (RGI) utilities for diffusion-based structure predict
 
 Five restraint types, all minimized during the denoising loop to guide coordinate optimization:
 
-- **distance** — centroid distance between two atom groups (applied closed-form).
-- **angle** — the angle of three atom groups' centroids (vertex = group 2), in degrees;
-  the angular analogue of the distance restraint.
-- **dihedral** — the dihedral of four atom groups' centroids (axis = groups 2–3), in degrees.
 - **conformer** — ligand bond / angle / chiral-volume / dihedral (cis/trans) toward an
   ideal RDKit geometry, plus **VdW** non-bonded clash avoidance (intramolecular and/or
   dynamic ligand-protein; `mode` defaults to `both`).
 - **RMSD** — Kabsch-superposed RMSD of a group toward a reference PDB.
+- **distance** — centroid distance between two atom groups (applied closed-form).
+- **angle** — the angle of three atom groups' centroids (vertex = group 2), in degrees;
+  the angular analogue of the distance restraint.
+- **dihedral** — the dihedral of four atom groups' centroids (axis = groups 2–3), in degrees.
 
 The default `method='CG'` solver (a nonlinear conjugate gradient with autodiff gradients)
 runs on GPU or CPU via the same torch/jax backend (`gpu: false` runs it on CPU); distance

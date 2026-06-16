@@ -111,16 +111,6 @@ rmsd_restraints_config:
 
 ## How to run
 
-### Prerequisite — generate `rmsd_ref.pdb`
-
-The sidecar has an RMSD restraint. Fold the FASTA once **without** the sidecar, then convert to PDB:
-
-```bash
-python -m chai_lab.main fold restr_example.fasta out_vanilla --num-diffn-samples 2 \
-    --use-msa-server --use-templates-server --no-use-esm-embeddings
-python -c "import gemmi,glob; gemmi.read_structure(glob.glob('out_vanilla/**/*.cif',recursive=True)[0]).write_pdb('rmsd_ref.pdb')"
-```
-
 ### Run
 
 Save as `run_restr_example.sh` and run it on a GPU machine (`bash run_restr_example.sh`). Note that

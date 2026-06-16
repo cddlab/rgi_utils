@@ -180,15 +180,6 @@ if __name__ == "__main__":
 
 ## How to run
 
-### Prerequisite — generate `rmsd_ref.pdb`
-
-`RESTRAINTS_CONFIG` has an RMSD restraint. Fold once **without** restraints (pass
-`restraints_config=None`), write the mmCIF, and convert to PDB:
-
-```bash
-python -c "import gemmi; gemmi.read_structure('out_esm_vanilla.cif').write_pdb('rmsd_ref.pdb')"
-```
-
 ### Run
 
 Save as `run_restr_example.sh` and run it on a GPU machine (`bash run_restr_example.sh`). Note the
