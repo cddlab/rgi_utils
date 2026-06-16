@@ -88,7 +88,9 @@ Supporting modules:
   calling `minimize` per step (AF3 forces `backend: jax`, so for AF3 the `gpu` flag is
   inert — to run AF3 restraints on CPU, run the whole process on the JAX CPU platform).
 - **Framework adapters** (`{boltz,protenix,chai,openfold3,esmfold2,alphafold3}/adapter.py` —
-  all framework-free; AF3's CCD/SMILES mol resolution lives in a thin in-tool shim
+  framework-free EXCEPT boltz, whose feats arrive as native torch tensors so its adapter
+  imports torch (read at batch 0); the others import no framework. AF3's CCD/SMILES mol
+  resolution lives in a thin in-tool shim
   (`alphafold3_restr` `build_af3_adapter`) that feeds `rgi_utils/alphafold3/adapter.py` plain
   data): implement `iter_atoms()` (→
   `AtomRecord(chain, resid, index)` for distance selection) and optionally

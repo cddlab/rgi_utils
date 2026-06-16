@@ -67,10 +67,18 @@ class ESMFold2Adapter:
     """
 
     def __init__(
-        self, features: dict, chain_infos=None, num_atoms: int | None = None,
+        self,
+        features: dict,
+        chain_infos=None,
+        num_atoms: int | None = None,
         res_type_names: dict | None = None,
     ) -> None:
         self._asym = _batch0(features["asym_id"]).astype(np.int64)  # (n_tok,)
+        # Precondition guard data: per-chain ordinals assume NO token padding (pad
+        # tokens would consume ordinals and shift real residue/ligand resids). Keep the
+        # token mask (if present) so _compute_token_ordinals can verify it is all-ones.
+        _tam = features.get("token_attention_mask")
+        self._token_mask = _batch0(_tam).astype(bool) if _tam is not None else None
         self._mol_type = _batch0(features["mol_type"]).astype(np.int64)  # (n_tok,)
         # per-token residue-type int + the {int -> 3-letter} vocab passed in by the
         # esm caller (adapter stays framework-free); powers AtomRecord.resname ->
@@ -132,6 +140,12 @@ class ESMFold2Adapter:
         and shift the real residue/ligand ordinals — guard on the token mask first if
         that precondition ever changes.
         """
+        if self._token_mask is not None and not bool(self._token_mask.all()):
+            raise ValueError(
+                "ESMFold2Adapter: token_attention_mask has padding (not all-ones); "
+                "per-chain resid ordinals would be shifted by pad tokens. Filter pad "
+                "tokens before building AtomRecords."
+            )
         counter: dict[int, int] = {}
         ordinal: dict[int, int] = {}
         for tok in range(len(self._asym)):

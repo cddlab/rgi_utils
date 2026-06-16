@@ -33,10 +33,26 @@ from __future__ import annotations
 import logging
 import math
 
+from rgi_utils._config_util import warn_unknown_keys
 from rgi_utils.atom_context import FrameworkAdapter
 from rgi_utils.selection import AtomSelector
 
 logger = logging.getLogger(__name__)
+
+_KNOWN_ANGLE_KEYS = {
+    "atom_selection1",
+    "atom_selection2",
+    "atom_selection3",
+    "weight",
+    "start_sigma",
+    "stop_sigma",
+    "move",
+    "harmonic",
+    "flat-bottomed",
+    "flat-bottomed1",
+    "flat-bottomed2",
+}
+_KNOWN_DIHEDRAL_KEYS = _KNOWN_ANGLE_KEYS | {"atom_selection4"}
 
 
 def _resolve_group_sites(
@@ -64,7 +80,8 @@ def _resolve_group_sites(
             if sel.eval(candidate):
                 sites[gi].append(atom.index)
     for gi, s in enumerate(sites):
-        assert len(s) != 0, f"group {gi + 1} selection matched no atoms"
+        if len(s) == 0:
+            raise ValueError(f"group {gi + 1} selection matched no atoms")
     return sites
 
 
@@ -140,9 +157,7 @@ def _parse_move(config: dict, n_groups: int, default_free: tuple) -> tuple:
             f"'move' must be 'all' or group indices 1..{n_groups} (got {mv!r})"
         )
     if not idx or any(k < 1 or k > n_groups for k in idx):
-        raise ValueError(
-            f"'move' indices must be within 1..{n_groups} (got {mv!r})"
-        )
+        raise ValueError(f"'move' indices must be within 1..{n_groups} (got {mv!r})")
     return tuple((g + 1) in idx for g in range(n_groups))
 
 
@@ -206,12 +221,18 @@ class AngleRestraintData:
         self.stop_sigma = -1.0  # never released (active down to sigma=0)
 
     def set_config(self, config: dict):
+        warn_unknown_keys(
+            config, _KNOWN_ANGLE_KEYS, "angle_restraints_config entry", logger
+        )
         self.atom_selection1 = config.get("atom_selection1", None)
         self.atom_selection2 = config.get("atom_selection2", None)
         self.atom_selection3 = config.get("atom_selection3", None)
         # default move: arms (groups 1 + 3) free, vertex (group 2) pinned
         _parse_common(
-            self, config, n_groups=3, base="target_angle",
+            self,
+            config,
+            n_groups=3,
+            base="target_angle",
             default_free=(True, False, True),
         )
         self.run_restr = (
@@ -294,13 +315,19 @@ class DihedralRestraintData:
         self.stop_sigma = -1.0  # never released
 
     def set_config(self, config: dict):
+        warn_unknown_keys(
+            config, _KNOWN_DIHEDRAL_KEYS, "dihedral_restraints_config entry", logger
+        )
         self.atom_selection1 = config.get("atom_selection1", None)
         self.atom_selection2 = config.get("atom_selection2", None)
         self.atom_selection3 = config.get("atom_selection3", None)
         self.atom_selection4 = config.get("atom_selection4", None)
         # default move: end groups (1 + 4) free, axis (groups 2 + 3) pinned
         _parse_common(
-            self, config, n_groups=4, base="target_dihedral",
+            self,
+            config,
+            n_groups=4,
+            base="target_dihedral",
             default_free=(True, False, False, True),
         )
         self.run_restr = (

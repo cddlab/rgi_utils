@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
+from rgi_utils._config_util import coerce_bool
 from rgi_utils.distance_restr_data import DistanceData
 from rgi_utils.group_geom_restr_data import AngleRestraintData, DihedralRestraintData
 from rgi_utils.rmsd_restr_data import RmsdData
@@ -30,11 +31,41 @@ class RestraintsConfig:
     distance_data: list = field(default_factory=list)
     rmsd_data: list = field(default_factory=list)
     angle_data: list = field(default_factory=list)  # group-centroid angle restraints
-    dihedral_data: list = field(default_factory=list)  # group-centroid dihedral restraints
+    dihedral_data: list = field(
+        default_factory=list
+    )  # group-centroid dihedral restraints
 
     @classmethod
     def from_dict(cls, config: dict | None) -> "RestraintsConfig":
         config = config or {}
+        # Validate top-level keys against a fixed whitelist and RAISE on anything
+        # unknown. The dangerous case this catches: a misspelled SECTION name (e.g.
+        # 'distance_restraint_config' instead of 'distance_restraints_config') makes
+        # config.get(<correct name>, []) return nothing and silently drops the WHOLE
+        # restraint block -> a valid-looking unrestrained run (wasted GPU + wrong
+        # conclusions). A warning would be muted by the package NullHandler, so this
+        # must raise. 'start_sigma' is excluded so its dedicated migration message
+        # below fires instead of this generic one.
+        _KNOWN_TOP_LEVEL = {
+            "verbose",
+            "gpu",
+            "backend",
+            "method",
+            "max_iter",
+            "conformer_restraints_config",
+            "distance_restraints_config",
+            "rmsd_restraints_config",
+            "angle_restraints_config",
+            "dihedral_restraints_config",
+        }
+        _unknown_top = set(config) - _KNOWN_TOP_LEVEL - {"start_sigma"}
+        if _unknown_top:
+            raise ValueError(
+                f"restraints_config: unknown top-level key(s) {sorted(_unknown_top)}. "
+                f"Known keys: {sorted(_KNOWN_TOP_LEVEL)}. A misspelled section name "
+                f"(e.g. 'distance_restraint_config') would silently drop the whole "
+                f"restraint block, so it is rejected here."
+            )
         # start_sigma is NOT a global key (the old global + per-entry override scheme was
         # confusing): it is set per distance entry and once for all conformer terms. A
         # top-level 'start_sigma' is rejected. It is OPTIONAL per restraint — when omitted
@@ -62,18 +93,10 @@ class RestraintsConfig:
         # (omitted -> -1 = off). Window: conf_stop <= sigma <= conf_start
         _csstop = conformer_config.get("stop_sigma")
         conf_stop_sigma = float(_csstop) if _csstop is not None else -1.0
-        # Coerce gpu to a real bool: a quoted/string value (e.g. "false"/"no"/"off"/
-        # "0") is truthy in Python and would otherwise pick the torch (GPU) backend
-        # for a CPU-intended run.
-        gpu_raw = config.get("gpu", False)
-        if isinstance(gpu_raw, bool):
-            gpu = gpu_raw
-        elif isinstance(gpu_raw, (int, float)):
-            # numeric flag: 1 / 1.0 / 2 -> True, 0 / 0.0 -> False (str("1.0") would
-            # otherwise miss the literal set and wrongly pick the CPU backend).
-            gpu = bool(gpu_raw)
-        else:
-            gpu = str(gpu_raw).strip().lower() in ("1", "true", "yes", "on")
+        # Coerce gpu to a real bool via the shared helper: a quoted/string value (e.g.
+        # "false"/"no"/"off"/"0") is truthy in Python and would otherwise pick the torch
+        # (GPU) backend for a CPU-intended run.
+        gpu = coerce_bool(config.get("gpu", False))
         # Normalize/validate the explicit backend. The numpy/scipy optimizer backend
         # was removed (gpu:false now runs torch on CPU), so reject it loudly rather
         # than silently doing something else.

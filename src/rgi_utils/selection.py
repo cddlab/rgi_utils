@@ -523,9 +523,6 @@ class AtomSelector:
         mol: Dict[str, str | int]
         e.g. mol = { "chain": "A", "resid": 1, "index": 0 }
         """
-        if self._error:
-            logger.warning(f"Cannot evaluate: parsing failed with error: {self._error}")
-            return False
         if self.parsed_selection is None:
             raise RuntimeError("Selection was not successfully parsed.")
 

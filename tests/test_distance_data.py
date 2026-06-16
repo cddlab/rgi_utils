@@ -120,5 +120,5 @@ class TestDistanceDataResolveSites:
             }
         )
         atoms = [AtomRecord(chain="A", resid=1, index=0)]
-        with pytest.raises(AssertionError):
+        with pytest.raises(ValueError, match="matched no atoms"):
             dd.resolve_sites(MockAdapter(atoms))

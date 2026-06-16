@@ -93,7 +93,9 @@ class TestAngleMove:
     def test_default_arms_free_vertex_pinned(self):
         # default move: groups 1 + 3 (arms) free, group 2 (vertex) pinned
         assert _angle({"harmonic": {"target_angle": 90.0}}).move_free == (
-            True, False, True,
+            True,
+            False,
+            True,
         )
 
     def test_move_single_group(self):
@@ -113,7 +115,9 @@ class TestAngleMove:
 
     def test_move_out_of_range_raises(self):
         with pytest.raises(ValueError, match="move"):
-            _angle({"harmonic": {"target_angle": 90.0}, "move": 4})  # angle has 3 groups
+            _angle(
+                {"harmonic": {"target_angle": 90.0}, "move": 4}
+            )  # angle has 3 groups
 
 
 class TestAngleResolve:
@@ -146,7 +150,7 @@ class TestAngleResolve:
             AtomRecord(chain="B", resid=1, index=0),
             AtomRecord(chain="C", resid=1, index=1),
         ]
-        with pytest.raises(AssertionError):
+        with pytest.raises(ValueError, match="matched no atoms"):
             ad.resolve_sites(MockAdapter(atoms))
 
 

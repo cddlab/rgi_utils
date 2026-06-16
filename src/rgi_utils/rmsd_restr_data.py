@@ -78,12 +78,29 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from rgi_utils._align import pair_residues
+from rgi_utils._config_util import coerce_bool, warn_unknown_keys
 from rgi_utils._moltype import polymer_type
 from rgi_utils.atom_context import FrameworkAdapter
 from rgi_utils.pdb_ref import read_pdb_atoms
 from rgi_utils.selection import AtomSelector
 
 logger = logging.getLogger(__name__)
+
+_KNOWN_RMSD_KEYS = {
+    "ref_pdb",
+    "target_rmsd",
+    "weight",
+    "start_sigma",
+    "stop_sigma",
+    "atom_selection_ref",
+    "atom_selection_target",
+    "atom_selection_ref_fit",
+    "atom_selection_target_fit",
+    "atom_selection_ref_calc",
+    "atom_selection_target_calc",
+    "best_effort",
+    "pairing",
+}
 
 
 @dataclass
@@ -125,6 +142,9 @@ class RmsdData:
     run_restr: bool = None
 
     def set_config(self, config: dict):
+        warn_unknown_keys(
+            config, _KNOWN_RMSD_KEYS, "rmsd_restraints_config entry", logger
+        )
         self.ref_pdb = config.get("ref_pdb", None)
         _tr = config.get("target_rmsd", None)
         self.target_rmsd = float(_tr) if _tr is not None else None
@@ -150,7 +170,7 @@ class RmsdData:
         self.sel_target_calc = config.get("atom_selection_target_calc", tgt)
         # tolerate partial topology overlap by default (skip unmatched atoms); set
         # best_effort:false for strict pairing that raises on any unmatched atom.
-        self.best_effort = bool(config.get("best_effort", True))
+        self.best_effort = coerce_bool(config.get("best_effort"), True)
         # DEFAULT "align": polymer chains (protein/dna/rna) are sequence-aligned so a
         # homolog reference maps on by residue, not by fragile ordinal numbering;
         # non-polymer atoms (ligands) always stay on ordinal identity. align only

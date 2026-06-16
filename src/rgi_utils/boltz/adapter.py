@@ -4,6 +4,11 @@ import logging
 from typing import Iterator
 
 import numpy as np
+
+# boltz adapter imports torch ON PURPOSE (the other five rgi_utils adapters are
+# framework-free): boltz feats arrive as native torch tensors, read at batch 0 here.
+# It is a lazily-imported submodule, so top-level `import rgi_utils` still needs only
+# numpy (the framework-free invariant's actual intent).
 import torch
 
 from rgi_utils._moltype import MOLTYPE_BY_ID
@@ -103,7 +108,8 @@ class BoltzFeatsAdapter:
                     name=name_of(int(gidx)),
                     mol_type=(None if mt0 is None else MOLTYPE_BY_ID.get(int(mt0[t]))),
                     resname=(
-                        None if res_type_idx is None
+                        None
+                        if res_type_idx is None
                         else self.token_names[int(res_type_idx[t])]
                     ),
                 )

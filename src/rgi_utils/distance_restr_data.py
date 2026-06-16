@@ -3,10 +3,24 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from rgi_utils._config_util import warn_unknown_keys
 from rgi_utils.atom_context import FrameworkAdapter
 from rgi_utils.selection import AtomSelector
 
 logger = logging.getLogger(__name__)
+
+_KNOWN_DISTANCE_KEYS = {
+    "atom_selection1",
+    "atom_selection2",
+    "calc_method",
+    "start_sigma",
+    "stop_sigma",
+    "move",
+    "harmonic",
+    "flat-bottomed",
+    "flat-bottomed1",
+    "flat-bottomed2",
+}
 
 
 @dataclass
@@ -47,6 +61,9 @@ class DistanceData:
         self.move_mode = 0  # which group moves: 0=both (default) / 1=grp1 / 2=grp2
 
     def set_config(self, config: dict):
+        warn_unknown_keys(
+            config, _KNOWN_DISTANCE_KEYS, "distance_restraints_config entry", logger
+        )
         self.atom_selection1 = config.get("atom_selection1", None)
         self.atom_selection2 = config.get("atom_selection2", None)
         self.calc_method = config.get("calc_method", "unfixed-absolute")
@@ -97,7 +114,7 @@ class DistanceData:
                 self.distance_restraint_type = "flat-bottomed"
                 self.target_distance1 = float(self.target_distance1)
                 self.target_distance2 = float(self.target_distance2)
-                if self.target_distance1 > self.target_distance2:
+                if self.target_distance1 >= self.target_distance2:
                     raise ValueError(
                         "target_distance1 must be smaller than target_distance2"
                     )
@@ -161,8 +178,16 @@ class DistanceData:
             if atom_selector2.eval(candidate):
                 self.target_sites2.append(atom.index)
 
-        assert len(self.target_sites1) != 0, "target_sites1 is empty"
-        assert len(self.target_sites2) != 0, "target_sites2 is empty"
+        if len(self.target_sites1) == 0:
+            raise ValueError(
+                f"distance restraint atom_selection1 matched no atoms: "
+                f"{self.atom_selection1!r}"
+            )
+        if len(self.target_sites2) == 0:
+            raise ValueError(
+                f"distance restraint atom_selection2 matched no atoms: "
+                f"{self.atom_selection2!r}"
+            )
 
         logger.info(
             "distance restraint resolved: group1=%d atoms, group2=%d atoms",

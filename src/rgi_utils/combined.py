@@ -79,6 +79,11 @@ class CombinedRestraints:
         reused instance never carries a stale spec, and passing ``config`` folds
         the old two-call ``set_config -> setup`` into one. Constructing a fresh
         instance per structure makes batch runs cross-contamination-free.
+
+        ``nbatch`` is accepted for the documented integration API (all six tools pass
+        it) but is currently unused here — the spec is built once and broadcast over the
+        batch dim at minimize time. It is kept as a stable hook for future per-batch
+        specs; do not remove it without updating every tool's call site.
         """
         # Clear derived state first: a reused instance must not keep a stale spec.
         self.spec = None
@@ -169,15 +174,22 @@ class CombinedRestraints:
             print(msg, flush=True)
 
     def _warn_never_active(self) -> None:
-        """Warn when restraints are built (non-zero weights/counts) but their
-        ``start_sigma`` is < 0, so the gate ``sigma <= start_sigma`` never fires —
-        a silent no-op the verbose count/energy logs do NOT reveal (counts and the
-        ungated finalize energy both read non-zero). ``-1`` is the documented
-        never-fires sentinel, so this catches "forgot to set start_sigma"."""
+        """Flag restraints that are built (non-zero weights/counts) but can never fire.
+
+        Two distinct failure modes, handled differently:
+        * ``start_sigma < 0`` — the gate ``sigma <= start_sigma`` never fires. This CAN
+          be a deliberate "off switch", so it is a loud WARNING (the verbose count/energy
+          logs would not reveal it; ``-1`` is the documented never-fires sentinel).
+        * ``stop_sigma > start_sigma`` — the active window ``stop <= sigma <= start`` is
+          EMPTY, which is never intentional: the restraint you configured can never act.
+          This RAISES — a warning would be muted by the package NullHandler, leaving a
+          silent no-op that reads (counts + ungated finalize energy) as a satisfied
+          restraint."""
         import numpy as np
 
         spec = self.spec
-        msgs = []
+        msgs = []  # start_sigma < 0 (possibly deliberate) -> warn
+        errors = []  # empty active window (stop_sigma > start_sigma) -> raise
         if spec.has_conformer() and float(spec.conf_start_sigma) < 0:
             msgs.append(
                 f"conformer restraints are configured but conf_start_sigma="
@@ -188,7 +200,7 @@ class CombinedRestraints:
         if spec.has_conformer() and float(
             getattr(spec, "conf_stop_sigma", -1.0)
         ) > float(spec.conf_start_sigma):
-            msgs.append(
+            errors.append(
                 "conformer conf_stop_sigma > conf_start_sigma, so the active window "
                 "(conf_stop_sigma <= sigma <= conf_start_sigma) is EMPTY and the "
                 "conformer terms NEVER activate — set conf_stop_sigma below it"
@@ -204,7 +216,7 @@ class CombinedRestraints:
                 )
             stop = np.asarray(d.stop_sigma)[active]
             if stop.size and np.any(stop > ss):
-                msgs.append(
+                errors.append(
                     "one or more distance restraints have stop_sigma > start_sigma, so "
                     "their active window is EMPTY and they NEVER activate"
                 )
@@ -219,10 +231,10 @@ class CombinedRestraints:
                 )
             # stop_sigma > start_sigma inverts the window stop_sigma<=sigma<=start_sigma
             # to EMPTY -> the restraint is silently a no-op (counts/finalize still read
-            # non-zero), so flag the likely config error loudly like start_sigma < 0.
+            # non-zero), so raise on the impossible window rather than warn.
             stop = np.asarray(rm.stop_sigma)[active]
             if stop.size and np.any(stop > ss):
-                msgs.append(
+                errors.append(
                     "one or more RMSD restraints have stop_sigma > start_sigma, so the "
                     "active window (stop_sigma <= sigma <= start_sigma) is EMPTY and "
                     "they NEVER activate — set stop_sigma below start_sigma"
@@ -245,7 +257,7 @@ class CombinedRestraints:
                 )
             stop = np.asarray(arr.stop_sigma)[active]
             if stop.size and np.any(stop > ss):
-                msgs.append(
+                errors.append(
                     f"one or more group {label} restraints have stop_sigma > "
                     f"start_sigma, so their active window is EMPTY and they NEVER "
                     f"activate — set stop_sigma below start_sigma"
@@ -254,6 +266,8 @@ class CombinedRestraints:
             logger.warning(m)
             if self.config.verbose:
                 print(f"[rgi_utils] WARNING: {m}", flush=True)
+        if errors:
+            raise ValueError("; ".join(errors))
 
     def _build_optimizer(self) -> None:
         b = self._backend
@@ -340,7 +354,11 @@ class CombinedRestraints:
         t = torch.as_tensor(arr, dtype=torch.float64)
         self._optimizer.minimize(t, sigma=sigma)
         out = t.detach().cpu().numpy()
-        if isinstance(arr, np.ndarray) and arr.dtype.kind == "f" and arr.flags.writeable:
+        if (
+            isinstance(arr, np.ndarray)
+            and arr.dtype.kind == "f"
+            and arr.flags.writeable
+        ):
             arr[...] = out  # update the caller's array in place
             return arr
         return out

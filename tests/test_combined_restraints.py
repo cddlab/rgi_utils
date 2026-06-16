@@ -525,12 +525,10 @@ def test_rmsd_stop_sigma_releases_below(tmp_path):
     assert _superposed_rmsd(coords[0], ref) < before
 
 
-def test_rmsd_stop_sigma_above_start_warns(tmp_path, caplog):
-    """stop_sigma > start_sigma inverts the active window to EMPTY, so the restraint is
-    a SILENT no-op (counts/finalize still read non-zero). _warn_never_active must flag
-    the likely config error loudly, like it does for start_sigma < 0."""
-    import logging
-
+def test_rmsd_stop_sigma_above_start_raises(tmp_path):
+    """stop_sigma > start_sigma inverts the active window to EMPTY -> the restraint can
+    never act. setup() must RAISE (a warning would be muted by the package NullHandler,
+    leaving a silent no-op that reads as satisfied)."""
     rng = np.random.default_rng(5)
     n = 4
     ref = rng.standard_normal((n, 3)) * 3.0
@@ -553,9 +551,8 @@ def test_rmsd_stop_sigma_above_start_warns(tmp_path, caplog):
         }
     )
     atoms = [AtomRecord("A", i + 1, i) for i in range(n)]
-    with caplog.at_level(logging.WARNING):
+    with pytest.raises(ValueError, match="stop_sigma > start_sigma"):
         cr.setup(MockAdapter(atoms))
-    assert any("stop_sigma > start_sigma" in r.message for r in caplog.records)
 
 
 def test_distance_move_mode_parsing():
@@ -607,8 +604,10 @@ def test_distance_stop_sigma_releases_below():
     )
     assert cr.config.distance_data[0].stop_sigma == 2.0
     atoms = [
-        AtomRecord("A", 1, 0), AtomRecord("A", 2, 1),
-        AtomRecord("B", 1, 2), AtomRecord("B", 2, 3),
+        AtomRecord("A", 1, 0),
+        AtomRecord("A", 2, 1),
+        AtomRecord("B", 1, 2),
+        AtomRecord("B", 2, 3),
     ]
     cr.setup(MockAdapter(atoms))
 
@@ -628,11 +627,9 @@ def test_distance_stop_sigma_releases_below():
     assert abs(centroid_dist(coords) - 7.0) < 1e-5
 
 
-def test_distance_stop_sigma_above_start_warns(tmp_path, caplog):
-    """Empty window (stop_sigma > start_sigma) on a DISTANCE restraint is flagged loud,
+def test_distance_stop_sigma_above_start_raises():
+    """Empty window (stop_sigma > start_sigma) on a DISTANCE restraint must RAISE,
     mirroring the rmsd / conformer checks in _warn_never_active."""
-    import logging
-
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
@@ -649,19 +646,19 @@ def test_distance_stop_sigma_above_start_warns(tmp_path, caplog):
         }
     )
     atoms = [
-        AtomRecord("A", 1, 0), AtomRecord("A", 2, 1),
-        AtomRecord("B", 1, 2), AtomRecord("B", 2, 3),
+        AtomRecord("A", 1, 0),
+        AtomRecord("A", 2, 1),
+        AtomRecord("B", 1, 2),
+        AtomRecord("B", 2, 3),
     ]
-    with caplog.at_level(logging.WARNING):
+    with pytest.raises(ValueError, match="stop_sigma > start_sigma"):
         cr.setup(MockAdapter(atoms))
-    assert any("stop_sigma > start_sigma" in r.message for r in caplog.records)
 
 
-def test_conformer_stop_sigma_above_start_warns(caplog):
-    """Empty window (conf_stop_sigma > conf_start_sigma) on the CONFORMER block is loud.
-    Builds a real conformer (flagged ligand) so has_conformer() is True."""
-    import logging
-
+def test_conformer_stop_sigma_above_start_raises():
+    """Empty window (conf_stop_sigma > conf_start_sigma) on the CONFORMER block must
+    RAISE. Builds a real conformer (flagged ligand) so has_conformer() is True and the
+    check is reached."""
     m = Chem.AddHs(Chem.MolFromSmiles("CC"))
     AllChem.EmbedMolecule(m, randomSeed=1)
     c = np.asarray(m.GetConformer().GetPositions())
@@ -679,10 +676,8 @@ def test_conformer_stop_sigma_above_start_warns(caplog):
         }
     )
     lc = LigandConf(m, c, np.arange(n), conformer_restraints=True)
-    with caplog.at_level(logging.WARNING):
+    with pytest.raises(ValueError, match="conf_stop_sigma > conf_start_sigma"):
         cr.setup(MockAdapter(atoms, [lc]))
-    assert cr.spec.has_conformer()
-    assert any("conf_stop_sigma > conf_start_sigma" in r.msg for r in caplog.records)
 
 
 def test_rmsd_count_mismatch_raises(tmp_path):

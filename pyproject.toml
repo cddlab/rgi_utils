@@ -58,6 +58,12 @@ line-length = 88
 [tool.ruff.lint]
 select = ["E", "F", "I"]
 
+[tool.ruff.lint.pycodestyle]
+# Keep the FORMATTER at line-length 88 (code stays wrapped) but let E501 tolerate the
+# codebase's dense long-form COMMENT style up to 120, rather than rewrapping ~160 prose
+# lines or scattering noqa. Code line length is enforced by the formatter, not E501.
+max-line-length = 120
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
