@@ -130,7 +130,7 @@ RESTRAINTS_CONFIG = {
         "angle": {"weight": 1.0, "slack": 0.0},
         "chiral": {"weight": 1.0, "slack": 0.05},
         "dihedral": {"weight": 1.0, "slack": 0.0},
-        "vdw": {"weight": 1.0, "mode": "both", "scale": 0.75, "dmax": 5.0},
+        "vdw": {"weight": 1.0},
     },
     "rmsd_restraints_config": [
         {
@@ -189,15 +189,13 @@ and restraints never apply (the run looks like an unrestrained stall, not an err
 ```bash
 #!/bin/bash
 # ESMFold2 RGI example runner (pixi env). Run on an sm_89 CUDA GPU (RTX 4090): the pixi
-# env's torch is cu124 (no Blackwell sm_120 kernels).  bash run_restr_example.sh
+# env's torch is cu124 (no Blackwell sm_120 kernels).
 set -e
 cd "$(dirname "$0")"
 
-# Prefer a fresh pixi binary if the workspace ships one, else fall back to PATH.
 PIXI="${PIXI:-$([ -x ../.pixi-bin/pixi ] && echo ../.pixi-bin/pixi || echo pixi)}"
 
-# Build the env, then install the LOCAL transformers fork (the esmfold2 model with the RGI
-# hook) and rgi_utils editable so both override the pyproject git deps.
+# Build the env + install the LOCAL transformers fork (esmfold2 with the RGI hook) and rgi_utils.
 "$PIXI" install
 "$PIXI" run python -m pip install -e ../transformers_restr -e "../rgi_utils[torch]"
 
@@ -207,19 +205,7 @@ SP=$("$PIXI" run python -c "import transformers,os;print(os.path.dirname(transfo
 cp -rf ../transformers_restr/src/transformers/models/esmfold2/. "$SP/models/esmfold2/"
 "$PIXI" run python -c "import inspect; from transformers.models.esmfold2 import modeling_esmfold2_common as m; assert 'restraints.minimize' in inspect.getsource(m), 'esmfold2 hook missing'"
 
-# restr_example.py folds qbp + its GLN ligand. RGI: restraints_config is a Python dict passed to
-# ESMFold2InputBuilder().fold(); the model minimizes it on the x0 prediction each step.
 "$PIXI" run python restr_example.py
-
-# Verify the two restraint groups' centroid distance reaches ~25 A. check_dist.py needs gemmi,
-# which the esm pixi env does NOT have — use a gemmi-enabled tool venv instead.
-GEMMI_PY=../chai-lab_restr/.venv/bin/python
-if [ -x "$GEMMI_PY" ] && "$GEMMI_PY" -c "import gemmi" 2>/dev/null; then
-    "$GEMMI_PY" ../check_dist.py out_esm.cif || true
-else
-    echo "skip centroid check: no gemmi-enabled venv found (run ../check_dist.py with one manually)"
-fi
-echo done
 ```
 
 ## Verify

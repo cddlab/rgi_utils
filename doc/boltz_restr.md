@@ -99,7 +99,7 @@ restraints_config:
     angle: {weight: 1.0, slack: 0.0}
     chiral: {weight: 1.0, slack: 0.05}
     dihedral: {weight: 1.0, slack: 0.0}
-    vdw: {weight: 1.0, mode: both, scale: 0.75, dmax: 5.0}
+    vdw: {weight: 1.0}
   rmsd_restraints_config:
     - ref_pdb: rmsd_ref.pdb
       target_rmsd: 0.0
@@ -122,21 +122,14 @@ Save this as `run_restr_example.sh` and run it on a GPU machine (`bash run_restr
 
 ```bash
 #!/bin/bash
-# boltz RGI example runner. Run on a machine with a CUDA GPU:  bash run_restr_example.sh
+# boltz RGI example runner. Run on a machine with a CUDA GPU.
 set -e
 cd "$(dirname "$0")"
 source .venv/bin/activate
 
 rm -rf out_restr_example
-# RGI: rgi_utils minimizes the restraints on the x0 prediction after each diffusion step
-# (verbose:true logs the built spec + finalize energies). --use_msa_server fetches the MSA
-# from the ColabFold server (needs internet egress).
 boltz predict restr_example.yaml \
     --seed 0 --out_dir out_restr_example --model boltz2 --use_msa_server
-
-CIF=$(find out_restr_example -name '*.cif' | head -1)
-echo "prediction: $CIF"
-echo done
 ```
 
 ## Verify

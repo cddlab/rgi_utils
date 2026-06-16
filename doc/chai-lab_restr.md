@@ -94,7 +94,7 @@ conformer_restraints_config:
   angle: {weight: 1.0, slack: 0.0}
   chiral: {weight: 1.0, slack: 0.05}
   dihedral: {weight: 1.0, slack: 0.0}
-  vdw: {weight: 1.0, mode: both, scale: 0.75, dmax: 5.0}
+  vdw: {weight: 1.0}
 rmsd_restraints_config:
   - ref_pdb: rmsd_ref.pdb
     target_rmsd: 0.0
@@ -118,7 +118,7 @@ the FASTA and out_dir are **positional** arguments:
 
 ```bash
 #!/bin/bash
-# chai-lab RGI example runner. Run on a machine with a CUDA GPU:  bash run_restr_example.sh
+# chai-lab RGI example runner. Run on a machine with a CUDA GPU.
 set -e
 cd "$(dirname "$0")"
 source .venv/bin/activate
@@ -128,20 +128,13 @@ python -c "import yaml" 2>/dev/null || uv pip install pyyaml   # chai1.py import
 export CHAI_DOWNLOADS_DIR="${CHAI_DOWNLOADS_DIR:-$HOME/.cache/chai}"
 
 rm -rf out_restr_example
-# restr_example.yaml IS the restraints_config dict at top level (chai sidecar style).
-# RGI: rgi_utils minimizes the restraints on the x0 prediction each step. fasta & out_dir are
-# POSITIONAL; --use-msa-server --use-templates-server fetch MSAs/templates from the ColabFold
-# server (needs internet egress).
+# fasta & out_dir are POSITIONAL args
 python -m chai_lab.main fold \
     restr_example.fasta \
     out_restr_example \
     --restraints-config-path restr_example.yaml \
     --num-diffn-timesteps 200 --num-diffn-samples 2 --seed 0 \
     --use-msa-server --use-templates-server --no-use-esm-embeddings
-
-CIF=$(find out_restr_example -name '*.cif' | head -1)
-echo "prediction: $CIF"
-echo done
 ```
 
 ## Verify

@@ -38,21 +38,21 @@ AF3 reads RGI from a **`restraints_config` key inside the fold-input JSON** (bes
 
 AF3-specific notes:
 - **MSA**: AF3 has no ColabFold-style MSA *server*; it builds MSAs with a local genetic-search data
-  pipeline. The example below ships an **inline single-sequence MSA** (`unpairedMsa`) so it is
-  self-contained. To run the full search instead, **remove the `unpairedMsa`/`pairedMsa` fields**
-  and pass `--run_data_pipeline=True` with `--db_dir` pointing at the sequence databases.
+  pipeline. The run command passes `--run_data_pipeline=True` with `--db_dir` pointing at the
+  sequence databases, so the JSON below carries **no `unpairedMsa`/`pairedMsa`/`templates`
+  fields** — the pipeline builds them. (To skip the search, inline an `unpairedMsa` and pass
+  `--run_data_pipeline=False`.)
 - The backend is forced to **jax**; the `gpu` flag is **inert** (the minimizer always runs on the
   model's device — to compute on CPU, run the whole process on the JAX CPU platform).
-- Conformer `vdw` uses **`mode: intramolecular`** under JAX.
 - AF3's minimizer converges near-target (~24–25 Å for the distance example); `max_iter: 2000`.
 
 `resid` is the **per-chain 1-based ordinal**; there is **no top-level `start_sigma`**.
 
 ## Full config (input file)
 
-Save this as `restr_example.json`. The MSA is inline (single-sequence), so it is self-contained. It
-sets a centroid distance, group angle, group dihedral, GLN conformer, and whole-structure RMSD
-restraint, every variable spelled out.
+Save this as `restr_example.json`. The genetic-search data pipeline builds the MSA, so the JSON has
+no MSA/template fields. It sets a centroid distance, group angle, group dihedral, GLN conformer, and
+whole-structure RMSD restraint.
 
 ```json
 {
@@ -65,10 +65,7 @@ restraint, every variable spelled out.
       "protein": {
         "id": "A",
         "sequence": "ADKKLVVATDTAFVPFEFKQGDKYVGFDVDLWAAIAKELKLDYELKPMDFSGIIPALQTKNVDLALAGITITDERKKAIDFSDGYYKSGLLVMVKANNNDVKSVKDLDGKVVAVKSGTGSVDYAKANIKTKDLRQFPNIDNAYMELGTNRADAVLHDTPNILYFIKTAGNGQFKAVGDSLEAQQYGIAFPKGSDELRDKVNGALKTLRENGTYNEIYKKWFGTEPK",
-        "modifications": [],
-        "templates": [],
-        "unpairedMsa": ">qbp\nADKKLVVATDTAFVPFEFKQGDKYVGFDVDLWAAIAKELKLDYELKPMDFSGIIPALQTKNVDLALAGITITDERKKAIDFSDGYYKSGLLVMVKANNNDVKSVKDLDGKVVAVKSGTGSVDYAKANIKTKDLRQFPNIDNAYMELGTNRADAVLHDTPNILYFIKTAGNGQFKAVGDSLEAQQYGIAFPKGSDELRDKVNGALKTLRENGTYNEIYKKWFGTEPK\n",
-        "pairedMsa": ""
+        "modifications": []
       }
     },
     {
@@ -127,7 +124,7 @@ restraint, every variable spelled out.
       "angle": { "weight": 1.0, "slack": 0.0 },
       "chiral": { "weight": 1.0, "slack": 0.05 },
       "dihedral": { "weight": 1.0, "slack": 0.0 },
-      "vdw": { "weight": 1.0, "mode": "intramolecular", "scale": 0.75, "dmax": 5.0 }
+      "vdw": { "weight": 1.0 }
     },
     "rmsd_restraints_config": [
       {
@@ -153,7 +150,7 @@ restraint, every variable spelled out.
 ### Run
 
 Save as `run_restr_example.sh` and run it on a GPU machine (`bash run_restr_example.sh`). Set
-`MODEL_DIR` to your AF3 parameters directory:
+`MODEL_DIR` to your AF3 parameters directory and `DB_DIR` to the sequence databases:
 
 ```bash
 #!/bin/bash
@@ -163,25 +160,17 @@ cd "$(dirname "$0")"
 source .venv/bin/activate
 
 MODEL_DIR="${MODEL_DIR:?set MODEL_DIR to your AF3 model-parameters directory}"
-# AF3 enables NO persistent XLA cache by default, so every process recompiles the graph
-# (~2 min). Enabling it (node-local /tmp) lets repeated runs reuse the compile.
+DB_DIR="${DB_DIR:?set DB_DIR to your AF3 sequence-database directory}"
+# AF3 enables no persistent XLA cache by default (~2 min recompile/run); this reuses it.
 export JAX_COMPILATION_CACHE_DIR="${JAX_COMPILATION_CACHE_DIR:-/tmp/${USER}_jax_cache}"
 
 rm -rf out_restr_example   # else AF3 skip-existing early-returns on the prior output
-# restr_example.json has an inline single-sequence MSA (self-contained) and carries
-# `restraints_config` (backend forced to jax). RGI runs inside the diffusion hk.scan.
-# (For the full genetic-search MSA: remove unpairedMsa/pairedMsa from the JSON and pass
-#  --run_data_pipeline=True --db_dir=<DB_DIR>.)
-if ! python run_alphafold.py \
-    --run_data_pipeline=False \
+python run_alphafold.py \
+    --run_data_pipeline=True \
     --model_dir="$MODEL_DIR" \
+    --db_dir="$DB_DIR" \
     --json_path=restr_example.json \
-    --output_dir=out_restr_example \
-    > run_restr_example.log 2>&1; then
-    echo "af3 inference FAILED:"; tail -n 40 run_restr_example.log; exit 1
-fi
-grep -iE "rgi_utils|built spec|restraint|finalize|dropping" run_restr_example.log || true
-echo done
+    --output_dir=out_restr_example
 ```
 
 ## Verify
