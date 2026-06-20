@@ -21,9 +21,10 @@ See each tool's guide in [`doc/`](doc/) for install / run details, and
 
 Five restraint types, all minimized during the denoising loop to guide coordinate optimization:
 
-- **conformer** — ligand bond / angle / chiral-volume / cistrans (E/Z) toward an
-  ideal RDKit geometry, plus **VdW** non-bonded clash avoidance (intramolecular and/or
-  dynamic ligand-protein; `mode` defaults to `both`).
+- **conformer** — ligand bond / angle / chiral-volume / cistrans (E/Z) / improper
+  (sp2 double-bond planarity, opt-in) toward an ideal RDKit geometry, plus **VdW**
+  non-bonded clash avoidance (intramolecular and/or dynamic ligand-protein; `mode`
+  defaults to `both`).
 - **RMSD** — Kabsch-superposed RMSD of a group toward a reference PDB.
 - **distance** — centroid distance between two atom groups (applied closed-form).
 - **angle** — the angle of three atom groups' centroids (vertex = group 2), in degrees;
@@ -81,6 +82,7 @@ restraints_config = {
         "angle": {"weight": 1.0},
         "chiral": {"weight": 1.0},
         "cistrans": {"weight": 1.0},         # ligand cis/trans (acyclic C=C only)
+        "improper": {"weight": 1.0},         # sp2 double-bond planarity (off by default)
         "vdw": {"weight": 1.0},              # mode defaults to "both"
     },
     # "rmsd_restraints_config": [{"ref_pdb": "ref.pdb", "target_rmsd": 0.0}],

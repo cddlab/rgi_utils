@@ -369,7 +369,7 @@ def total_energy(positions, prepared, sigma=None, include_distance=True):
 
     ``sigma`` is the current diffusion noise level: each restraint contributes only
     when ``sigma <= start_sigma`` (a 0/1 gate folded into its mask). The conformer
-    terms (bond/angle/chiral/cistrans/vdw) share one ``conf_start_sigma``; distance
+    terms (bond/angle/chiral/improper/cistrans/vdw) share one ``conf_start_sigma``; distance
     and RMSD have their own per-restraint gate. RMSD is summed regardless of
     ``include_distance`` (the CG solver calls with ``include_distance=False``).
     ``sigma=None`` disables gating (all active).
@@ -385,7 +385,7 @@ def total_energy(positions, prepared, sigma=None, include_distance=True):
 
 def energy_breakdown(positions, prepared, sigma=None):
     """Per-term restraint energies (same maths + gating as ``total_energy``), as a
-    ``{bond, angle, chiral, cistrans, vdw, distance, rmsd}`` float dict for callers
+    ``{bond, angle, chiral, improper, cistrans, vdw, distance, rmsd}`` float dict for callers
     that report each term's contribution (e.g. ``finalize`` logging)."""
     cg, sigma_gate = _gates(prepared, sigma)
     out = dict.fromkeys(BREAKDOWN_KEYS, 0.0)

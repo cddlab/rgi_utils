@@ -83,6 +83,26 @@ class ChiralArrays:
 
 
 @dataclass
+class ImproperArrays:
+    """Planarity (improper) restraints on sp2 double-bond centres (padded). Center
+    atom is column 0; columns 1-3 are its three heavy-atom neighbours.
+
+    Same scalar-triple-product (signed volume) maths and array layout as
+    ``ChiralArrays`` — the only difference is intent: ``vol0`` is the reference
+    conformer's volume of the four atoms, which is ~0 for a planar sp2 centre, so the
+    restraint penalises the centre pyramidalising out of its substituents' plane
+    (carbonyl / amide / ester / carboxyl / trisubstituted-alkene centres). It reuses
+    the backend ``chiral_energy`` leaf function via the ``_terms`` dispatch.
+    """
+
+    idx: np.ndarray  # (n_improper, 4) int
+    vol0: np.ndarray  # (n_improper,) reference scalar triple product (~0 = planar)
+    slack: np.ndarray  # (n_improper,)
+    weight: np.ndarray  # (n_improper,)
+    mask: np.ndarray  # (n_improper,)
+
+
+@dataclass
 class CisTransArrays:
     """Flat-bottomed cis/trans (E/Z) torsion restraints (padded). Atom order i-j-k-l;
     the rotatable bond axis is the j-k pair (columns 1-2).
@@ -269,6 +289,9 @@ class RestraintSpec:
     bond: BondArrays | None = None
     angle: AngleArrays | None = None
     chiral: ChiralArrays | None = None
+    # planarity (improper) of sp2 double-bond centres; same signed-volume maths as
+    # chiral, target ~0 (see ImproperArrays).
+    improper: ImproperArrays | None = None
     cistrans: CisTransArrays | None = None
     vdw: VdwArrays | None = None
     vdw_config: VdwConfig | None = None
@@ -279,20 +302,28 @@ class RestraintSpec:
     # per-restraint start_sigma/stop_sigma like distance/rmsd.
     group_angle: GroupAngleArrays | None = None
     group_dihedral: GroupDihedralArrays | None = None
-    # one start_sigma for ALL conformer (bond/angle/chiral/vdw) restraints; each
-    # distance restraint carries its own in DistanceArrays.start_sigma.
+    # one start_sigma for ALL conformer (bond/angle/chiral/improper/cistrans/vdw)
+    # restraints; each distance restraint carries its own in DistanceArrays.start_sigma.
     conf_start_sigma: float = -1.0
     # shared conformer LOWER bound (mirrors conf_start_sigma): conformer terms are
     # released for sigma < conf_stop_sigma. -1 (default) = never released (off).
     conf_stop_sigma: float = -1.0
 
     def has_conformer(self) -> bool:
-        """True if any conformer (bond/angle/chiral/cistrans/vdw) restraint exists."""
+        """True if any conformer (bond/angle/chiral/improper/cistrans/vdw) restraint
+        exists."""
         if self.vdw_config is not None and self.vdw_config.weight > 0:
             return True
         return any(
             arr is not None and arr.mask.sum() > 0
-            for arr in (self.bond, self.angle, self.chiral, self.cistrans, self.vdw)
+            for arr in (
+                self.bond,
+                self.angle,
+                self.chiral,
+                self.improper,
+                self.cistrans,
+                self.vdw,
+            )
         )
 
     def has_distance(self) -> bool:

@@ -231,3 +231,51 @@ def test_vdw_unknown_mode_raises():
     )
     with pytest.raises(ValueError, match="vdw mode must be"):
         build_spec([lc], [], {"vdw": {"weight": 1.0, "mode": "typo"}})
+
+
+def _lig_heavy(smi: str) -> LigandConf:
+    """A conformer-restrained LigandConf from SMILES, H-removed (heavy atoms only) like
+    the real adapters produce."""
+    m = Chem.MolFromSmiles(smi)
+    mh = Chem.AddHs(m)
+    AllChem.EmbedMolecule(mh, randomSeed=1)
+    AllChem.UFFOptimizeMolecule(mh)
+    m = Chem.RemoveHs(mh)
+    crds = np.asarray(m.GetConformer(0).GetPositions(), dtype=np.float64)
+    return LigandConf(
+        mol=m,
+        conf_coords=crds,
+        global_indices=np.arange(m.GetNumAtoms()),
+        conformer_restraints=True,
+    )
+
+
+def test_improper_perception():
+    """improper (sp2 planarity) fires on acyclic, non-aromatic double-bond endpoints
+    with exactly 3 heavy neighbours, reusing chiral's signed volume. Parity-safe scope:
+    aromatic + in-ring double bonds are excluded (mirrors cistrans's bond filter), and
+    the term is OFF unless explicitly opted in."""
+    cfg = {"improper": {"weight": 1.0}, "cistrans": {"weight": 1.0}}
+    nrow = lambda a: 0 if a is None else len(a.idx)  # noqa: E731
+
+    # fumarate: 2 carboxyl carbons (exocyclic C=O, 3 heavy neighbours) -> improper=2;
+    # the C=C alkene carbons have only 2 heavy neighbours each, so the bond's E/Z is held
+    # by cistrans (=1), not improper.
+    spec = build_spec([_lig_heavy(r"OC(=O)/C=C/C(=O)O")], [], cfg)
+    assert nrow(spec.improper) == 2
+    assert nrow(spec.cistrans) == 1
+    assert int(spec.improper.idx.max()) < spec.n_active  # valid local indices
+
+    # acetamide carbonyl carbon (CH3-C, O, N = 3 heavy neighbours) -> improper=1
+    assert nrow(build_spec([_lig_heavy("CC(=O)N")], [], cfg).improper) == 1
+
+    # aromatic centres excluded (SanitizeMol is best-effort -> don't trust GetIsAromatic
+    # alone; here it correctly perceives the ring as aromatic and the term stays empty)
+    assert build_spec([_lig_heavy("c1ccccc1")], [], cfg).improper is None
+    # in-ring non-aromatic C=C excluded by the topological IsInRing guard (parity-safe)
+    assert build_spec([_lig_heavy("C1CCC=CC1")], [], cfg).improper is None
+
+    # OFF by default: no improper key -> no improper term even alongside other conformer
+    # terms (preserves every existing conformer run).
+    off = build_spec([_lig_heavy("CC(=O)N")], [], {"bond": {"weight": 0.05}})
+    assert off.improper is None and off.bond is not None

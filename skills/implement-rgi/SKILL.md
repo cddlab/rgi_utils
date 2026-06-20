@@ -3,7 +3,7 @@ name: implement-rgi
 description: >-
   Guide for adding restraint-guided inference (RGI) — five restraint types:
   distance, angle, and dihedral (between atom-group centroids), conformer
-  (ligand bond/angle/chiral/cistrans + VdW toward an ideal geometry), and RMSD
+  (ligand bond/angle/chiral/cistrans/improper + VdW toward an ideal geometry), and RMSD
   (toward a reference structure) — to a diffusion-based structure-prediction tool
   (boltz / protenix / chai-lab / openfold-3 / esmfold2 / AlphaFold3 and similar
   samplers). The shared engine `rgi_utils` does all the heavy lifting;
@@ -31,8 +31,9 @@ satisfy user restraints. Five types:
 - **angle** / **dihedral**: the angle (3 groups) / dihedral (4 groups) of the
   groups' centroids toward a target in degrees — the angular analogue of distance.
 - **conformer**: a ligand's bond lengths, bond angles, chiral volumes, cis/trans
-  torsions, and non-bonded clashes (**VdW**) pulled toward an ideal RDKit geometry
-  (keeps the ligand chemically sensible while the pocket forms).
+  torsions, sp2 double-bond planarity (**improper**, opt-in), and non-bonded clashes
+  (**VdW**) pulled toward an ideal RDKit geometry (keeps the ligand chemically sensible
+  while the pocket forms).
 - **RMSD**: a group's Kabsch-superposed RMSD toward a reference structure (PDB).
 
 These are flat-bottomed squared penalties minimized on GPU (or CPU). The energy
@@ -178,8 +179,8 @@ the setup spec counts (13); undeclared deps / CPU torch builds (14).
   jax agree on energy and gradient, so whichever backend the tool uses is sound.
 - **GPU (real device, usually via the tool's batch/sbatch harness)**:
   - **first, read the `setup` spec counts** (`built spec: bonds=.. angles=..
-    chirals=.. cistrans=.. distances=.. rmsd=.. group_angle=.. group_dihedral=..
-    vdw=..`) and confirm the count is non-zero for every
+    chirals=.. impropers=.. cistrans=.. distances=.. rmsd=.. group_angle=..
+    group_dihedral=.. vdw=..`) and confirm the count is non-zero for every
     restraint type you requested — a type that built 0 restraints reports a perfect
     `finalize` energy of `0.00000`, so near-zero energy alone does NOT prove a
     restraint is working (pitfall 13);

@@ -19,6 +19,7 @@ from rgi_utils.spec import (
     DistanceArrays,
     GroupAngleArrays,
     GroupDihedralArrays,
+    ImproperArrays,
     RestraintSpec,
     VdwArrays,
 )
@@ -26,14 +27,19 @@ from rgi_utils.spec import (
 N_ACTIVE = 12
 
 
-def _make_spec(include_groups: bool = True) -> RestraintSpec:
+def _make_spec(
+    include_groups: bool = True, include_improper: bool = True
+) -> RestraintSpec:
     """A small spec exercising every restraint type with non-zero energy.
 
     ``include_groups`` adds the group-centroid angle/dihedral terms (default). The fuzzy
     torch-vs-jax CG-convergence test opts out (``include_groups=False``) so its
     calibrated tolerance keeps its original group-free landscape — the periodic group
     dihedral makes the two backends' CG minima diverge a touch more than that tolerance
-    (group CG convergence is covered directly in test_optim.py)."""
+    (group CG convergence is covered directly in test_optim.py). ``include_improper``
+    (default on) adds the planarity improper term; the same fuzzy CG-convergence test
+    opts out of it too (its stiff near-zero-volume target shifts the fixed-iteration
+    minimum a touch — improper energy/grad parity is covered by the other tests)."""
     bond = BondArrays(
         idx=np.array([[0, 1], [2, 3], [4, 5]], dtype=np.int64),
         r0=np.array([1.0, 1.5, 1.2]),
@@ -55,6 +61,21 @@ def _make_spec(include_groups: bool = True) -> RestraintSpec:
         slack=np.array([0.0, 0.0]),
         weight=np.array([0.1, 0.1]),
         mask=np.array([1.0, 1.0]),
+    )
+    # planarity improper: same signed-volume maths as chiral but target vol0 ~ 0 (a
+    # planar sp2 centre). Random positions give a non-zero volume so energy > 0; the
+    # second entry is masked-out padding. Reuses chiral_energy via the _terms dispatch,
+    # so this row is what proves improper is wired + parity-correct across backends.
+    improper = (
+        None
+        if not include_improper
+        else ImproperArrays(
+            idx=np.array([[8, 9, 10, 11], [0, 2, 4, 6]], dtype=np.int64),
+            vol0=np.array([0.0, 0.0]),
+            slack=np.array([0.0, 0.05]),
+            weight=np.array([0.1, 0.1]),
+            mask=np.array([1.0, 0.0]),
+        )
     )
     # non-trivial phi0 so the random positions violate the torsion (energy > 0);
     # second entry is masked-out padding (mask=0) to exercise the padding path.
@@ -143,6 +164,7 @@ def _make_spec(include_groups: bool = True) -> RestraintSpec:
         bond=bond,
         angle=angle,
         chiral=chiral,
+        improper=improper,
         cistrans=cistrans,
         vdw=vdw,
         distance=distance,
@@ -707,7 +729,10 @@ def test_jax_torch_cg_same_minimum_at_default_iters():
 
     # conformer + vdw + distance only (no rmsd, no group terms); the CG handles conf
     # here. Group terms are excluded: their convergence parity is covered in test_optim.
-    spec = _make_spec(include_groups=False)
+    # improper is excluded too: it reuses chiral_energy (parity proven elsewhere) but its
+    # stiff near-zero-volume target shifts the fixed-iteration CG minimum past this fuzzy
+    # tolerance.
+    spec = _make_spec(include_groups=False, include_improper=False)
     pos = _positions(0)
     prep_t = torch_energy.prepare_spec(spec, dtype=torch.float64)
     prep_j = jax_energy.prepare_spec(spec)
@@ -904,6 +929,57 @@ def test_chiral_flat_bottom_zero_at_reference():
     # outside the band the penalty is non-zero and identical across backends
     pos2 = pos.copy()
     pos2[1, 0] = 3.0  # stretches the volume well past vol0 + slack
+    prep_t = torch_energy.prepare_spec(spec, dtype=torch.float64)
+    prep_j = jax_energy.prepare_spec(spec)
+    e_np = float(numpy_energy.total_energy(pos2, prep_np))
+    e_t = float(
+        torch_energy.total_energy(torch.tensor(pos2, dtype=torch.float64), prep_t)
+    )
+    e_j = float(jax_energy.total_energy(jnp.asarray(pos2), prep_j))
+    assert e_np > 0.0
+    assert abs(e_np - e_t) < 1e-6 and abs(e_np - e_j) < 1e-6
+
+
+def test_improper_flat_bottom_zero_at_reference():
+    """improper (planarity) reuses chiral_energy: a planar sp2 centre (vol0 ~ 0) has
+    ZERO energy at the reference geometry, quadratic once it pyramidalises out of plane,
+    equal across backends. Proves improper is wired through _terms to chiral_energy."""
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.energy import jax_energy, torch_energy
+
+    # atom 0 is the sp2 centre; 1/2/3 its three neighbours, all coplanar -> vol0 = 0
+    pos = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], dtype=np.float64)
+    v1, v2, v3 = pos[1] - pos[0], pos[2] - pos[0], pos[3] - pos[0]
+    vol0 = float(np.dot(v1, np.cross(v2, v3)))  # = 0.0 (planar)
+    assert vol0 == pytest.approx(0.0, abs=1e-12)
+    spec = RestraintSpec(
+        n_active=4,
+        active_sites=np.arange(4),
+        improper=ImproperArrays(
+            idx=np.array([[0, 1, 2, 3]], dtype=np.int64),
+            vol0=np.array([vol0]),
+            slack=np.array([0.05]),
+            weight=np.array([0.1]),
+            mask=np.array([1.0]),
+        ),
+        conf_start_sigma=10.0,
+    )
+    prep_np = numpy_energy.prepare_spec(spec)
+    # at the planar reference the volume is 0 == vol0 -> inside the band -> ZERO
+    assert float(numpy_energy.total_energy(pos, prep_np)) == pytest.approx(
+        0.0, abs=1e-12
+    )
+    # the energy_breakdown reports the term under the dedicated "improper" key
+    bd = numpy_energy.energy_breakdown(pos, prep_np)
+    assert "improper" in bd
+
+    # pyramidalise the centre out of its neighbours' plane -> non-zero, parity-equal
+    pos2 = pos.copy()
+    pos2[3, 2] = 1.0  # lift atom 3 out of the z=0 plane
     prep_t = torch_energy.prepare_spec(spec, dtype=torch.float64)
     prep_j = jax_energy.prepare_spec(spec)
     e_np = float(numpy_energy.total_energy(pos2, prep_np))

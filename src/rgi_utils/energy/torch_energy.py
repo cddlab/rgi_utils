@@ -386,7 +386,7 @@ def total_energy(positions, prepared, sigma=None, include_distance=True):
 
 def energy_breakdown(positions, prepared, sigma=None):
     """Per-term restraint energies (same maths + gating as ``total_energy``), as a
-    ``{bond, angle, chiral, cistrans, vdw, distance, rmsd}`` python-float dict."""
+    ``{bond, angle, chiral, improper, cistrans, vdw, distance, rmsd}`` python-float dict."""
     cg, sigma_gate = _gates(prepared, sigma)
     out = dict.fromkeys(BREAKDOWN_KEYS, 0.0)
     for k, v in term_energies(

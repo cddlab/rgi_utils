@@ -38,8 +38,10 @@ Design = **3 layers + autodiff + static shapes + GPU-complete optimization**:
 
 2. **Energy layer** (`energy/{numpy,torch,jax}_energy.py`, differentiable pure
    functions): identical flat-bottomed maths in all three backends —
-   `bond/angle/chiral/cistrans/vdw/distance/rmsd/group_angle/group_dihedral` (cistrans =
-   periodicity-safe torsion for cis/trans; rmsd = Kabsch-superposed RMSD toward a target,
+   `bond/angle/chiral/improper/cistrans/vdw/distance/rmsd/group_angle/group_dihedral`
+   (cistrans = periodicity-safe torsion for cis/trans; improper = sp2 double-bond
+   planarity, reusing `chiral_energy`'s signed volume with target ~0, opt-in/off by
+   default; rmsd = Kabsch-superposed RMSD toward a target,
    fit/calc separable; `group_angle`/`group_dihedral` = the angle/dihedral of 3/4 atom
    GROUPS' centroids — the angular analogue of the centroid-distance restraint, distinct from the
    per-atom `angle`/`cistrans` conformer terms). `prepare_spec(spec)` → backend arrays;

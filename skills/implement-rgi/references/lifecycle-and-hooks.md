@@ -35,8 +35,8 @@ exist only as a back-compat singleton shim — do not build new code on them.
 
 ## `finalize(coords, step)`
 - Runs only when `verbose`. Logs the per-term energy
-  `bond=.. angle=.. chiral=.. cistrans=.. vdw=.. distance=.. rmsd=.. group_angle=..
-  group_dihedral=.. total=..`, so you can see how
+  `bond=.. angle=.. chiral=.. improper=.. cistrans=.. vdw=.. distance=.. rmsd=..
+  group_angle=.. group_dihedral=.. total=..`, so you can see how
   well each restraint type is satisfied in the final structure. The sum equals
   the total restraint energy (checked against `total_energy`).
 
@@ -122,6 +122,7 @@ restraints_config:
     angle:    {weight: 1.0}
     chiral:   {weight: 1.0}
     cistrans: {weight: 1.0}                          # cis/trans (E/Z): holds acyclic, non-aromatic double bonds at their reference torsion. ON by default; weight<=0 disables. optional slack (radians).
+    improper: {weight: 1.0}                          # sp2 double-bond planarity (signed volume ~0, same maths as chiral). OFF by default (weight 0); fires on acyclic, non-aromatic double-bond endpoints with 3 heavy neighbours (carbonyl/amide/ester/carboxyl/trisubstituted). optional slack.
     vdw:      {weight: 1.0}                          # mode defaults to "both" (intramolecular + dynamic ligand-protein); both run on torch AND jax
   rmsd_restraints_config:           # Kabsch-superposed RMSD of a group toward a reference PDB
     - ref_pdb: "ref.pdb"            # required; parsed by the dependency-free read_pdb_atoms

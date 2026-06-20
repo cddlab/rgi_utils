@@ -38,6 +38,13 @@ _SPEC_SCHEMA = [
         "chiral",
         [("idx", "i"), ("vol0", "f"), ("slack", "f"), ("weight", "f"), ("mask", "f")],
     ),
+    # planarity (improper) of sp2 double-bond centres: same fields as chiral (it reuses
+    # chiral_energy), only target vol0 ~ 0 differs. See _TERMS / spec.ImproperArrays.
+    (
+        "improper",
+        "improper",
+        [("idx", "i"), ("vol0", "f"), ("slack", "f"), ("weight", "f"), ("mask", "f")],
+    ),
     (
         "cistrans",
         "cistrans",
@@ -161,6 +168,9 @@ _TERMS = [
     ("bond", "bond_energy", ["idx", "r0", "slack", "weight", "half"], "conf"),
     ("angle", "angle_energy", ["idx", "th0", "slack", "weight"], "conf"),
     ("chiral", "chiral_energy", ["idx", "vol0", "slack", "weight"], "conf"),
+    # planarity improper REUSES the chiral signed-volume leaf fn (target vol0 ~ 0); its
+    # own prepared key keeps it a separate, independently-weighted/reported term.
+    ("improper", "chiral_energy", ["idx", "vol0", "slack", "weight"], "conf"),
     ("cistrans", "cistrans_energy", ["idx", "phi0", "slack", "weight"], "conf"),
     ("vdw", "vdw_energy", ["idx", "r_min", "weight"], "conf"),
     (
@@ -267,6 +277,7 @@ BREAKDOWN_KEYS = (
     "bond",
     "angle",
     "chiral",
+    "improper",
     "cistrans",
     "vdw",
     "distance",

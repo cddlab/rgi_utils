@@ -143,6 +143,7 @@ Each term is a sub-dict; a term with `weight <= 0` is disabled (and not built).
 | `bond` | `weight` (0.05), `slack` (0.0 Å) | bond lengths toward ideal; flat-bottomed by `slack` |
 | `angle` | `weight` (0.05), `slack` (0.0 rad) | bond angles toward ideal |
 | `chiral` | `weight` (0.1), `slack` (0.05) | chiral volume (stereochemistry) — holds each stereocentre's handedness |
+| `improper` | `weight` (**0.0**, off), `slack` (0.05) | **planarity** of sp2 double-bond centres — signed volume toward ~0 (same maths as `chiral`). Fires on acyclic, non-aromatic double-bond endpoints with exactly 3 heavy neighbours (carbonyl / amide / ester / carboxyl / trisubstituted alkene); aromatic + in-ring excluded (parity-safe). Off by default — set `weight > 0` to activate |
 | `cistrans` | `weight` (0.1), `slack` (0.0 rad) | **cis/trans (E/Z)** of acyclic, non-aromatic double bonds (needs real bond orders; detects 0 for ligands with none, e.g. ATP/NAD/GLN) |
 | `vdw` | `weight` (**0.0**, off), `mode` (`"both"`), `scale` (0.75), `dmax` (5.0 Å) | non-bonded clash avoidance |
 
