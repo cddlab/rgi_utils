@@ -1,8 +1,23 @@
 # rgi-utils
 
 Restraint-Guided Inference (RGI) utilities for diffusion-based structure predictors
-(PyTorch and JAX). Integrated into boltz, protenix, chai-lab, openfold-3, esmfold2
-(torch) and alphafold3 (jax).
+(PyTorch and JAX).
+
+**Implemented and available in the following 8 models** (across 6 predictor integrations):
+
+| Model | Integration | Backend | Details |
+|-------|-------------|---------|---------|
+| **Boltz-1** | boltz | torch | [`doc/boltz_restr.md`](doc/boltz_restr.md) |
+| **Boltz-2** | boltz | torch | [`doc/boltz_restr.md`](doc/boltz_restr.md) |
+| **AlphaFold3** | alphafold3 | jax | [`doc/alphafold3_restr.md`](doc/alphafold3_restr.md) |
+| **Protenix v1** | protenix | torch | [`doc/protenix_restr.md`](doc/protenix_restr.md) |
+| **Protenix v2** | protenix | torch | [`doc/protenix_restr.md`](doc/protenix_restr.md) |
+| **ESMFold2** | esmfold2 | torch | [`doc/esmfold2_restr.md`](doc/esmfold2_restr.md) |
+| **OpenFold-3** | openfold-3 | torch | [`doc/openfold-3_restr.md`](doc/openfold-3_restr.md) |
+| **Chai-1** | chai-lab | torch | [`doc/chai-lab_restr.md`](doc/chai-lab_restr.md) |
+
+See each tool's guide in [`doc/`](doc/) for install / run details, and
+[`doc/config.md`](doc/config.md) for the full `restraints_config` schema.
 
 Five restraint types, all minimized during the denoising loop to guide coordinate optimization:
 
