@@ -14,7 +14,11 @@ own converters / leaf functions, so importing it stays numpy-only.
 
 from __future__ import annotations
 
+from rgi_utils import registry
+
 # (prepared_key, spec_attr, [(field_name, kind), ...]); kind "i"=int array, "f"=float.
+# This is the BUILT-IN half; custom (registry) restraints are spliced in by
+# ``spec_schema()`` below, with spec_attr=None meaning "read spec.registered[key]".
 _SPEC_SCHEMA = [
     (
         "bond",
@@ -136,17 +140,30 @@ _SPEC_SCHEMA = [
 ]
 
 
+def spec_schema():
+    """The built-in spec schema plus one entry per registered restraint. A registered
+    entry is ``(name, None, fields)``: ``spec_attr=None`` tells ``pack_spec`` to read
+    ``spec.registered[name]`` instead of a named attribute. Built fresh each call so a
+    restraint registered after import is picked up (the registry is tiny)."""
+    schema = list(_SPEC_SCHEMA)
+    for rt in registry.iter_registered():
+        schema.append((rt.name, None, list(rt.spec_schema)))
+    return schema
+
+
 def pack_spec(spec, to_int, to_float):
     """Convert a ``RestraintSpec`` into a backend's prepared dict via the two given
     converters (numpy array -> backend array). Only sub-arrays with a non-empty mask
-    are included, matching the original per-backend ``prepare_spec`` gating."""
+    are included, matching the original per-backend ``prepare_spec`` gating. Custom
+    (registry) restraints live in ``spec.registered[name]`` (spec_attr=None)."""
     conv = {"i": to_int, "f": to_float}
     prepared = {
         "conf_start_sigma": float(getattr(spec, "conf_start_sigma", -1.0)),
         "conf_stop_sigma": float(getattr(spec, "conf_stop_sigma", -1.0)),
     }
-    for key, attr, fields in _SPEC_SCHEMA:
-        arr = getattr(spec, attr, None)
+    registered = getattr(spec, "registered", None) or {}
+    for key, attr, fields in spec_schema():
+        arr = registered.get(key) if attr is None else getattr(spec, attr, None)
         if arr is None or not (
             arr.mask.sum() > 0
         ):  # same as old `> 0` include, NaN-safe
@@ -243,19 +260,55 @@ _TERMS = [
 ]
 
 
+def terms():
+    """The built-in dispatch table plus one row per registered restraint:
+    ``(name, name, term_args, gate)`` — the leaf fn is looked up by ``name`` in the
+    merged fns dict (see ``leaf_fns_for``). Registered restraints carry a per-entry gate
+    (the registry rejects ``conf``/``dist``), so each is summed by the solver and
+    sigma-gated per entry, exactly like rmsd / group_*."""
+    table = list(_TERMS)
+    for rt in registry.iter_registered():
+        table.append((rt.name, rt.name, list(rt.term_args), rt.gate))
+    return table
+
+
+_LEAF_FNS_CACHE: dict = {}
+
+
+def leaf_fns_for(backend, base):
+    """Merge a backend's built-in ``_LEAF_FNS`` (``base``) with the registered restraints'
+    leaf functions for ``backend`` (resolved lazily from dotted paths). This merged dict is
+    what ``term_energies`` indexes by ``fn_name``.
+
+    MEMOIZED by registry generation: ``total_energy`` is the energy the torch GPU CG
+    compiles, so the importlib + dict-merge must NOT run on every call (it would risk a
+    dynamo graph break on the proven built-in path). After warm-up this is a single dict
+    lookup returning a STABLE object; it rebuilds only when the registry actually changes.
+    Returns ``base`` unchanged when nothing is registered for ``backend``."""
+    key = (backend, id(base), registry.generation())
+    cached = _LEAF_FNS_CACHE.get(key)
+    if cached is not None:
+        return cached
+    reg = registry.registered_leaf_fns(backend)
+    merged = base if not reg else {**base, **reg}
+    _LEAF_FNS_CACHE[key] = merged
+    return merged
+
+
 def term_energies(fns, prepared, positions, cg, sigma_gate, include_distance):
     """Return ``{key: energy}`` for every active restraint term, with the right noise
     gate folded into each term's mask. Shared by all three backends' total_energy and
-    energy_breakdown — only ``fns`` (the backend leaf functions), ``cg`` (the
-    conformer gate multiplier) and ``sigma_gate`` (a per-restraint
-    ``(start_sigma, stop_sigma, mask) -> gated_mask`` callable; ``stop_sigma`` may be
-    ``None`` for a term with no lower bound) vary per backend / noise level.
+    energy_breakdown — only ``fns`` (the backend leaf functions, merged with any
+    registered ones via ``leaf_fns_for``), ``cg`` (the conformer gate multiplier) and
+    ``sigma_gate`` (a per-restraint ``(start_sigma, stop_sigma, mask) -> gated_mask``
+    callable; ``stop_sigma`` may be ``None`` for a term with no lower bound) vary per
+    backend / noise level.
 
     ``cg``/``sigma_gate`` are precomputed by the caller so the backend-specific casts
     (numpy bool, torch ``.to``, jax tracer-safe ``.astype``) stay out of this loop.
     """
     out = {}
-    for key, fn_name, fields, gate in _TERMS:
+    for key, fn_name, fields, gate in terms():
         if key not in prepared:
             continue
         if gate == "dist" and not include_distance:
@@ -301,3 +354,27 @@ CONF_KEYS = frozenset(key for key, _fn, _fields, gate in _TERMS if gate == "conf
 PER_ENTRY_KEYS = frozenset(
     key for key, _fn, _fields, gate in _TERMS if gate not in ("conf", "dist")
 )
+
+
+# Registry-aware accessors. Consumers that must see custom restraints (energy_breakdown
+# and the torch GPU pre-gate) call THESE rather than the frozen constants above, so a
+# restraint registered after import is reflected — and, crucially, a registered per-entry
+# term can't silently go ungated on the compiled GPU path (the CLAUDE.md footgun).
+def breakdown_keys():
+    """``BREAKDOWN_KEYS`` plus each registered restraint's name (so energy_breakdown
+    reports custom terms too)."""
+    return BREAKDOWN_KEYS + tuple(rt.name for rt in registry.iter_registered())
+
+
+def conf_keys():
+    """Conformer-gated keys. Registered restraints are never conformer-gated (the
+    registry rejects the ``conf`` gate), so this equals the built-in ``CONF_KEYS``; the
+    accessor exists for symmetry with ``per_entry_keys``."""
+    return CONF_KEYS
+
+
+def per_entry_keys():
+    """Per-entry-gated keys: ``PER_ENTRY_KEYS`` plus every registered restraint (all of
+    which are per-entry, CG-solved). The torch GPU pre-gate folds each of these into its
+    mask and keys its compile cache on their gate state."""
+    return PER_ENTRY_KEYS | {rt.name for rt in registry.iter_registered()}

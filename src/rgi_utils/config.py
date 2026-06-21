@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
+from rgi_utils import registry
 from rgi_utils._config_util import coerce_bool
 from rgi_utils.distance_restr_data import DistanceData
 from rgi_utils.group_geom_restr_data import AngleRestraintData, DihedralRestraintData
@@ -34,6 +35,9 @@ class RestraintsConfig:
     dihedral_data: list = field(
         default_factory=list
     )  # group-centroid dihedral restraints
+    # custom (registry) restraints, keyed by RestraintType.name -> list of its data
+    # objects. Empty unless a restraint is registered AND its config_section is present.
+    registered_data: dict = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, config: dict | None) -> "RestraintsConfig":
@@ -58,6 +62,10 @@ class RestraintsConfig:
             "angle_restraints_config",
             "dihedral_restraints_config",
         }
+        # custom (registry) restraints extend the whitelist with their config_section so
+        # a registered restraint's block is accepted; an unknown section still RAISES.
+        _registered_types = {rt.config_section: rt for rt in registry.iter_registered()}
+        _KNOWN_TOP_LEVEL = _KNOWN_TOP_LEVEL | set(_registered_types)
         _unknown_top = set(config) - _KNOWN_TOP_LEVEL - {"start_sigma"}
         if _unknown_top:
             raise ValueError(
@@ -152,6 +160,19 @@ class RestraintsConfig:
             if dd.start_sigma is None:
                 dd.start_sigma = _ALWAYS_ON
             cfg.dihedral_data.append(dd)
+        # custom (registry) restraints: parse each registered type's config_section the
+        # same way — instantiate its data_class, set_config (which warns on unknown
+        # per-entry keys), default an omitted start_sigma to +inf (active every step).
+        for section, rt in _registered_types.items():
+            items = []
+            for entry in config.get(section, []) or []:
+                obj = rt.data_class()
+                obj.set_config(entry)
+                if getattr(obj, "start_sigma", None) is None:
+                    obj.start_sigma = _ALWAYS_ON
+                items.append(obj)
+            if items:
+                cfg.registered_data[rt.name] = items
         return cfg
 
     def resolve_backend(self) -> str:

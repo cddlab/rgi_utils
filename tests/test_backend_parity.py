@@ -704,11 +704,13 @@ def test_energy_breakdown_sums_to_total():
         ("jax", jax_energy, jax_energy.prepare_spec(spec), jnp.asarray(pos)),
     ):
         bd = mod.energy_breakdown(p, prep)
-        assert set(bd) == set(_terms.BREAKDOWN_KEYS), name
+        # breakdown_keys() = the built-in BREAKDOWN_KEYS plus every registered restraint
+        # (the built-in `custom` type is always registered -> always a 0.0 key here).
+        assert set(bd) == set(_terms.breakdown_keys()), name
         tot = float(mod.total_energy(p, prep))
         assert abs(sum(bd.values()) - tot) < 1e-6, (name, sum(bd.values()), tot)
         per_key[name] = bd
-    for k in _terms.BREAKDOWN_KEYS:  # per-term cross-backend agreement
+    for k in _terms.breakdown_keys():  # per-term cross-backend agreement
         assert abs(per_key["numpy"][k] - per_key["torch"][k]) < 1e-6, k
         assert abs(per_key["numpy"][k] - per_key["jax"][k]) < 1e-6, k
 

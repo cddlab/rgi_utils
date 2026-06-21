@@ -40,6 +40,14 @@ These are flat-bottomed squared penalties minimized on GPU (or CPU). The energy
 maths is identical across the torch and jax backends (with a numpy energy
 reference); distance is applied closed-form rather than through the solver.
 
+These five are the **built-ins**. To add an *original* restraint, use the **registry**
+(not a sixth hand-wired type): a config-only `custom` restraint (`custom_restraints_config`
+— a vocabulary of geometric measures × penalty forms, no Python) or a code-level
+`register_restraint(RestraintType(...))` with your own per-backend leaf energy. Both run on
+every backend like the built-ins. Full recipe + contracts: `references/adding-a-restraint.md`.
+This is orthogonal to tool integration below — a registered restraint needs **no** tool-side
+change (it flows through the same `restraints_config` + `CombinedRestraints`).
+
 ## Core principle: rgi_utils does the heavy lifting
 
 **Everything reusable already lives in `rgi_utils`** — the restraint spec

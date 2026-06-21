@@ -10,7 +10,12 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from rgi_utils.energy._terms import BREAKDOWN_KEYS, pack_spec, term_energies
+from rgi_utils.energy._terms import (
+    breakdown_keys,
+    leaf_fns_for,
+    pack_spec,
+    term_energies,
+)
 
 _EPS = 1e-12
 
@@ -283,6 +288,68 @@ def group_dihedral_energy(
     return torch.sum(weight * delta**2 * mask)
 
 
+def _rg(positions, grp_idx, grp_mask):
+    """Radius of gyration of a padded atom group (mirrors ``numpy_energy._rg``); plain
+    centroid, so the gradient pulls atoms in/out (rg is a spread, not a translation)."""
+    pos = positions[..., grp_idx, :]
+    centroid = _group_centroid(positions, grp_idx, grp_mask)
+    d2 = torch.sum((pos - centroid[..., None, :]) ** 2, dim=-1)
+    msd = torch.sum(d2 * grp_mask, dim=-1) / (torch.sum(grp_mask, dim=-1) + _EPS)
+    return torch.sqrt(msd + _EPS)
+
+
+def custom_energy(
+    positions,
+    grp1_idx,
+    grp2_idx,
+    grp3_idx,
+    grp4_idx,
+    grp1_mask,
+    grp2_mask,
+    grp3_mask,
+    grp4_mask,
+    measure_type,
+    target1,
+    target2,
+    form_type,
+    move_free,
+    weight,
+    mask,
+):
+    """Config-declared custom restraint (registry pattern B). Mirrors
+    ``numpy_energy.custom_energy``: ``measure_type`` selects 0=distance / 1=angle /
+    2=dihedral / 3=radius_of_gyration of the group centroids; ``form_type`` is the
+    distance-style penalty shape. Every measure is computed and selected (unused groups
+    masked to 0, kept finite by _EPS), so one leaf serves all measures."""
+    c1 = _move_centroid(positions, grp1_idx, grp1_mask, move_free[..., 0])
+    c2 = _move_centroid(positions, grp2_idx, grp2_mask, move_free[..., 1])
+    c3 = _move_centroid(positions, grp3_idx, grp3_mask, move_free[..., 2])
+    c4 = _move_centroid(positions, grp4_idx, grp4_mask, move_free[..., 3])
+    v_dist = torch.sqrt(torch.sum((c1 - c2) ** 2, dim=-1) + _EPS)
+    rij, rkj = c1 - c2, c3 - c2
+    nij = torch.sqrt(torch.sum(rij**2, dim=-1) + _EPS)
+    nkj = torch.sqrt(torch.sum(rkj**2, dim=-1) + _EPS)
+    cos_th = torch.clamp(
+        torch.sum(rij * rkj, dim=-1) / (nij * nkj), -1.0 + 1e-7, 1.0 - 1e-7
+    )
+    v_angle = torch.arccos(cos_th)
+    v_dih = _dihedral_angle(c1, c2, c3, c4)
+    v_rg = _rg(positions, grp1_idx, grp1_mask)
+    value = torch.where(
+        measure_type == 0,
+        v_dist,
+        torch.where(
+            measure_type == 1, v_angle, torch.where(measure_type == 2, v_dih, v_rg)
+        ),
+    )
+    dev = value - target1
+    harmonic_dev = torch.where(
+        measure_type == 2, torch.atan2(torch.sin(dev), torch.cos(dev)), dev
+    )
+    delta = _group_delta(value, harmonic_dev, target1, target2, form_type)
+    return torch.sum(weight * delta**2 * mask)
+
+
 def _kabsch_R(Q0, P0):
     """Optimal proper rotation R (det +1) s.t. R Q0 ~ P0 (Kabsch). Computed under
     ``no_grad`` and detached, so the gradient flows only through the moving atoms in
@@ -348,6 +415,9 @@ _LEAF_FNS = {
     "group_dihedral_energy": group_dihedral_energy,
 }
 
+# this backend's name, used to merge registered restraints' leaf fns (see leaf_fns_for)
+_BACKEND = "torch"
+
 
 def _gates(prepared, sigma):
     """The conformer gate ``cg`` (a python scalar) and a per-restraint ``sigma_gate``
@@ -378,7 +448,12 @@ def total_energy(positions, prepared, sigma=None, include_distance=True):
     cg, sigma_gate = _gates(prepared, sigma)
     ene = torch.zeros((), dtype=positions.dtype, device=positions.device)
     for v in term_energies(
-        _LEAF_FNS, prepared, positions, cg, sigma_gate, include_distance
+        leaf_fns_for(_BACKEND, _LEAF_FNS),
+        prepared,
+        positions,
+        cg,
+        sigma_gate,
+        include_distance,
     ).values():
         ene = ene + v
     return ene
@@ -388,9 +463,14 @@ def energy_breakdown(positions, prepared, sigma=None):
     """Per-term restraint energies (same maths + gating as ``total_energy``), as a
     ``{bond, angle, chiral, improper, cistrans, vdw, distance, rmsd}`` python-float dict."""
     cg, sigma_gate = _gates(prepared, sigma)
-    out = dict.fromkeys(BREAKDOWN_KEYS, 0.0)
+    out = dict.fromkeys(breakdown_keys(), 0.0)
     for k, v in term_energies(
-        _LEAF_FNS, prepared, positions, cg, sigma_gate, include_distance=True
+        leaf_fns_for(_BACKEND, _LEAF_FNS),
+        prepared,
+        positions,
+        cg,
+        sigma_gate,
+        include_distance=True,
     ).items():
         out[k] = float(v)
     return out

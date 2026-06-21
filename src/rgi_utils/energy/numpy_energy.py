@@ -11,7 +11,12 @@ from __future__ import annotations
 
 import numpy as np
 
-from rgi_utils.energy._terms import BREAKDOWN_KEYS, pack_spec, term_energies
+from rgi_utils.energy._terms import (
+    breakdown_keys,
+    leaf_fns_for,
+    pack_spec,
+    term_energies,
+)
 
 _EPS = 1e-12
 
@@ -273,6 +278,68 @@ def group_dihedral_energy(
     return np.sum(weight * delta**2 * mask)
 
 
+def _rg(positions, grp_idx, grp_mask):
+    """Radius of gyration of a padded atom group: RMS distance of its atoms from their
+    centroid. Uses the PLAIN centroid (not the rigid-translation ``_move_centroid``) —
+    rg is an internal spread, so the gradient should pull atoms in/out, not translate."""
+    pos = positions[..., grp_idx, :]  # (..., n, max_grp, 3)
+    centroid = _group_centroid(positions, grp_idx, grp_mask)  # (..., n, 3)
+    d2 = np.sum((pos - centroid[..., None, :]) ** 2, axis=-1)  # (..., n, max_grp)
+    msd = np.sum(d2 * grp_mask, axis=-1) / (np.sum(grp_mask, axis=-1) + _EPS)
+    return np.sqrt(msd + _EPS)
+
+
+def custom_energy(
+    positions,
+    grp1_idx,
+    grp2_idx,
+    grp3_idx,
+    grp4_idx,
+    grp1_mask,
+    grp2_mask,
+    grp3_mask,
+    grp4_mask,
+    measure_type,
+    target1,
+    target2,
+    form_type,
+    move_free,
+    weight,
+    mask,
+):
+    """Config-declared custom restraint (registry pattern B). ``measure_type`` selects the
+    measure of the (up to four) group centroids — 0=distance ``|c1-c2|`` /
+    1=angle(c1,c2,c3) (vertex c2) / 2=dihedral(c1,c2,c3,c4) / 3=radius_of_gyration(group1)
+    — and ``form_type`` the distance-style penalty (DIST_TYPE_CODES). Every measure is
+    computed and selected by ``measure_type``; unused groups are masked to 0 and kept
+    finite by the _EPS guards, so one leaf serves all measures with identical maths across
+    backends (this is the numpy reference)."""
+    c1 = _move_centroid(positions, grp1_idx, grp1_mask, move_free[..., 0])
+    c2 = _move_centroid(positions, grp2_idx, grp2_mask, move_free[..., 1])
+    c3 = _move_centroid(positions, grp3_idx, grp3_mask, move_free[..., 2])
+    c4 = _move_centroid(positions, grp4_idx, grp4_mask, move_free[..., 3])
+    v_dist = np.sqrt(np.sum((c1 - c2) ** 2, axis=-1) + _EPS)
+    rij, rkj = c1 - c2, c3 - c2
+    nij = np.sqrt(np.sum(rij**2, axis=-1) + _EPS)
+    nkj = np.sqrt(np.sum(rkj**2, axis=-1) + _EPS)
+    cos_th = np.clip(np.sum(rij * rkj, axis=-1) / (nij * nkj), -1.0 + 1e-7, 1.0 - 1e-7)
+    v_angle = np.arccos(cos_th)
+    v_dih = _dihedral_angle(c1, c2, c3, c4)
+    v_rg = _rg(positions, grp1_idx, grp1_mask)
+    value = np.where(
+        measure_type == 0,
+        v_dist,
+        np.where(measure_type == 1, v_angle, np.where(measure_type == 2, v_dih, v_rg)),
+    )
+    # only the dihedral measure (2) is periodic -> wrap the harmonic deviation
+    dev = value - target1
+    harmonic_dev = np.where(
+        measure_type == 2, np.arctan2(np.sin(dev), np.cos(dev)), dev
+    )
+    delta = _group_delta(value, harmonic_dev, target1, target2, form_type)
+    return np.sum(weight * delta**2 * mask)
+
+
 def _kabsch_R(Q0, P0):
     """Optimal proper rotation ``R`` (det +1) minimising ``sum_a ||R Q0_a - P0_a||^2``
     (Kabsch). ``Q0``/``P0`` are centred, padding-zeroed ``(..., A, 3)``. Returns
@@ -342,6 +409,9 @@ _LEAF_FNS = {
     "group_dihedral_energy": group_dihedral_energy,
 }
 
+# this backend's name, used to merge registered restraints' leaf fns (see leaf_fns_for)
+_BACKEND = "numpy"
+
 
 def _gates(prepared, sigma):
     """The conformer gate ``cg`` and a per-restraint ``sigma_gate`` for this noise
@@ -377,7 +447,12 @@ def total_energy(positions, prepared, sigma=None, include_distance=True):
     cg, sigma_gate = _gates(prepared, sigma)
     ene = 0.0
     for v in term_energies(
-        _LEAF_FNS, prepared, positions, cg, sigma_gate, include_distance
+        leaf_fns_for(_BACKEND, _LEAF_FNS),
+        prepared,
+        positions,
+        cg,
+        sigma_gate,
+        include_distance,
     ).values():
         ene = ene + v
     return ene
@@ -388,9 +463,14 @@ def energy_breakdown(positions, prepared, sigma=None):
     ``{bond, angle, chiral, improper, cistrans, vdw, distance, rmsd}`` float dict for callers
     that report each term's contribution (e.g. ``finalize`` logging)."""
     cg, sigma_gate = _gates(prepared, sigma)
-    out = dict.fromkeys(BREAKDOWN_KEYS, 0.0)
+    out = dict.fromkeys(breakdown_keys(), 0.0)
     for k, v in term_energies(
-        _LEAF_FNS, prepared, positions, cg, sigma_gate, include_distance=True
+        leaf_fns_for(_BACKEND, _LEAF_FNS),
+        prepared,
+        positions,
+        cg,
+        sigma_gate,
+        include_distance=True,
     ).items():
         out[k] = float(v)
     return out

@@ -23,7 +23,7 @@ import math
 import torch
 
 from rgi_utils.energy import torch_energy
-from rgi_utils.energy._terms import CONF_KEYS, PER_ENTRY_KEYS
+from rgi_utils.energy._terms import conf_keys, per_entry_keys
 from rgi_utils.optim._cg_config import (
     ARMIJO_C1,
     BACKTRACK,
@@ -95,7 +95,7 @@ class TorchRestraintOptimizer:
         # stop_sigma so the model's final low-sigma steps re-idealise geometry).
         gates: dict[str, tuple] = {}
         if sigma is not None:
-            for gk in PER_ENTRY_KEYS:
+            for gk in per_entry_keys():
                 if gk in p:
                     pe = p[gk]
                     on = (sigma <= pe["start_sigma"]) & (sigma >= pe["stop_sigma"])
@@ -106,12 +106,13 @@ class TorchRestraintOptimizer:
         cache = self._prepared_g
         if key not in cache:
             pg = {}
+            conf_set = conf_keys()
             for k, v in p.items():
                 if not isinstance(v, dict):
                     continue  # drop scalar leaves (conf_start_sigma): a python-float in
                     # the compiled energy's pytree forces a per-value dynamo recompile,
                     # and total_energy(sigma=None) never reads it
-                elif k in CONF_KEYS:
+                elif k in conf_set:
                     pg[k] = {**v, "mask": v["mask"] * cg_key}
                 elif k in gates:
                     rg = torch.tensor(
@@ -204,6 +205,8 @@ class TorchRestraintOptimizer:
         # group-centroid angle/dihedral are CG-solved like rmsd (not closed-form), so the
         # solver branch must run when either is present.
         has_group = self.spec.has_group_angle() or self.spec.has_group_dihedral()
+        # custom (registry) restraints are per-entry CG terms too -> same solver branch.
+        has_registered = self.spec.has_registered()
         prepared = self._prepared
 
         # boltz / Lightning run prediction under torch.inference_mode, where leaf
@@ -230,7 +233,7 @@ class TorchRestraintOptimizer:
             #    angle/dihedral restraints: gradient solver on the non-distance energy
             #    (distance already applied above; total_energy(include_distance=False)
             #    covers conformer, RMSD AND the group terms). Skipped for distance-only.
-            if has_conf or has_rmsd or has_group:
+            if has_conf or has_rmsd or has_group or has_registered:
                 active = active.detach().clone()
                 active.requires_grad_(True)
                 prot_pos = None
