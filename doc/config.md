@@ -117,26 +117,24 @@ ligand chain's atoms with the same ordinal. This convention is identical across 
 
 Every built-in restraint is defined by the same squared penalty,
 
-```
-E = Σᵢ wᵢ · δᵢ²
+```math
+E = \sum_i w_i\,\delta_i^2
 ```
 
-where `wᵢ` is the entry `weight` and `δᵢ` is the deviation of a measured quantity `x` (a distance,
-angle, volume, …) from its target. Four block names choose how `δ` is shaped:
+where $w_i$ is the entry `weight` and $\delta_i$ is the deviation of a measured quantity $x$ (a
+distance, angle, volume, …) from its target. Four block names choose how $\delta$ is shaped:
 
-```
-harmonic         δ = x − t                         penalise any deviation from t
-flat-bottomed    δ = 0          for t₁ ≤ x ≤ t₂    no penalty inside the window
-                 δ = x − t₁     for x < t₁
-                 δ = x − t₂     for x > t₂
-flat-bottomed1   δ = min(0, x − t₁)                lower bound (penalise only x < t₁)
-flat-bottomed2   δ = max(0, x − t₂)                upper bound (penalise only x > t₂)
-```
+| block | $\delta$ | effect |
+|---|---|---|
+| `harmonic` | $x - t$ | penalise any deviation from $t$ |
+| `flat-bottomed` | $0$ for $t_1 \le x \le t_2$; $x - t_1$ below; $x - t_2$ above | no penalty inside the window |
+| `flat-bottomed1` | $\min(0,\, x - t_1)$ | lower bound — penalise only $x \lt t_1$ |
+| `flat-bottomed2` | $\max(0,\, x - t_2)$ | upper bound — penalise only $x \gt t_2$ |
 
 The same four shapes drive the `distance` / `angle` / `dihedral` blocks (only the target key
 differs: `target_distance` / `target_angle` / `target_dihedral`, with `…1` / `…2` for the
 flat-bottomed bounds). The **conformer** terms use the flat-bottomed shape with a symmetric `slack`:
-`δ = 0` within `±slack` of the RDKit-ideal value, quadratic outside (`slack = 0` ⇒ pure harmonic).
+$\delta = 0$ within $\pm$`slack` of the RDKit-ideal value, quadratic outside (`slack = 0` $\Rightarrow$ pure harmonic).
 
 `distance` is the one restraint with **no `weight`**: a centroid distance is 1-DOF, so it is solved
 closed-form (the `harmonic` minimum `d = target` is reached exactly in a single shift) instead of
@@ -150,12 +148,12 @@ so it has **no `weight`**.
 
 The measured quantity is the distance between the two groups' centroids,
 
-```
-d = ‖c₂ − c₁‖,    cₖ = (1 / |Gₖ|) Σ_{a ∈ Gₖ} xₐ    (plain masked-mean centroid)
+```math
+d = \lVert c_2 - c_1 \rVert, \qquad c_k = \frac{1}{|G_k|}\sum_{a \in G_k} x_a
 ```
 
-shaped by one of the penalty blocks below (see Penalty shapes); being closed-form, `harmonic`
-reaches `d = target_distance` exactly.
+(a plain masked-mean centroid), shaped by one of the penalty blocks below (see Penalty shapes).
+Being closed-form, `harmonic` reaches the target distance ($d = t$) exactly.
 
 | key | type | default | meaning |
 |---|---|---|---|
@@ -183,13 +181,13 @@ distance restraint, distinct from the per-ligand-atom conformer `angle` term. CG
 motion (the centroid-only energy gives every atom in a free group the same gradient, so the group
 translates as a unit) means `weight: 1.0` drives any group size.
 
-The measured quantity is the angle at centroid `c₂`,
+The measured quantity is the angle at centroid $c_2$ (with $c_k$ the centroid of group $k$),
 
-```
-θ = arccos( (c₁ − c₂) · (c₃ − c₂) / (‖c₁ − c₂‖ · ‖c₃ − c₂‖) ),    cₖ = centroid of group k
+```math
+\theta = \arccos\!\left( \frac{(c_1 - c_2)\cdot(c_3 - c_2)}{\lVert c_1 - c_2 \rVert\,\lVert c_3 - c_2 \rVert} \right)
 ```
 
-penalised by `E = Σ w · δ²(θ)` with the usual shapes (see Penalty shapes). Targets are in **degrees**
+penalised by $E = \sum w\,\delta^2(\theta)$ with the usual shapes (see Penalty shapes). Targets are in **degrees**
 by default — set `unit: radians` on the entry to give them in radians (stored internally as radians
 either way).
 
@@ -209,17 +207,13 @@ The **dihedral of 4 group centroids**, about the axis through groups 2–3 — t
 analogue of the distance restraint, distinct from the per-ligand-atom conformer `cistrans` term.
 CG-solved; `weight: 1.0` drives any group size, as for the angle.
 
-The measured quantity is the torsion about the `c₂`–`c₃` axis,
-
-```
-φ = atan2(y, x)   from the four centroids c₁, c₂, c₃, c₄   (standard 4-point torsion)
-```
-
-penalised by `E = Σ w · δ²(φ)` (see Penalty shapes). The `harmonic` shape is **periodicity-safe**: the deviation
-`φ − target_dihedral` is wrapped to ±180° before squaring, so e.g. +179° and −179° count as a 2°
-difference. The `flat-bottomed` shapes use the raw angle and therefore **cannot straddle ±180°**
-(`target_dihedral1 < target_dihedral2` is enforced). Targets in **degrees** by default
-(`unit: radians` to override).
+The measured quantity is the dihedral angle $\phi$ of the four centroids $c_1, c_2, c_3, c_4$ about
+the $c_2$–$c_3$ axis (the periodicity-safe `atan2` convention), penalised by
+$E = \sum w\,\delta^2(\phi)$ (see Penalty shapes). The `harmonic` shape is **periodicity-safe**: the
+deviation $\phi - t$ is wrapped to $[-180^\circ, 180^\circ]$ before squaring, so e.g. $+179^\circ$
+and $-179^\circ$ count as a $2^\circ$ difference. The `flat-bottomed` shapes use the raw angle and
+therefore **cannot straddle $\pm 180^\circ$** (`target_dihedral1 < target_dihedral2` is enforced).
+Targets in **degrees** by default (`unit: radians` to override).
 
 | key | type | default | meaning |
 |---|---|---|---|
@@ -254,19 +248,26 @@ Each term is a sub-dict; a term with `weight <= 0` is disabled (and not built).
 | `cistrans` | `weight` (0.1), `slack` (0.0 rad) | **cis/trans (E/Z)** of acyclic, non-aromatic double bonds (needs real bond orders; detects 0 for ligands with none, e.g. ATP/NAD/GLN) |
 | `vdw` | `weight` (**0.0**, off), `mode` (`"both"`), `scale` (0.75), `dmax` (5.0 Å) | non-bonded clash avoidance |
 
-**Energy.** Each term applies the shared flat-bottomed squared penalty — `δ = 0` within `±slack` of
-the RDKit-ideal value, quadratic outside (see Penalty shapes) — to a per-tuple quantity `x`:
+**Energy.** Each term applies the shared flat-bottomed squared penalty ($\delta = 0$ within
+$\pm$`slack` of the RDKit-ideal value, quadratic outside — see Penalty shapes) to a per-tuple
+quantity $x$:
 
-```
-bond      x = bond length r                                          ideal r₀
-angle     x = bond angle θ (radians)                                 ideal θ₀
-chiral    x = signed volume V = (a₁ − a₀) · ((a₂ − a₀) × (a₃ − a₀))  ideal V₀ (handedness)
-improper  x = the same signed volume V                               target V₀ ≈ 0 (planarity)
-cistrans  x = double-bond torsion φ (deviation wrapped to ±180°)     ideal φ₀ (E/Z)
+| term | measured quantity $x$ | ideal |
+|---|---|---|
+| `bond` | bond length $r$ | $r_0$ |
+| `angle` | bond angle $\theta$ (radians) | $\theta_0$ |
+| `chiral` | signed volume $V = (a_1 - a_0)\cdot\big((a_2 - a_0)\times(a_3 - a_0)\big)$ | $V_0$ (handedness) |
+| `improper` | the same signed volume $V$ | $V_0 \approx 0$ (planarity) |
+| `cistrans` | double-bond torsion $\phi$ (deviation wrapped to $\pm 180^\circ$) | $\phi_0$ (E/Z) |
+
+`vdw` is one-sided (repulsion only),
+
+```math
+E = w \sum_{(i,j)} \min\!\big(0,\; d_{ij} - \text{scale}\cdot(r_i + r_j)\big)^2,
 ```
 
-`vdw` is one-sided (repulsion only): `E = w · Σ min(0, d − scale·(rᵢ + rⱼ))²` over non-bonded atom
-pairs closer than `dmax`, where `d` is the pair distance and `rᵢ`, `rⱼ` are their VdW radii.
+over non-bonded atom pairs closer than `dmax`, where $d_{ij}$ is the pair distance and $r_i, r_j$
+are their VdW radii.
 
 `vdw.mode`: `"intramolecular"` (static ligand-internal pairs, all backends), `"ligand_protein"`
 (dynamic ligand-vs-fixed-protein, torch/jax), or `"both"` (default). `scale` = fraction of the
@@ -280,14 +281,15 @@ The reference must be generated first (a vanilla prediction → PDB via gemmi); 
 
 The energy is
 
-```
-E = Σ w · (RMSD − target_rmsd)²,    RMSD = √( (1 / n) Σ_a ‖ Pₐ − R̂ · Qₐ ‖² )
+```math
+E = \sum w\,(\mathrm{RMSD} - t)^2, \qquad \mathrm{RMSD} = \sqrt{\tfrac{1}{n}\sum_{a} \lVert P_a - \hat{R}\,Q_a \rVert^2}
 ```
 
-where `Pₐ` / `Qₐ` are the prediction / reference **calc** atoms centred on their fit-atom centroids,
-`n = n_calc`, and `R̂` is the optimal rotation from a Kabsch SVD on the **fit** atoms. `R̂` (and the
-centroids) are treated as **fixed** (stop-gradient), so the gradient pulls the moving atoms, not the
-rotation — `target_rmsd = 0` drives the group onto the reference.
+where $t =$ `target_rmsd`, $P_a$ / $Q_a$ are the prediction / reference **calc** atoms centred on
+their fit-atom centroids, $n = n_\text{calc}$, and $\hat{R}$ is the optimal rotation from a Kabsch
+SVD on the **fit** atoms. $\hat{R}$ (and the centroids) are treated as **fixed** (stop-gradient), so
+the gradient pulls the moving atoms, not the rotation — `target_rmsd = 0` drives the group onto the
+reference.
 
 | key | type | default | meaning |
 |---|---|---|---|
@@ -348,27 +350,27 @@ The vocabulary has three groups — **geometry** (coordinates → a number), **p
 energy), and **math** (elementwise / reduction helpers) — plus operators.
 
 **Geometry** — all operate on selection **centroids**; angular results are in **radians** (note: the
-built-in `angle` / `dihedral` configs take *degrees*, but a custom formula is in radians). `‖·‖` is
-the Euclidean norm:
+built-in `angle` / `dihedral` configs take *degrees*, but a custom formula is in radians).
+$\lVert\cdot\rVert$ is the Euclidean norm:
 
-```
-centroid(A)        c_A = mean of A's atoms                                  → vector
-distance(A,B)      ‖c_A − c_B‖                                              → scalar
-angle(A,B,C)       arccos( (c_A−c_B)·(c_C−c_B) / (‖c_A−c_B‖ · ‖c_C−c_B‖) )  → scalar (rad), vertex B
-dihedral(A,B,C,D)  torsion about the B–C centroid axis, range ±π            → scalar (rad)
-rg(A)              √( meanᵢ ‖xᵢ − c_A‖² )   radius of gyration              → scalar
-norm(v)            ‖v‖   Euclidean norm of a vector quantity                → scalar
-dot(u,v)           u · v   dot product of two vector quantities             → scalar
-```
+| call | result | definition |
+|---|---|---|
+| `centroid(A)` | vector | $c_A$ = mean of $A$'s atoms |
+| `distance(A,B)` | scalar | $\lVert c_A - c_B \rVert$ |
+| `angle(A,B,C)` | scalar (rad) | $\arccos\!\big( (c_A - c_B)\cdot(c_C - c_B) / (\lVert c_A - c_B \rVert\,\lVert c_C - c_B \rVert) \big)$, vertex $B$ |
+| `dihedral(A,B,C,D)` | scalar (rad) | torsion about the $B$–$C$ centroid axis, range $\pm\pi$ |
+| `rg(A)` | scalar | $\sqrt{\operatorname{mean}_i \lVert x_i - c_A \rVert^2}$ — radius of gyration |
+| `norm(v)` | scalar | $\lVert v \rVert$ |
+| `dot(u,v)` | scalar | $u \cdot v$ |
 
 **Penalty** — convenience squared penalties (you may also write the algebra directly):
 
-```
-harmonic(x, t)          (x − t)²                       quadratic toward t
-flat_bottom(x, lo, hi)  min(0, x−lo)² + max(0, x−hi)²  zero inside [lo, hi]
-lower(x, lo)            min(0, x−lo)²                  penalise only x < lo
-upper(x, hi)            max(0, x−hi)²                  penalise only x > hi
-```
+| call | definition | effect |
+|---|---|---|
+| `harmonic(x, t)` | $(x - t)^2$ | quadratic toward $t$ |
+| `flat_bottom(x, lo, hi)` | $\min(0,\, x - \text{lo})^2 + \max(0,\, x - \text{hi})^2$ | zero inside $[\text{lo}, \text{hi}]$ |
+| `lower(x, lo)` | $\min(0,\, x - \text{lo})^2$ | penalise only $x \lt \text{lo}$ |
+| `upper(x, hi)` | $\max(0,\, x - \text{hi})^2$ | penalise only $x \gt \text{hi}$ |
 
 `lower` / `upper` are the same maths as the built-in `flat-bottomed1` / `flat-bottomed2` blocks.
 
