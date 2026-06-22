@@ -289,12 +289,15 @@ def rmsd_energy(
     calc_idx,
     calc_mask,
     calc_ref,
-    target_rmsd,
+    target1,
+    target2,
+    geom_type,
     weight,
     mask,
 ):
     """Fit/calc Kabsch RMSD restraint (mirrors ``numpy_energy.rmsd_energy``). R +
-    centroids from the FIT atoms; RMSD over the CALC atoms. R is stop-gradient'd."""
+    centroids from the FIT atoms; RMSD over the CALC atoms (distance-style flat-bottom
+    delta on the RMSD via ``geom_type``). R is stop-gradient'd."""
     Pf = positions[..., fit_idx, :]
     mf = fit_mask[..., None]
     nf = jnp.sum(fit_mask, axis=-1)
@@ -312,7 +315,8 @@ def rmsd_energy(
     resid = (Pc0 - Yc) * mc
     msd = jnp.sum(resid**2, axis=(-2, -1)) / (nc + _EPS)
     rmsd = jnp.sqrt(msd + _EPS)
-    return jnp.sum(weight * (rmsd - target_rmsd) ** 2 * mask)
+    delta = _group_delta(rmsd, rmsd - target1, target1, target2, geom_type)
+    return jnp.sum(weight * delta**2 * mask)
 
 
 # leaf energy functions by name, for the shared term_energies dispatch

@@ -143,7 +143,7 @@ def test_ctx_vocabulary_parity():
     spec = _spec_from_entries(
         [
             {
-                "energy": "exp(-distance(A,B)) + flat_bottom(angle(A,B,C), 1.0, 2.0) "
+                "energy": "exp(-distance(A,B)) + flat_bottomed(angle(A,B,C), 1.0, 2.0) "
                 "+ where(rg(A) > 1.0, harmonic(rg(A), 1.0), 0.0)",
                 "selections": {
                     "A": "resid 1 to 3",
@@ -291,3 +291,28 @@ def test_custom_entry_requires_one_source():
         cfg(
             {"custom_restraints_config": [{"selections": {"A": "resid 1"}}]}
         )  # no energy/use/fn
+
+
+def test_penalty_vocabulary_is_flat_bottomed():
+    """The penalty vocabulary mirrors the distance config keys: flat_bottomed /
+    flat_bottomed1 (lower) / flat_bottomed2 (upper) / harmonic. The old lower / upper /
+    flat_bottom names are GONE (hard rename, not aliased) -- a formula using the new
+    names builds a closure; one using an old name raises at parse (not in the DSL
+    whitelist)."""
+    spec = _spec_from_entries(
+        [
+            {
+                "energy": "flat_bottomed(distance(A,B), 1.0, 5.0) "
+                "+ flat_bottomed1(rg(A), 1.0) + flat_bottomed2(rg(B), 5.0)",
+                "selections": {"A": "resid 1 to 3", "B": "resid 5 to 6"},
+            }
+        ]
+    )
+    assert spec.custom  # new names build a closure
+    for old in (
+        "lower(rg(A), 1.0)",
+        "upper(rg(A), 5.0)",
+        "flat_bottom(rg(A), 1.0, 5.0)",
+    ):
+        with pytest.raises(ValueError, match="only calls|disallowed"):
+            _spec_from_entries([{"energy": old, "selections": {"A": "resid 1 to 3"}}])

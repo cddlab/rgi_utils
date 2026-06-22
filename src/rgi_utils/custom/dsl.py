@@ -3,7 +3,7 @@ evaluate it against a ``RestraintContext``.
 
 A formula is a Python *expression* over the vocabulary (``context.CALL_NAMES``) and named
 atom-group selections, e.g. ``"(distance(A, B) - distance(C, D))**2"`` or
-``"flat_bottom(angle(A,B,C), 1.4, 1.8)"``. It is parsed with ``ast.parse`` (NOT ``eval``)
+``"flat_bottomed(angle(A,B,C), 1.4, 1.8)"``. It is parsed with ``ast.parse`` (NOT ``eval``)
 and validated against a strict node whitelist, so no attribute access / subscripting /
 lambdas / comprehensions / arbitrary calls are possible — only arithmetic, comparisons
 (for ``where``), and calls to the vocabulary. The AST is built ONCE at setup (static), so

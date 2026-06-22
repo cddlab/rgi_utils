@@ -715,7 +715,9 @@ def build_spec(
         calc_idx = np.zeros((n, max_calc), dtype=np.int64)
         calc_mask = np.zeros((n, max_calc))
         calc_ref = np.zeros((n, max_calc, 3))
-        target_rmsd = np.zeros(n)
+        target1 = np.zeros(n)
+        target2 = np.zeros(n)
+        geom_type = np.zeros(n, dtype=np.int64)
         rmsd_weight = np.zeros(n)
         rmsd_start_sigma = np.full(n, -1.0)
         rmsd_stop_sigma = np.full(n, -1.0)  # -1 = never released (active to sigma=0)
@@ -732,7 +734,9 @@ def build_spec(
             calc_idx[ri, :kc] = c_local
             calc_mask[ri, :kc] = 1.0
             calc_ref[ri, :kc] = np.asarray(rr.calc_ref_coords, dtype=np.float64)
-            target_rmsd[ri] = float(rr.target_rmsd)
+            target1[ri] = float(rr.target1)
+            target2[ri] = float(rr.target2)
+            geom_type[ri] = DIST_TYPE_CODES[rr.rmsd_type]
             # rr.weight is already normalized in set_config (None -> 1.0); pass it
             # through verbatim so an explicit weight: 0 yields a zero-energy term
             # (do NOT coerce a falsy 0 to 1.0 like the conformer terms, which instead
@@ -750,7 +754,9 @@ def build_spec(
             calc_idx=calc_idx,
             calc_mask=calc_mask,
             calc_ref=calc_ref,
-            target_rmsd=target_rmsd,
+            target1=target1,
+            target2=target2,
+            geom_type=geom_type,
             weight=rmsd_weight,
             start_sigma=rmsd_start_sigma,
             stop_sigma=rmsd_stop_sigma,

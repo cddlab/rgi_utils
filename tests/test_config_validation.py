@@ -86,7 +86,7 @@ def test_bare_atom_selection_on_rmsd_raises():
         rr.set_config(
             {
                 "ref_pdb": "x.pdb",
-                "target_rmsd": 1.0,
+                "harmonic": {"target_rmsd": 1.0},
                 "atom_selection": "chain A",  # footgun: not a real key
             }
         )
@@ -96,10 +96,12 @@ def test_bare_atom_selection_on_rmsd_raises():
 def test_best_effort_string_false_disables():
     """best_effort: "false" (quoted) must disable it — plain bool("false") is True."""
     rr = RmsdData()
-    rr.set_config({"ref_pdb": "x.pdb", "target_rmsd": 1.0, "best_effort": "false"})
+    rr.set_config(
+        {"ref_pdb": "x.pdb", "harmonic": {"target_rmsd": 1.0}, "best_effort": "false"}
+    )
     assert rr.best_effort is False
     rr2 = RmsdData()
-    rr2.set_config({"ref_pdb": "x.pdb", "target_rmsd": 1.0})
+    rr2.set_config({"ref_pdb": "x.pdb", "harmonic": {"target_rmsd": 1.0}})
     assert rr2.best_effort is True  # default when omitted
 
 

@@ -486,7 +486,7 @@ def test_rmsd_resolve_and_minimize(tmp_path):
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(pdb),
-                    "target_rmsd": 0.0,
+                    "harmonic": {"target_rmsd": 0.0},
                     "atom_selection_ref": "chain A",
                     "atom_selection_target": "chain A",
                     "start_sigma": 1e30,
@@ -529,7 +529,7 @@ def test_rmsd_stop_sigma_releases_below(tmp_path):
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(pdb),
-                    "target_rmsd": 0.0,
+                    "harmonic": {"target_rmsd": 0.0},
                     "atom_selection_ref": "chain A",
                     "atom_selection_target": "chain A",
                     "start_sigma": 1e30,
@@ -570,7 +570,7 @@ def test_rmsd_stop_sigma_above_start_raises(tmp_path):
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(pdb),
-                    "target_rmsd": 0.0,
+                    "harmonic": {"target_rmsd": 0.0},
                     "atom_selection_ref": "chain A",
                     "atom_selection_target": "chain A",
                     "start_sigma": 1.0,
@@ -803,7 +803,7 @@ def test_rmsd_count_mismatch_raises(tmp_path):
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(pdb),
-                    "target_rmsd": 1.0,
+                    "harmonic": {"target_rmsd": 1.0},
                     "atom_selection_ref": "chain A",  # 6 atoms
                     "atom_selection_target": "chain A and resid 1 to 3",  # 3 atoms
                 }
@@ -823,7 +823,7 @@ def test_rmsd_missing_pdb_raises(tmp_path):
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(tmp_path / "does_not_exist.pdb"),
-                    "target_rmsd": 1.0,
+                    "harmonic": {"target_rmsd": 1.0},
                     "atom_selection_ref": "chain A",
                     "atom_selection_target": "chain A",
                 }
@@ -945,7 +945,7 @@ def test_rmsd_identity_pairing_within_residue_order(tmp_path):
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(pdb),
-                    "target_rmsd": 0.0,
+                    "harmonic": {"target_rmsd": 0.0},
                     "atom_selection_ref": "chain A",
                     "atom_selection_target": "chain A",
                     "start_sigma": 1e30,
@@ -974,7 +974,7 @@ def test_rmsd_fit_calc_resolves(tmp_path):
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(pdb),
-                    "target_rmsd": 0.0,
+                    "harmonic": {"target_rmsd": 0.0},
                     "atom_selection_ref_fit": "chain A and (resid 1 to 3)",
                     "atom_selection_target_fit": "chain A and (resid 1 to 3)",
                     "atom_selection_ref_calc": "chain A and (resid 4 to 6)",
@@ -994,7 +994,7 @@ def test_rmsd_fit_calc_resolves(tmp_path):
 def _missing_atom_cfg(pdb, strict):
     cfg = {
         "ref_pdb": str(pdb),
-        "target_rmsd": 0.0,
+        "harmonic": {"target_rmsd": 0.0},
         "atom_selection_ref": "chain A",
         "atom_selection_target": "chain A",
     }
@@ -1044,7 +1044,7 @@ def test_rmsd_best_effort_skips_missing(tmp_path):
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(pdb),
-                    "target_rmsd": 0.0,
+                    "harmonic": {"target_rmsd": 0.0},
                     "atom_selection_ref": "chain A",
                     "atom_selection_target": "chain A",
                     "best_effort": True,
@@ -1076,7 +1076,7 @@ def test_rmsd_best_effort_no_overlap_still_raises(tmp_path):
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(pdb),
-                    "target_rmsd": 0.0,
+                    "harmonic": {"target_rmsd": 0.0},
                     "atom_selection_ref": "chain A",
                     "atom_selection_target": "chain A",
                     "best_effort": True,
@@ -1140,7 +1140,7 @@ def test_rmsd_align_homolog_indel(tmp_path):
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(tmp_path / "ref.pdb"),
-                    "target_rmsd": 0.0,
+                    "harmonic": {"target_rmsd": 0.0},
                     "pairing": "align",
                     "start_sigma": 1e30,
                 }
@@ -1178,7 +1178,7 @@ def test_rmsd_pairing_defaults_to_align(tmp_path):
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(tmp_path / "ref.pdb"),
-                    "target_rmsd": 0.0,
+                    "harmonic": {"target_rmsd": 0.0},
                     # NO `pairing` key -> defaults to align (polymer present)
                     "start_sigma": 1e30,
                 }
@@ -1215,7 +1215,7 @@ def test_rmsd_default_no_polymer_uses_identity(tmp_path):
     rr.set_config(
         {
             "ref_pdb": str(pdb),
-            "target_rmsd": 0.0,
+            "harmonic": {"target_rmsd": 0.0},
             "atom_selection_ref": "chain B",
             "atom_selection_target": "chain B",
         }
@@ -1245,7 +1245,7 @@ def test_rmsd_align_strict_gap_raises(tmp_path):
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(tmp_path / "ref.pdb"),
-                    "target_rmsd": 0.0,
+                    "harmonic": {"target_rmsd": 0.0},
                     "best_effort": False,  # strict: the deleted residue must raise
                     "atom_selection_target": "name CA",  # explicit -> strict applies
                     "atom_selection_ref": "name CA",
@@ -1273,7 +1273,7 @@ def test_rmsd_align_requires_target_resname(tmp_path):
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(tmp_path / "ref.pdb"),
-                    "target_rmsd": 0.0,
+                    "harmonic": {"target_rmsd": 0.0},
                     "pairing": "align",
                 }
             ],
@@ -1302,7 +1302,7 @@ def test_rmsd_align_derives_polymer_from_resname(tmp_path):
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(tmp_path / "ref.pdb"),
-                    "target_rmsd": 0.0,
+                    "harmonic": {"target_rmsd": 0.0},
                     "pairing": "align",
                     "start_sigma": 1e30,
                 }
@@ -1363,7 +1363,7 @@ def test_rmsd_align_name_ca_only_excludes_side_chain(tmp_path):
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(tmp_path / "ref.pdb"),
-                    "target_rmsd": 0.0,
+                    "harmonic": {"target_rmsd": 0.0},
                     "pairing": "align",
                     "atom_selection_target_fit": "name CA",
                     "atom_selection_ref_fit": "name CA",
@@ -1406,7 +1406,7 @@ def test_rmsd_backbone_selection_resname_gated(tmp_path):
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(tmp_path / "ref.pdb"),
-                    "target_rmsd": 0.0,
+                    "harmonic": {"target_rmsd": 0.0},
                     "pairing": "identity",
                     # the four independent fit/calc keys (no bare `atom_selection`)
                     "atom_selection_target_fit": "backbone",
@@ -1482,7 +1482,7 @@ def test_rmsd_ligand_identity_pairing(tmp_path):
     rr.set_config(
         {
             "ref_pdb": str(pdb),
-            "target_rmsd": 0.0,
+            "harmonic": {"target_rmsd": 0.0},
             "atom_selection_ref": "chain B",
             "atom_selection_target": "chain B",
         }
@@ -1516,7 +1516,7 @@ def test_rmsd_weight_zero_preserved_and_default():
 
     base = {
         "ref_pdb": "x.pdb",
-        "target_rmsd": 1.0,
+        "harmonic": {"target_rmsd": 1.0},
         "atom_selection_ref": "chain A",
         "atom_selection_target": "chain A",
     }
@@ -1563,7 +1563,9 @@ def test_rmsd_no_selection_whole_structure(tmp_path):
     _write_pdb_records(pdb, [(spec[i][0], spec[i][1], *xyz[i]) for i in range(n)])
 
     rr = RmsdData()
-    rr.set_config({"ref_pdb": str(pdb), "target_rmsd": 0.0})  # NO selection
+    rr.set_config(
+        {"ref_pdb": str(pdb), "harmonic": {"target_rmsd": 0.0}}
+    )  # NO selection
     assert rr.is_valid() and rr.sel_target_fit is None
     rr.resolve_sites(MockAdapter(atoms))
     assert rr.fit_target_sites == [a.index for a in atoms]  # the whole structure
@@ -1590,7 +1592,7 @@ def test_rmsd_no_selection_best_effort_skips_unmatched(tmp_path):
     _write_pdb_records(pdb, recs)
 
     rr = RmsdData()
-    rr.set_config({"ref_pdb": str(pdb), "target_rmsd": 0.0})
+    rr.set_config({"ref_pdb": str(pdb), "harmonic": {"target_rmsd": 0.0}})
     rr.resolve_sites(MockAdapter(atoms))  # must NOT raise (4 H's skipped)
     matched = {a.index for a in atoms if a.name != "H"}
     assert set(rr.fit_target_sites) == matched and len(rr.fit_target_sites) == 8
@@ -1601,10 +1603,12 @@ def test_rmsd_requires_ref_pdb_and_target_only():
     """Selections are optional now, but ref_pdb + target_rmsd are still required."""
     from rgi_utils.rmsd_restr_data import RmsdData
 
-    with pytest.raises(ValueError, match="ref_pdb and target_rmsd"):
-        RmsdData().set_config({"target_rmsd": 0.0})  # missing ref_pdb
-    with pytest.raises(ValueError, match="ref_pdb and target_rmsd"):
+    with pytest.raises(ValueError, match="ref_pdb and a restraint-type"):
+        RmsdData().set_config({"harmonic": {"target_rmsd": 0.0}})  # missing ref_pdb
+    with pytest.raises(ValueError, match="ref_pdb and a restraint-type"):
         RmsdData().set_config({"ref_pdb": "x.pdb"})  # missing target_rmsd
     rr = RmsdData()
-    rr.set_config({"ref_pdb": "x.pdb", "target_rmsd": 1.0})  # no selection -> valid
+    rr.set_config(
+        {"ref_pdb": "x.pdb", "harmonic": {"target_rmsd": 1.0}}
+    )  # no selection -> valid
     assert rr.is_valid() and rr.sel_target_calc is None

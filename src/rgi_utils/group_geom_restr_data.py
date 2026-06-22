@@ -38,7 +38,11 @@ from __future__ import annotations
 import logging
 import math
 
-from rgi_utils._config_util import check_window_exclusive, warn_unknown_keys
+from rgi_utils._config_util import (
+    check_window_exclusive,
+    parse_geom_type,
+    warn_unknown_keys,
+)
 from rgi_utils.atom_context import FrameworkAdapter
 from rgi_utils.selection import AtomSelector
 
@@ -91,58 +95,6 @@ def _resolve_group_sites(
         if len(s) == 0:
             raise ValueError(f"group {gi + 1} selection matched no atoms")
     return sites
-
-
-def _parse_geom_type(config: dict, base: str):
-    """Parse the distance-style restraint-type block of an angle/dihedral entry.
-
-    ``base`` is ``"target_angle"`` or ``"target_dihedral"``; the harmonic block carries
-    ``base``, the others ``base + "1"`` / ``base + "2"``. Targets are DEGREES by default;
-    set ``unit: radians`` on the entry to give them in radians instead. Returns
-    ``(geom_type_str, target1_rad, target2_rad)`` (unused -> 0.0; always RADIANS
-    internally), or ``(None, None, None)`` if no type block is present. Mirrors
-    ``DistanceData``.
-    """
-    # Targets are stored internally in RADIANS. The config gives them in DEGREES unless
-    # `unit: radians` is set on the entry, in which case `conv` is the identity. The
-    # flat-bottomed `t1 < t2` ordering check is unit-agnostic (monotone), so it runs on
-    # the raw values before conversion.
-    unit = str(config.get("unit", "degrees")).strip().lower()
-    if unit not in ("degrees", "radians"):
-        raise ValueError(
-            f"angle/dihedral 'unit' must be 'degrees' or 'radians' "
-            f"(got {config.get('unit')!r})"
-        )
-    conv = (
-        (lambda x: float(x))
-        if unit == "radians"
-        else (lambda x: math.radians(float(x)))
-    )
-    if "harmonic" in config:
-        t = config["harmonic"].get(base)
-        if t is None:
-            raise ValueError(f"harmonic needs {base}")
-        return "harmonic", conv(t), 0.0
-    if "flat-bottomed" in config:
-        t1 = config["flat-bottomed"].get(f"{base}1")
-        t2 = config["flat-bottomed"].get(f"{base}2")
-        if t1 is None or t2 is None:
-            raise ValueError(f"flat-bottomed needs {base}1 and {base}2")
-        t1, t2 = float(t1), float(t2)
-        if t1 >= t2:
-            raise ValueError(f"{base}1 must be smaller than {base}2")
-        return "flat-bottomed", conv(t1), conv(t2)
-    if "flat-bottomed1" in config:
-        t1 = config["flat-bottomed1"].get(f"{base}1")
-        if t1 is None:
-            raise ValueError(f"flat-bottomed1 needs {base}1")
-        return "flat-bottomed1", conv(t1), 0.0
-    if "flat-bottomed2" in config:
-        t2 = config["flat-bottomed2"].get(f"{base}2")
-        if t2 is None:
-            raise ValueError(f"flat-bottomed2 needs {base}2")
-        return "flat-bottomed2", 0.0, conv(t2)
-    return None, None, None
 
 
 def _parse_move(config: dict, n_groups: int, default_free: tuple) -> tuple:
@@ -212,7 +164,17 @@ def _parse_common(
     if _so is not None:
         self.stop_step = float(_so)
     self.move_free = _parse_move(config, n_groups, default_free)
-    self.geom_type, self.target1, self.target2 = _parse_geom_type(config, base)
+    # angle/dihedral targets are DEGREES by default; `unit: radians` makes conv the
+    # identity. The flat-bottomed `t1 < t2` check inside parse_geom_type runs on the raw
+    # (pre-conv) values, so it is unit-agnostic. RMSD/distance pass `float` (native A).
+    unit = str(config.get("unit", "degrees")).strip().lower()
+    if unit not in ("degrees", "radians"):
+        raise ValueError(
+            f"angle/dihedral 'unit' must be 'degrees' or 'radians' "
+            f"(got {config.get('unit')!r})"
+        )
+    conv = float if unit == "radians" else (lambda x: math.radians(float(x)))
+    self.geom_type, self.target1, self.target2 = parse_geom_type(config, base, conv)
 
 
 class AngleRestraintData:

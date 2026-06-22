@@ -186,8 +186,10 @@ class RmsdArrays:
     The optimal rotation is computed from the FIT atoms (``fit_*``) and the RMSD is
     measured over the CALC atoms (``calc_*``); both reference groups are paired
     atom-for-atom to the moving target. When fit==calc this is the plain superposed
-    RMSD. Energy ``weight * (rmsd - target_rmsd)**2``, active in the noise window
-    ``stop_sigma <= sigma <= start_sigma``. Optimised by the CG solver, so the fit+calc
+    RMSD. Energy ``weight * delta**2`` where ``delta`` is the distance-style flat-bottom
+    deviation of the RMSD value (harmonic / flat-bottomed / flat-bottomed1 /
+    flat-bottomed2), active in the noise window ``stop_sigma <= sigma <= start_sigma``.
+    Optimised by the CG solver, so the fit+calc
     target atoms join active_sites. The rotation is recomputed (and
     treated as constant) each evaluation — see ``energy.*_energy.rmsd_energy``. All
     ``*_idx`` are local indices into active_sites.
@@ -199,7 +201,9 @@ class RmsdArrays:
     calc_idx: np.ndarray  # (n_rmsd, max_calc) int local indices (measured atoms)
     calc_mask: np.ndarray  # (n_rmsd, max_calc) float {0,1}
     calc_ref: np.ndarray  # (n_rmsd, max_calc, 3) reference calc coords (padded, const)
-    target_rmsd: np.ndarray  # (n_rmsd,) target RMSD value
+    target1: np.ndarray  # (n_rmsd,) lower / harmonic target RMSD (Angstrom)
+    target2: np.ndarray  # (n_rmsd,) upper target RMSD (Angstrom; 0 if unused)
+    geom_type: np.ndarray  # (n_rmsd,) int code (DIST_*: 0=harmonic .. 3=flat-bottomed2)
     weight: np.ndarray  # (n_rmsd,)
     start_sigma: np.ndarray  # (n_rmsd,) per-restraint; active when sigma<=start_sigma
     # per-restraint LOWER noise bound: the restraint is RELEASED for sigma < stop_sigma,

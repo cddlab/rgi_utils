@@ -110,7 +110,7 @@ command passes `--use-msa-server true`, so OpenFold fetches the MSA from the Col
         "rmsd_restraints_config": [
           {
             "ref_pdb": "rmsd_ref.pdb",
-            "target_rmsd": 0.0,
+            "harmonic": {"target_rmsd": 0.0},
             "weight": 1.0,
             "start_sigma": 99999999,
             "stop_sigma": 1.0,

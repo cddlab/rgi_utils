@@ -82,7 +82,7 @@ def dot(ops, u, v):
 
 
 # --- penalty helpers (convenience; a user may also write the algebra directly) ---
-PENALTY = ("harmonic", "flat_bottom", "lower", "upper")
+PENALTY = ("harmonic", "flat_bottomed", "flat_bottomed1", "flat_bottomed2")
 
 
 def harmonic(ops, x, target):
@@ -90,20 +90,21 @@ def harmonic(ops, x, target):
     return (x - target) ** 2
 
 
-def flat_bottom(ops, x, lo, hi):
-    """Zero inside ``[lo, hi]``, quadratic outside."""
+def flat_bottomed(ops, x, lo, hi):
+    """Zero inside ``[lo, hi]``, quadratic outside — both a lower and an upper bound
+    (mirrors the built-in distance/angle ``flat-bottomed`` block)."""
     below = ops.clamp_max(x - lo, 0.0)  # min(x-lo, 0): active when x < lo
     above = ops.clamp_min(x - hi, 0.0)  # max(x-hi, 0): active when x > hi
     return below * below + above * above
 
 
-def lower(ops, x, lo):
-    """Penalize only ``x < lo``."""
+def flat_bottomed1(ops, x, lo):
+    """Lower bound — penalize only ``x < lo`` (mirrors ``flat-bottomed1``)."""
     below = ops.clamp_max(x - lo, 0.0)
     return below * below
 
 
-def upper(ops, x, hi):
-    """Penalize only ``x > hi``."""
+def flat_bottomed2(ops, x, hi):
+    """Upper bound — penalize only ``x > hi`` (mirrors ``flat-bottomed2``)."""
     above = ops.clamp_min(x - hi, 0.0)
     return above * above

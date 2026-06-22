@@ -296,11 +296,16 @@ def rmsd_energy(
     calc_idx,
     calc_mask,
     calc_ref,
-    target_rmsd,
+    target1,
+    target2,
+    geom_type,
     weight,
     mask,
 ):
-    """Fit/calc Kabsch RMSD restraint: ``sum_r weight_r (rmsd_r - target_rmsd_r)^2``.
+    """Fit/calc Kabsch RMSD restraint: ``sum_r weight_r * delta_r^2`` where ``delta`` is
+    the distance-style flat-bottom deviation of the RMSD value (``geom_type`` 0=harmonic /
+    1=flat-bottomed / 2=flat-bottomed1 lower bound / 3=flat-bottomed2 upper bound, bounds
+    ``target1``/``target2`` in Angstrom).
 
     The optimal rotation R + centroids come from the FIT atoms (``fit_idx`` local
     indices, ``fit_ref`` paired reference); that superposition is applied to the CALC
@@ -326,7 +331,8 @@ def rmsd_energy(
     resid = (Pc0 - Yc) * mc
     msd = np.sum(resid**2, axis=(-2, -1)) / (nc + _EPS)  # (..., n_rmsd)
     rmsd = np.sqrt(msd + _EPS)
-    return np.sum(weight * (rmsd - target_rmsd) ** 2 * mask)
+    delta = _group_delta(rmsd, rmsd - target1, target1, target2, geom_type)
+    return np.sum(weight * delta**2 * mask)
 
 
 # leaf energy functions by name, for the shared term_energies dispatch

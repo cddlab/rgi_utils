@@ -126,7 +126,10 @@ restraints_config:
     vdw:      {weight: 1.0}                          # mode defaults to "both" (intramolecular + dynamic ligand-protein); both run on torch AND jax
   rmsd_restraints_config:           # Kabsch-superposed RMSD of a group toward a reference PDB
     - ref_pdb: "ref.pdb"            # required; parsed by the dependency-free read_pdb_atoms
-      target_rmsd: 0.0              # required; drive the group's RMSD toward this (Å)
+      harmonic: {target_rmsd: 0.0}  # required: a restraint-type block on the RMSD value (Å);
+      #                               also flat-bottomed{target_rmsd1,target_rmsd2} /
+      #                               flat-bottomed1 / flat-bottomed2 (stay within X Å) -- the
+      #                               same four types as distance/angle/dihedral
       # pairing: align              # DEFAULT align (seq-align polymer chains so a homolog ref maps on);
       #                               set 'identity' for pure (chain, resid, name) ordinal pairing
       # start_sigma / stop_sigma: optional per-entry gate; stop_sigma>0 releases late so the model

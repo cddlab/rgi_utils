@@ -131,9 +131,9 @@ distance, angle, volume, …) from its target. Four block names choose how $\del
 | `flat-bottomed1` | $\min(0,\, x - t_1)$ | lower bound — penalise only $x \lt t_1$ |
 | `flat-bottomed2` | $\max(0,\, x - t_2)$ | upper bound — penalise only $x \gt t_2$ |
 
-The same four shapes drive the `distance` / `angle` / `dihedral` blocks (only the target key
-differs: `target_distance` / `target_angle` / `target_dihedral`, with `…1` / `…2` for the
-flat-bottomed bounds). The **conformer** terms use the flat-bottomed shape with a symmetric `slack`:
+The same four shapes drive the `distance` / `angle` / `dihedral` / `rmsd` blocks (only the target
+key differs: `target_distance` / `target_angle` / `target_dihedral` / `target_rmsd`, with `…1` /
+`…2` for the flat-bottomed bounds). The **conformer** terms use the flat-bottomed shape with a symmetric `slack`:
 $\delta = 0$ within $\pm$`slack` of the RDKit-ideal value, quadratic outside (`slack = 0` $\Rightarrow$ pure harmonic).
 
 `distance` is the one restraint with **no `weight`**: a centroid distance is 1-DOF, so it is solved
@@ -276,25 +276,28 @@ summed VdW radii used as the contact threshold; `dmax` = pairs farther than this
 
 ## `rmsd_restraints_config` (list)
 
-Drives the **Kabsch-superposed RMSD** of a moving group toward `target_rmsd` versus a reference PDB.
-The reference must be generated first (a vanilla prediction → PDB via gemmi); see each tool's page.
+Drives the **Kabsch-superposed RMSD** of a moving group versus a reference PDB, shaped by one of the
+penalty blocks (see Penalty shapes) on the RMSD value. The reference must be generated first (a
+vanilla prediction → PDB via gemmi); see each tool's page.
 
 The energy is
 
 ```math
-E = \sum w\,(\mathrm{RMSD} - t)^2, \qquad \mathrm{RMSD} = \sqrt{\tfrac{1}{n}\sum_{a} \lVert P_a - \hat{R}\,Q_a \rVert^2}
+E = \sum w\,\delta^2, \qquad \mathrm{RMSD} = \sqrt{\tfrac{1}{n}\sum_{a} \lVert P_a - \hat{R}\,Q_a \rVert^2}
 ```
 
-where $t =$ `target_rmsd`, $P_a$ / $Q_a$ are the prediction / reference **calc** atoms centred on
-their fit-atom centroids, $n = n_\text{calc}$, and $\hat{R}$ is the optimal rotation from a Kabsch
-SVD on the **fit** atoms. $\hat{R}$ (and the centroids) are treated as **fixed** (stop-gradient), so
-the gradient pulls the moving atoms, not the rotation — `target_rmsd = 0` drives the group onto the
-reference.
+where $\delta$ is the penalty-block deviation of the RMSD (see Penalty shapes; `harmonic`
+$\Rightarrow \delta = \mathrm{RMSD} - t$), $P_a$ / $Q_a$ are the prediction / reference **calc**
+atoms centred on their fit-atom centroids, $n = n_\text{calc}$, and $\hat{R}$ is the optimal rotation
+from a Kabsch SVD on the **fit** atoms. $\hat{R}$ (and the centroids) are treated as **fixed**
+(stop-gradient), so the gradient pulls the moving atoms, not the rotation —
+`harmonic: {target_rmsd: 0}` drives the group onto the reference, while
+`flat-bottomed2: {target_rmsd2: X}` keeps it within $X$ Å of the reference.
 
 | key | type | default | meaning |
 |---|---|---|---|
 | `ref_pdb` | str | — (required) | path to the reference PDB |
-| `target_rmsd` | float | — (required) | target RMSD in Å (`0.0` = match the reference) |
+| `harmonic` / `flat-bottomed` / `flat-bottomed1` / `flat-bottomed2` | block | — (one required) | restraint-type block on the RMSD (Å); target keys `target_rmsd` (harmonic) / `target_rmsd1` / `target_rmsd2` (see Penalty shapes). `harmonic: {target_rmsd: 0}` = match the reference; `flat-bottomed2: {target_rmsd2: X}` = stay within $X$ Å |
 | `weight` | float | `1.0` | energy scale |
 | `start_sigma` / `stop_sigma` | float | `+inf` / `-1` | sigma gating (set `stop_sigma`, e.g. `1.0`, to release late and heal a strained terminus) |
 | `start_step` / `stop_step` | int | `-inf` / `+inf` | step gating (mutually exclusive with the sigma window; see Step gating) |
@@ -368,11 +371,12 @@ $\lVert\cdot\rVert$ is the Euclidean norm:
 | call | definition | effect |
 |---|---|---|
 | `harmonic(x, t)` | $(x - t)^2$ | quadratic toward $t$ |
-| `flat_bottom(x, lo, hi)` | $\min(0,\, x - \text{lo})^2 + \max(0,\, x - \text{hi})^2$ | zero inside $[\text{lo}, \text{hi}]$ |
-| `lower(x, lo)` | $\min(0,\, x - \text{lo})^2$ | penalise only $x \lt \text{lo}$ |
-| `upper(x, hi)` | $\max(0,\, x - \text{hi})^2$ | penalise only $x \gt \text{hi}$ |
+| `flat_bottomed(x, lo, hi)` | $\min(0,\, x - \text{lo})^2 + \max(0,\, x - \text{hi})^2$ | zero inside $[\text{lo}, \text{hi}]$ |
+| `flat_bottomed1(x, lo)` | $\min(0,\, x - \text{lo})^2$ | lower bound — penalise only $x \lt \text{lo}$ |
+| `flat_bottomed2(x, hi)` | $\max(0,\, x - \text{hi})^2$ | upper bound — penalise only $x \gt \text{hi}$ |
 
-`lower` / `upper` are the same maths as the built-in `flat-bottomed1` / `flat-bottomed2` blocks.
+`flat_bottomed` / `flat_bottomed1` / `flat_bottomed2` are the same maths (and names) as the built-in
+`flat-bottomed` / `flat-bottomed1` / `flat-bottomed2` blocks.
 
 **Math** — elementwise and reductions, dispatched to the active backend:
 

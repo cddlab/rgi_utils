@@ -90,14 +90,14 @@ class RestraintContext:
     def harmonic(self, x, target):
         return V.harmonic(self._ops, x, target)
 
-    def flat_bottom(self, x, lo, hi):
-        return V.flat_bottom(self._ops, x, lo, hi)
+    def flat_bottomed(self, x, lo, hi):
+        return V.flat_bottomed(self._ops, x, lo, hi)
 
-    def lower(self, x, lo):
-        return V.lower(self._ops, x, lo)
+    def flat_bottomed1(self, x, lo):
+        return V.flat_bottomed1(self._ops, x, lo)
 
-    def upper(self, x, hi):
-        return V.upper(self._ops, x, hi)
+    def flat_bottomed2(self, x, hi):
+        return V.flat_bottomed2(self._ops, x, hi)
 
     # --- elementwise math passthrough ---
     def sqrt(self, x):
@@ -183,13 +183,13 @@ class ResolveContext:
     def harmonic(self, x, target):
         return (x - target) ** 2
 
-    def flat_bottom(self, x, lo, hi):
+    def flat_bottomed(self, x, lo, hi):
         return 0.0
 
-    def lower(self, x, lo):
+    def flat_bottomed1(self, x, lo):
         return 0.0
 
-    def upper(self, x, hi):
+    def flat_bottomed2(self, x, hi):
         return 0.0
 
     def sqrt(self, x):

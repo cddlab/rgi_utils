@@ -74,3 +74,45 @@ def check_window_exclusive(config: dict, label: str = "restraint entry") -> None
             f"step-window (start_step/stop_step), not both — they are mutually exclusive "
             f"gates (noise level vs diffusion step index)."
         )
+
+
+def parse_geom_type(config: dict, base: str, conv):
+    """Parse the distance-style restraint-type block shared by angle/dihedral and RMSD.
+
+    Exactly one of the four mutually-exclusive type keys may be present: ``harmonic``
+    (carries ``base``), ``flat-bottomed`` (``base+"1"`` and ``base+"2"``),
+    ``flat-bottomed1`` (``base+"1"`` only — lower bound), ``flat-bottomed2``
+    (``base+"2"`` only — upper bound). ``base`` is e.g. ``"target_angle"`` /
+    ``"target_dihedral"`` / ``"target_rmsd"``. ``conv`` is applied to each target value —
+    ``math.radians`` for the angular restraints (config DEGREES -> stored RADIANS) or
+    ``float`` for native-unit restraints (distance / RMSD Angstroms). Returns
+    ``(geom_type_str, target1, target2)`` (the unused bound -> 0.0), or
+    ``(None, None, None)`` if no type block is present. The flat-bottomed ``t1 < t2``
+    ordering check runs on the RAW (pre-conv) values — it is monotone under ``conv``.
+    Mirrors ``DistanceData``'s own type parse so the four types stay in lockstep.
+    """
+    if "harmonic" in config:
+        t = config["harmonic"].get(base)
+        if t is None:
+            raise ValueError(f"harmonic needs {base}")
+        return "harmonic", conv(t), 0.0
+    if "flat-bottomed" in config:
+        t1 = config["flat-bottomed"].get(f"{base}1")
+        t2 = config["flat-bottomed"].get(f"{base}2")
+        if t1 is None or t2 is None:
+            raise ValueError(f"flat-bottomed needs {base}1 and {base}2")
+        t1, t2 = float(t1), float(t2)
+        if t1 >= t2:
+            raise ValueError(f"{base}1 must be smaller than {base}2")
+        return "flat-bottomed", conv(t1), conv(t2)
+    if "flat-bottomed1" in config:
+        t1 = config["flat-bottomed1"].get(f"{base}1")
+        if t1 is None:
+            raise ValueError(f"flat-bottomed1 needs {base}1")
+        return "flat-bottomed1", conv(t1), 0.0
+    if "flat-bottomed2" in config:
+        t2 = config["flat-bottomed2"].get(f"{base}2")
+        if t2 is None:
+            raise ValueError(f"flat-bottomed2 needs {base}2")
+        return "flat-bottomed2", 0.0, conv(t2)
+    return None, None, None

@@ -669,7 +669,9 @@ def _rmsd_case(seed=3, n=6):
         calc_idx=idx,
         calc_mask=m,
         calc_ref=refc,
-        target_rmsd=np.array([0.0]),
+        target1=np.array([0.0]),
+        target2=np.array([0.0]),
+        geom_type=np.array([0]),
         weight=np.array([1.0]),
         mask=np.array([1.0]),
     )
@@ -728,6 +730,73 @@ def test_rmsd_kabsch_backend_parity():
     pos2 = pos @ ry.T + np.array([-7.0, 11.0, 4.0])
     e_np2 = float(numpy_energy.rmsd_energy(pos2, **args))
     assert abs(e_np - e_np2) < 1e-6
+
+
+def test_rmsd_flat_bottom_backend_parity():
+    """The flat-bottomed RMSD types (flat-bottomed / flat-bottomed1 lower / flat-bottomed2
+    upper) agree across numpy/torch/jax on energy AND torch-vs-jax on the autodiff
+    gradient. The detached Kabsch rotation rules out a numpy finite-difference check (as
+    in test_rmsd_kabsch_backend_parity), so this EXTENDS that case's harness rather than
+    routing through the FD harness. Bounds are placed around the case's actual RMSD so
+    each one-sided type is genuinely active (E>0) and a wide window sits in the dead
+    zone (E~0) -- guarding against a silently no-op flat-bottom branch."""
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.energy import jax_energy, torch_energy
+
+    ref, pos, base = _rmsd_case()  # base is harmonic (geom_type 0, target1 0)
+    rmsd0 = float(np.sqrt(numpy_energy.rmsd_energy(pos, **base)))  # weight 1 -> sqrt(E)
+
+    # (label, geom_type, target1, target2, expect_active)
+    cases = [
+        ("flat-bottomed dead zone", 1, 0.0, rmsd0 + 1.0, False),
+        ("flat-bottomed below window", 1, rmsd0 + 0.5, rmsd0 + 1.5, True),
+        ("flat-bottomed1 lower bound", 2, rmsd0 + 1.0, 0.0, True),
+        ("flat-bottomed2 upper bound", 3, 0.0, rmsd0 * 0.5, True),
+    ]
+    for label, gt, t1, t2, active in cases:
+        args = dict(base)
+        args["target1"] = np.array([float(t1)])
+        args["target2"] = np.array([float(t2)])
+        args["geom_type"] = np.array([gt])
+        e_np = float(numpy_energy.rmsd_energy(pos, **args))
+        e_t = float(
+            torch_energy.rmsd_energy(
+                torch.tensor(pos), **{k: torch.tensor(v) for k, v in args.items()}
+            )
+        )
+        e_j = float(
+            jax_energy.rmsd_energy(
+                jnp.asarray(pos), **{k: jnp.asarray(v) for k, v in args.items()}
+            )
+        )
+        assert abs(e_np - e_t) < 1e-6 and abs(e_np - e_j) < 1e-6, (
+            label,
+            e_np,
+            e_t,
+            e_j,
+        )
+        if active:
+            assert e_np > 1e-6, (label, e_np)
+        else:
+            assert e_np < 1e-9, (label, e_np)
+        # gradient parity: torch vs jax (both stop-gradient the rotation)
+        pt = torch.tensor(pos, requires_grad=True)
+        torch_energy.rmsd_energy(
+            pt, **{k: torch.tensor(v) for k, v in args.items()}
+        ).backward()
+        g_t = pt.grad.numpy()
+        g_j = np.asarray(
+            jax.grad(
+                lambda x, a=args: jax_energy.rmsd_energy(
+                    x, **{k: jnp.asarray(v) for k, v in a.items()}
+                )
+            )(jnp.asarray(pos))
+        )
+        assert np.allclose(g_t, g_j, atol=1e-6), (label, np.abs(g_t - g_j).max())
 
 
 def test_energy_breakdown_sums_to_total():
@@ -819,7 +888,9 @@ def test_rmsd_known_value_and_target():
             idx,
             m,
             refc,
-            target_rmsd=np.array([2.0]),
+            target1=np.array([2.0]),
+            target2=np.array([0.0]),
+            geom_type=np.array([0]),
             weight=np.array([1.5]),
             mask=np.array([1.0]),
         )
@@ -856,7 +927,9 @@ def test_rmsd_stop_sigma_release_window():
             calc_idx=idx,
             calc_mask=np.ones((1, n)),
             calc_ref=ref.reshape(1, n, 3),
-            target_rmsd=np.array([0.0]),
+            target1=np.array([0.0]),
+            target2=np.array([0.0]),
+            geom_type=np.array([0]),
             weight=np.array([1.0]),
             start_sigma=np.array([10.0]),
             stop_sigma=np.array([2.0]),
@@ -1138,7 +1211,9 @@ def test_rmsd_fit_calc_separation():
             np.arange(nf, nf + nc).reshape(1, nc),
             np.ones((1, nc)),
             ref[nf:].reshape(1, nc, 3),
-            target_rmsd=np.array([0.0]),
+            target1=np.array([0.0]),
+            target2=np.array([0.0]),
+            geom_type=np.array([0]),
             weight=np.array([1.0]),
             mask=np.array([1.0]),
         )

@@ -308,13 +308,16 @@ def rmsd_energy(
     calc_idx,
     calc_mask,
     calc_ref,
-    target_rmsd,
+    target1,
+    target2,
+    geom_type,
     weight,
     mask,
 ):
     """Fit/calc Kabsch RMSD restraint (mirrors ``numpy_energy.rmsd_energy``). R +
-    centroids from the FIT atoms; RMSD measured over the CALC atoms. R is detached so
-    autograd differentiates only the moving atoms."""
+    centroids from the FIT atoms; RMSD measured over the CALC atoms (distance-style
+    flat-bottom delta on the RMSD via ``geom_type``). R is detached so autograd
+    differentiates only the moving atoms."""
     Pf = positions[..., fit_idx, :]
     mf = fit_mask[..., None]
     nf = torch.sum(fit_mask, dim=-1)
@@ -332,7 +335,8 @@ def rmsd_energy(
     resid = (Pc0 - Yc) * mc
     msd = torch.sum(resid**2, dim=(-2, -1)) / (nc + _EPS)
     rmsd = torch.sqrt(msd + _EPS)
-    return torch.sum(weight * (rmsd - target_rmsd) ** 2 * mask)
+    delta = _group_delta(rmsd, rmsd - target1, target1, target2, geom_type)
+    return torch.sum(weight * delta**2 * mask)
 
 
 # leaf energy functions by name, for the shared term_energies dispatch

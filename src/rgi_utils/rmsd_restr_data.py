@@ -2,7 +2,8 @@
 
 One ``rmsd_restraints_config`` entry restrains the **Kabsch-superposed RMSD**
 between a moving group in the diffusion structure and a fixed group from a
-reference PDB toward ``target_rmsd``, optimised by the CG solver. The
+reference PDB, shaped by a restraint-type block (``harmonic`` / ``flat-bottomed`` /
+``flat-bottomed1`` / ``flat-bottomed2``) on the RMSD value and optimised by the CG solver. The
 superposition ("fit") atoms and the measured ("calc") atoms can differ:
 
   atom_selection_ref_fit / atom_selection_target_fit   -> Kabsch superposition
@@ -17,7 +18,7 @@ RMSD over the WHOLE structure: the whole diffusion structure is superposed onto 
 whole reference and the RMSD is taken over everything, BEST-EFFORT -- atoms matched to
 the reference by identity (chain, resid, name) are used and any structure atom missing
 from the reference (e.g. the ref has no hydrogens) is skipped, so an incomplete ref
-still works (pymol-align-like). Only ``ref_pdb`` and ``target_rmsd`` are required.
+still works (pymol-align-like). Only ``ref_pdb`` and a restraint-type block are required.
 
 Reference and target atoms are paired by IDENTITY (chain, resid, atom-name) when
 both sides expose atom names, so the reference PDB's atom order need not match the
@@ -81,6 +82,7 @@ from rgi_utils._align import pair_residues
 from rgi_utils._config_util import (
     check_window_exclusive,
     coerce_bool,
+    parse_geom_type,
     warn_unknown_keys,
 )
 from rgi_utils._moltype import polymer_type
@@ -92,7 +94,10 @@ logger = logging.getLogger(__name__)
 
 _KNOWN_RMSD_KEYS = {
     "ref_pdb",
-    "target_rmsd",
+    "harmonic",
+    "flat-bottomed",
+    "flat-bottomed1",
+    "flat-bottomed2",
     "weight",
     "start_sigma",
     "stop_sigma",
@@ -112,7 +117,12 @@ _KNOWN_RMSD_KEYS = {
 @dataclass
 class RmsdData:
     ref_pdb: str = None
-    target_rmsd: float = None
+    # restraint type on the Kabsch RMSD value, mirroring the distance restraint:
+    # harmonic / flat-bottomed / flat-bottomed1 (lower bound) / flat-bottomed2 (upper
+    # bound). target1/target2 are the (Angstrom) bounds; the unused one is 0.0.
+    rmsd_type: str = None
+    target1: float = None
+    target2: float = None
     weight: float = None
     start_sigma: float = None  # per-restraint; from_dict defaults None -> +inf
     # per-restraint LOWER noise bound: the restraint is RELEASED for sigma < stop_sigma,
@@ -171,8 +181,13 @@ class RmsdData:
             config, _KNOWN_RMSD_KEYS, "rmsd_restraints_config entry", logger
         )
         self.ref_pdb = config.get("ref_pdb", None)
-        _tr = config.get("target_rmsd", None)
-        self.target_rmsd = float(_tr) if _tr is not None else None
+        # restraint type on the Kabsch RMSD value, mirroring distance/angle/dihedral:
+        # harmonic{target_rmsd} / flat-bottomed{target_rmsd1,target_rmsd2} /
+        # flat-bottomed1{target_rmsd1} (lower) / flat-bottomed2{target_rmsd2} (upper).
+        # RMSD is in Angstroms (no unit conversion), so conv is float.
+        self.rmsd_type, self.target1, self.target2 = parse_geom_type(
+            config, "target_rmsd", float
+        )
         # None -> default 1.0; an explicit 0 stays 0 (a zero-weight, no-op restraint),
         # so `or 1.0` truthiness must NOT be used here.
         _w = config.get("weight")
@@ -219,14 +234,21 @@ class RmsdData:
             )
         # selections are OPTIONAL (omit -> whole-structure best-effort); only ref_pdb +
         # target_rmsd are required.
-        self.run_restr = self.ref_pdb is not None and self.target_rmsd is not None
+        self.run_restr = self.ref_pdb is not None and self.rmsd_type is not None
         if not self.run_restr:
             raise ValueError(
-                "rmsd_restraints_config entry requires ref_pdb and target_rmsd (atom "
+                "rmsd_restraints_config entry requires ref_pdb and a restraint-type "
+                "block: harmonic{target_rmsd} / flat-bottomed{target_rmsd1,target_rmsd2} "
+                "/ flat-bottomed1{target_rmsd1} / flat-bottomed2{target_rmsd2} (atom "
                 "selections are optional: omit them to fit + measure RMSD over the whole "
                 "structure, best-effort over atoms matched to the reference)"
             )
-        logger.info("rmsd restraint configured: target_rmsd=%.3f", self.target_rmsd)
+        logger.info(
+            "rmsd restraint configured: type=%s target1=%.3f target2=%.3f",
+            self.rmsd_type,
+            self.target1,
+            self.target2,
+        )
 
     def resolve_sites(self, adapter: FrameworkAdapter) -> None:
         if not self.run_restr:
@@ -270,10 +292,10 @@ class RmsdData:
             align=align,
         )
         logger.info(
-            "rmsd restraint resolved: fit=%d calc=%d atoms, target_rmsd=%.3f",
+            "rmsd restraint resolved: fit=%d calc=%d atoms, type=%s",
             len(self.fit_target_sites),
             len(self.calc_target_sites),
-            self.target_rmsd,
+            self.rmsd_type,
         )
 
     def _build_resid_map(self, atoms, ref_atoms) -> dict:

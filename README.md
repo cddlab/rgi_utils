@@ -88,7 +88,7 @@ restraints_config = {
         "improper": {"weight": 1.0},         # sp2 double-bond planarity (off by default)
         "vdw": {"weight": 1.0},              # mode defaults to "both"
     },
-    # "rmsd_restraints_config": [{"ref_pdb": "ref.pdb", "target_rmsd": 0.0}],
+    # "rmsd_restraints_config": [{"ref_pdb": "ref.pdb", "harmonic": {"target_rmsd": 0.0}}],
     # "dihedral_restraints_config": [...],   # group-centroid dihedral: 4 groups, axis = 2-3
 }
 
