@@ -14,11 +14,6 @@ dependencies = [
 torch = [
     "torch>=2.2",
 ]
-# Optional VdW dynamic neighbor search (torch backend only); the torch_cluster
-# wheel comes from the find-links below and must match the installed torch.
-vdw = [
-    "torch_cluster",
-]
 # JAX backend (alphafold3). Uses jaxopt LBFGS/NonlinearCG (jittable, in-JIT).
 jax = [
     "jax",
@@ -38,10 +33,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
-[tool.uv]
-# Pre-built CPU wheels for torch-cluster (must match torch version above)
-find-links = ["https://data.pyg.org/whl/torch-2.6.0+cpu.html"]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"

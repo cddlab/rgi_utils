@@ -16,8 +16,6 @@ uv venv && source .venv/bin/activate           # Python 3.11+
 uv pip install -e ".[cuda]"
 # the shared engine (torch extra); PyPI default torch is +cpu, the cuda extra above pins CUDA
 uv pip install "rgi_utils[torch] @ git+https://github.com/cddlab/rgi_utils.git@rgi-integration"
-# only if your CUDA is 12.8:
-# uv pip install torch-cluster -f https://data.pyg.org/whl/torch-2.8.0+cu128.html
 ```
 
 > For co-development of the engine, install it editable from a sibling checkout instead of the
