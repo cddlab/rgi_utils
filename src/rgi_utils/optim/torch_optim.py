@@ -48,24 +48,19 @@ class TorchRestraintOptimizer:
         self._active_idx = None
         self._device = None
         self._vdw = None  # dict of device tensors for the ligand-protein VdW term
-        # custom restraints -> torch closures (active_coords) -> scalar, weight folded.
-        # Built once; selections are baked as torch index tensors. The CG objective adds
-        # the per-entry sigma-gated sum of these (see minimize).
-        from rgi_utils.custom.closure import build_terms
-
-        self._custom_terms = build_terms(spec.custom, "torch")
-        if self._custom_terms:
-            logger.info(
-                "%d custom restraint(s): torch CG runs EAGER (the fused torch.compile GPU "
-                "path bypasses closure terms, so it is skipped when customs are present)",
-                len(self._custom_terms),
-            )
+        # custom restraints -> torch closures, built lazily in _ensure UNDER
+        # inference_mode(False) and on the coords' device, so the baked selection-index
+        # tensors are normal + on-device (an inference tensor used in the autograd gather
+        # can't be saved for backward -- boltz/Lightning run under inference_mode).
+        self._custom_terms = None
 
     def _custom_energy(self, active, sigma):
         """Per-entry sigma-gated sum of the custom-restraint closure energies at ``active``
         (local coords). Returns ``None`` when no custom term is active so the caller can
         skip adding it. Gate: ``stop_sigma <= sigma <= start_sigma`` (a python-float
         compare, since the eager CG has a python-float sigma)."""
+        if not self._custom_terms:
+            return None
         total = None
         for _name, start, stop, closure in self._custom_terms:
             if sigma is not None and not (sigma <= start and sigma >= stop):
@@ -88,7 +83,16 @@ class TorchRestraintOptimizer:
             )
             self._prepared_g = {}  # rebuilt lazily for the new device
             self._setup_vdw(device, dtype)
+            from rgi_utils.custom.closure import build_terms
+
+            self._custom_terms = build_terms(self.spec.custom, "torch", device=device)
         self._device = device
+        if self._custom_terms:
+            logger.info(
+                "%d custom restraint(s): torch CG runs EAGER (the fused torch.compile GPU "
+                "path bypasses closure terms, so it is skipped when customs are present)",
+                len(self._custom_terms),
+            )
 
     def _gated_prepared(self, sigma):
         """Stable pre-gated ``prepared`` for the compiled GPU CG, cached by the discrete

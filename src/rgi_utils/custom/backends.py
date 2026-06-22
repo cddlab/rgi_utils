@@ -89,6 +89,12 @@ class _AxisOps:
     def maximum(self, a, b):
         return self.xp.maximum(a, b)
 
+    def clamp_min(self, x, lo):
+        return self.xp.maximum(x, lo)
+
+    def clamp_max(self, x, hi):
+        return self.xp.minimum(x, hi)
+
     def where(self, c, a, b):
         return self.xp.where(c, a, b)
 
@@ -97,16 +103,18 @@ class _AxisOps:
 
 
 class _TorchOps:
-    """torch uses ``dim=`` and a few different spellings (clamp / linalg.cross / atan2)."""
+    """torch uses ``dim=`` and a few different spellings (clamp / linalg.cross / atan2).
+    ``device`` places the baked selection-index tensors on the coords' device."""
 
-    def __init__(self, torch):
+    def __init__(self, torch, device=None):
         self.t = torch
+        self._device = device
 
     def gather(self, coords, idx):
         return coords[..., idx, :]
 
     def asint(self, a):
-        return self.t.as_tensor(a, dtype=self.t.long)
+        return self.t.as_tensor(a, dtype=self.t.long, device=self._device)
 
     def const(self, x):
         return x  # a python float composes with torch ops
@@ -156,11 +164,24 @@ class _TorchOps:
     def clip(self, x, lo, hi):
         return self.t.clamp(x, lo, hi)
 
+    def _pair(self, a, b):
+        # place both operands on the tensor operand's device (a python scalar would
+        # otherwise land on CPU and mismatch a CUDA tensor in torch.minimum/maximum).
+        ref = a if self.t.is_tensor(a) else (b if self.t.is_tensor(b) else None)
+        dev = ref.device if ref is not None else None
+        return self.t.as_tensor(a, device=dev), self.t.as_tensor(b, device=dev)
+
     def minimum(self, a, b):
-        return self.t.minimum(self.t.as_tensor(a), self.t.as_tensor(b))
+        return self.t.minimum(*self._pair(a, b))
 
     def maximum(self, a, b):
-        return self.t.maximum(self.t.as_tensor(a), self.t.as_tensor(b))
+        return self.t.maximum(*self._pair(a, b))
+
+    def clamp_min(self, x, lo):
+        return self.t.clamp(x, min=lo)
+
+    def clamp_max(self, x, hi):
+        return self.t.clamp(x, max=hi)
 
     def where(self, c, a, b):
         return self.t.where(c, a, b)
@@ -169,9 +190,10 @@ class _TorchOps:
         return self.t.sum(x)
 
 
-def get_ops(backend: str):
+def get_ops(backend: str, device=None):
     """Return the ops facade for ``backend`` ('numpy' | 'torch' | 'jax'); torch / jax are
-    imported lazily so the numpy path (and ``import rgi_utils``) needs neither."""
+    imported lazily so the numpy path (and ``import rgi_utils``) needs neither. ``device``
+    is honoured only by torch (where the index tensors must sit on the coords' device)."""
     if backend == "numpy":
         import numpy as np
 
@@ -179,7 +201,7 @@ def get_ops(backend: str):
     if backend == "torch":
         import torch
 
-        return _TorchOps(torch)
+        return _TorchOps(torch, device)
     if backend == "jax":
         import jax.numpy as jnp
 

@@ -36,11 +36,12 @@ def build_closure(cspec, ops):
     return energy
 
 
-def build_terms(custom_specs, backend: str):
+def build_terms(custom_specs, backend: str, device=None):
     """For an optimizer on ``backend``: a list of ``(name, start_sigma, stop_sigma,
     closure)`` — one per custom restraint. ``closure(active_coords) -> scalar`` (weight
-    folded); the optimizer applies the sigma gate."""
-    ops = get_ops(backend)
+    folded); the optimizer applies the sigma gate. ``device`` (torch only) places the
+    baked selection-index tensors on the coords' device."""
+    ops = get_ops(backend, device)
     return [
         (c.name, c.start_sigma, c.stop_sigma, build_closure(c, ops))
         for c in custom_specs

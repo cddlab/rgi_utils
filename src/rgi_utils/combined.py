@@ -210,7 +210,7 @@ class CombinedRestraints:
                 f"n_active={self.spec.n_active} "
                 f"conformer={self.spec.has_conformer()} n_distance={n_dist} "
                 f"n_rmsd={n_rmsd} n_group_angle={n_grp_angle} "
-                f"n_group_dihedral={n_grp_dihedral} "
+                f"n_group_dihedral={n_grp_dihedral} n_custom={len(self.spec.custom)} "
                 f"vdw={vdw_s} conf_start_sigma={self.spec.conf_start_sigma:g} "
                 f"dist_start_sigma={dist_ss}"
             )

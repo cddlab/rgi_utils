@@ -92,18 +92,18 @@ def harmonic(ops, x, target):
 
 def flat_bottom(ops, x, lo, hi):
     """Zero inside ``[lo, hi]``, quadratic outside."""
-    below = ops.minimum(x - lo, ops.const(0.0))
-    above = ops.maximum(x - hi, ops.const(0.0))
+    below = ops.clamp_max(x - lo, 0.0)  # min(x-lo, 0): active when x < lo
+    above = ops.clamp_min(x - hi, 0.0)  # max(x-hi, 0): active when x > hi
     return below * below + above * above
 
 
 def lower(ops, x, lo):
     """Penalize only ``x < lo``."""
-    below = ops.minimum(x - lo, ops.const(0.0))
+    below = ops.clamp_max(x - lo, 0.0)
     return below * below
 
 
 def upper(ops, x, hi):
     """Penalize only ``x > hi``."""
-    above = ops.maximum(x - hi, ops.const(0.0))
+    above = ops.clamp_min(x - hi, 0.0)
     return above * above
