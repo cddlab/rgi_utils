@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 
 import torch
 
@@ -53,6 +54,9 @@ class TorchRestraintOptimizer:
         # tensors are normal + on-device (an inference tensor used in the autograd gather
         # can't be saved for backward -- boltz/Lightning run under inference_mode).
         self._custom_terms = None
+        # per-optimizer torch.compile'd energy+grad INCLUDING the custom closures (the
+        # module-global gpu_cg energy can't see them). None=unbuilt, False=disabled/failed.
+        self._custom_cvg = None
 
     def _custom_energy(self, active, sigma):
         """Per-entry sigma-gated sum of the custom-restraint closure energies at ``active``
@@ -68,6 +72,76 @@ class TorchRestraintOptimizer:
             e = closure(active)
             total = e if total is None else total + e
         return total
+
+    def _get_custom_cvg(self):
+        """The compiled ``grad_and_value`` of ``total_energy + sum(gate_i * closure_i)``,
+        built ONCE per optimizer (the custom closures are spec-specific, so this can't
+        reuse gpu_cg's module-global artifact). The per-entry sigma gates are passed as a
+        tensor argument (``gates``) — NOT a python-float — so one artifact serves every
+        noise level without a dynamo recompile. ``None`` -> compile disabled / failed
+        (caller runs eager). The AST/closures are static, so dynamo traces them to a fixed
+        graph; ``fullgraph=False`` tolerates any residual break."""
+        if self._custom_cvg is False:
+            return None
+        if self._custom_cvg is not None:
+            return self._custom_cvg
+        if os.environ.get("RGI_DISABLE_COMPILE", "") not in ("", "0", "false"):
+            self._custom_cvg = False
+            return None
+        closures = [c for _n, _s, _st, c in self._custom_terms]
+
+        def energy(a, prepared, gates):
+            e = torch_energy.total_energy(
+                a, prepared, sigma=None, include_distance=False
+            )
+            for i in range(len(closures)):
+                e = e + gates[i] * closures[i](a)
+            return e
+
+        try:
+            self._custom_cvg = torch.compile(
+                torch.func.grad_and_value(energy, argnums=0), fullgraph=False
+            )
+        except Exception as exc:
+            logger.warning(
+                "torch.compile of the custom GPU energy failed (%s); eager", exc
+            )
+            self._custom_cvg = False
+            return None
+        return self._custom_cvg
+
+    def _minimize_custom_gpu(self, active, sigma, mi) -> bool:
+        """GPU CG with the torch.compile'd custom-inclusive energy. Returns False (caller
+        falls back to the eager CG) when compile is unavailable or the artifact fails."""
+        cvg = self._get_custom_cvg()
+        if cvg is None:
+            return False
+        from rgi_utils.optim._torch_cg_gpu import _cg_minimize_torch
+
+        prepared_g = self._gated_prepared(sigma)
+        gates = torch.tensor(
+            [
+                1.0 if sigma is None or (sigma <= s and sigma >= st) else 0.0
+                for _n, s, st, _c in self._custom_terms
+            ],
+            dtype=active.dtype,
+            device=active.device,
+        )
+        try:
+            opt = _cg_minimize_torch(
+                lambda x: cvg(x, prepared_g, gates), active.detach(), mi
+            )
+            with torch.no_grad():
+                active.copy_(opt)
+            return True
+        except (
+            Exception
+        ) as exc:  # this artifact's runtime failure -> eager, permanently
+            logger.warning(
+                "custom GPU CG (compiled) failed at runtime (%s); eager", exc
+            )
+            self._custom_cvg = False
+            return False
 
     def _ensure(self, device, dtype) -> None:
         if self._prepared is not None and self._device == device:
@@ -89,8 +163,8 @@ class TorchRestraintOptimizer:
         self._device = device
         if self._custom_terms:
             logger.info(
-                "%d custom restraint(s): torch CG runs EAGER (the fused torch.compile GPU "
-                "path bypasses closure terms, so it is skipped when customs are present)",
+                "%d custom restraint(s): on CUDA they run inside a per-optimizer "
+                "torch.compile'd energy+grad (eager on CPU / on a compile fallback)",
                 len(self._custom_terms),
             )
 
@@ -283,10 +357,14 @@ class TorchRestraintOptimizer:
                         e = e + ce
                     return e
 
-                # custom restraints are arbitrary closures that the fused gpu_cg energy
-                # cannot read, so force the eager early-exit CG (correct on CUDA, unfused)
-                # whenever any custom restraint is present.
-                if self._is_cg() and active.is_cuda and not has_custom:
+                if self._is_cg() and active.is_cuda and has_custom and prot_pos is None:
+                    # GPU + custom (no dynamic ligand-protein VdW): a per-optimizer
+                    # torch.compile'd energy that INCLUDES the custom closures (gpu_cg's
+                    # module-global energy can't see them). Falls back to the eager CG if
+                    # compile is disabled / fails. (custom + dynamic VdW stays eager below.)
+                    if not self._minimize_custom_gpu(active, sigma, mi):
+                        self._minimize_cg(active, energy_fn, mi)
+                elif self._is_cg() and active.is_cuda and not has_custom:
                     # GPU: the same early-exit CG as the CPU path, but with an
                     # inductor-fused (NOT CUDA-graph) torch.compile'd energy+grad so the
                     # launch-bound eval stops dominating (the eager _minimize_cg below is
