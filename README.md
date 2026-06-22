@@ -19,7 +19,7 @@ Restraint-Guided Inference (RGI) utilities for diffusion-based structure predict
 See each tool's guide in [`doc/`](doc/) for install / run details, and
 [`doc/config.md`](doc/config.md) for the full `restraints_config` schema.
 
-Five **built-in** restraint types, all minimized during the denoising loop to guide coordinate optimization:
+Five restraint types, all minimized during the denoising loop to guide coordinate optimization:
 
 - **conformer** — ligand bond / angle / chiral-volume / cistrans (E/Z) / improper
   (sp2 double-bond planarity, opt-in) toward an ideal RDKit geometry, plus **VdW**
@@ -30,10 +30,6 @@ Five **built-in** restraint types, all minimized during the denoising loop to gu
 - **angle** — the angle of three atom groups' centroids (vertex = group 2), in degrees;
   the angular analogue of the distance restraint.
 - **dihedral** — the dihedral of four atom groups' centroids (axis = groups 2–3), in degrees.
-
-These five are the built-ins; you can add an **original restraint** without editing the
-engine — config-only (the `custom` restraint) or in code (the registry). See
-[Custom restraints](#custom-restraints-extending-the-restraint-set) below.
 
 The default `method='CG'` solver (a nonlinear conjugate gradient with autodiff gradients)
 runs on GPU or CPU via the same torch/jax backend (`gpu: false` runs it on CPU); distance
@@ -91,9 +87,6 @@ restraints_config = {
     },
     # "rmsd_restraints_config": [{"ref_pdb": "ref.pdb", "target_rmsd": 0.0}],
     # "dihedral_restraints_config": [...],   # group-centroid dihedral: 4 groups, axis = 2-3
-    # "custom_restraints_config": [          # config-only custom restraints (registry; see below)
-    #     {"measure": "radius_of_gyration", "atom_selection": "chain A",
-    #      "form": "harmonic", "target": 12.0}],
 }
 
 # ONE instance per structure (not a singleton). setup() takes the config dict.
@@ -158,31 +151,6 @@ types as distance (`harmonic` / `flat-bottomed` / `flat-bottomed1` / `flat-botto
 but targets are in **degrees** (`target_angle` / `target_dihedral`). `weight` defaults to
 1.0 and translates any group size rigidly. `move` selects which groups are free (default:
 the arms move, the anchor group is pinned).
-
-### Custom restraints (extending the restraint set)
-
-The five types above are the **built-ins**. To add an *original* restraint, use the
-**registry** — no hand-editing of the engine's spec / energy / optim layers:
-
-- **Config-only** (no Python): the built-in `custom` restraint reads `custom_restraints_config`,
-  a vocabulary of geometric **measures** (`distance` / `angle` / `dihedral` /
-  `radius_of_gyration` of atom-group centroids) × the distance-style penalty **forms**
-  (`harmonic` / `flat-bottomed{,1,2}`). E.g. compact a domain:
-
-  ```python
-  "custom_restraints_config": [
-      {"measure": "radius_of_gyration", "atom_selection": "chain A and resid 1 to 80",
-       "form": "harmonic", "target": 12.0, "weight": 1.0},
-  ]
-  ```
-
-- **Code-level** (new maths): `register_restraint(RestraintType(...))` with your own
-  per-backend (numpy / torch / jax) leaf energy. Registered restraints run on **every**
-  backend like the built-ins (parity is required at registration).
-
-Full config schema: [`doc/config.md`](doc/config.md) (the `custom_restraints_config` section).
-Full code recipe + contracts:
-[`skills/implement-rgi/references/adding-a-restraint.md`](skills/implement-rgi/references/adding-a-restraint.md).
 
 ### Implementing a framework adapter
 

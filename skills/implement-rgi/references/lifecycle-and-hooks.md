@@ -133,30 +133,7 @@ restraints_config:
       #   re-idealises geometry the restraint held distorted (e.g. a broken peptide bond at a free tail)
       # atom_selection_{target,ref}_{fit,calc}: independently pick superposition vs measured atoms
       #   (a `backbone` / `name CA` fit superposes on main chain only). All omitted -> whole structure.
-  custom_restraints_config:         # CONFIG-ONLY custom restraints (the built-in `custom` registry type)
-    - measure: radius_of_gyration   # distance | angle | dihedral | radius_of_gyration
-      atom_selection: "chain A"      # 1-group measures (rg); multi-group use atom_selection1..N
-      form: harmonic                 # harmonic | flat-bottomed | flat-bottomed1 | flat-bottomed2
-      target: 12.0                   # harmonic / single-bound target (DEGREES for angle/dihedral, else Å)
-      # target1, target2: flat-bottomed window bounds
-      weight: 1.0                    # default 1.0 (groups translate rigidly, so 1.0 drives any size)
-      # move: which groups free (default all); start_sigma / stop_sigma: optional per-entry gate
-    - measure: angle                 # 3 groups; vertex = group 2 (centroid1-centroid2-centroid3)
-      atom_selection1: "resid 10 and name CA"
-      atom_selection2: "resid 20 and name CA"
-      atom_selection3: "resid 30 and name CA"
-      form: harmonic
-      target: 90.0                   # DEGREES
 ```
-
-### Custom restraints (the extension mechanism)
-
-`custom_restraints_config` is the **config-only** way to add an original restraint (no
-Python): the built-in `custom` registry type interprets it. To add a *new* restraint
-**type** in code (its own maths), register a `RestraintType` — see
-`adding-a-restraint.md`. Both routes go through the same registry, so a custom restraint
-is a per-entry, CG-solved energy term that runs on **all** backends (boltz/protenix/chai/
-openfold/esmfold2 torch + AF3 jax) exactly like the five built-ins.
 
 The `cistrans` term needs the ligand mol to carry real bond ORDERS (it keys on
 `BondType.DOUBLE`). boltz (CCD mol), protenix/openfold (biotite BondList), AF3

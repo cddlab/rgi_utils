@@ -35,8 +35,8 @@ intra-ligand bond orders at every layer, so the adapter rebuilds the molecule fr
 (Kekulized → correct valence + aromaticity + stereo) — bond/angle/chiral all apply.
 
 The sidecar below writes **every usable variable** with a concrete value; see
-[`config.md`](config.md) for the alternatives (restraint types, config-only `custom`
-restraints, RMSD `atom_selection` shorthand). `resid` is the **per-chain 1-based ordinal** (qualify protein groups with `chain A and
+[`config.md`](config.md) for the alternatives (restraint types, RMSD `atom_selection`
+shorthand). `resid` is the **per-chain 1-based ordinal** (qualify protein groups with `chain A and
 (...)`). There is **no top-level `start_sigma`**.
 
 ## Full config (sidecar + FASTA)

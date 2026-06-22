@@ -25,17 +25,10 @@ restraints_config:
   dihedral_restraints_config: [ ... ]   # list  (group-centroid dihedral)
   conformer_restraints_config: { ... }  # single dict (ligand geometry)
   rmsd_restraints_config:     [ ... ]   # list
-  custom_restraints_config:   [ ... ]   # list  (config-only custom restraints — see below)
 ```
 
 A restraint type is active only if its block is present (and, for conformer terms, the term's
 `weight > 0`).
-
-The five blocks above (distance / angle / dihedral / conformer / rmsd) are the **built-ins**.
-`custom_restraints_config` is the **extension point**: a config-only way to add an *original*
-restraint without writing code. A *new restraint type* with its own maths is added in code via the
-registry (`register_restraint`) — see `../skills/implement-rgi/references/adding-a-restraint.md`;
-that page also lists the section for any such restraint, which extends the top-level whitelist too.
 
 ## Top-level keys
 
@@ -185,51 +178,3 @@ and measured ("calc") atom sets are chosen independently:
 Use the shorthand for the common case (fit = calc); use the four `_fit`/`_calc` keys to e.g.
 superpose on the backbone but measure over a pocket. Under `pairing: align`, restrict the fit to
 `name CA` or `backbone` so a substituted homolog's side chain is not pinned.
-
-## `custom_restraints_config` (list)
-
-The **config-only** way to add an original restraint (no Python). Each entry picks a geometric
-`measure` of one or more atom-group centroids and a penalty `form` toward a target. Implemented by
-the built-in `custom` restraint type in the registry, so it runs on **every** backend
-(torch / jax) exactly like the built-ins. It is a per-entry, CG-solved energy term (it shares the
-`start_sigma` / `stop_sigma` window and the solver with conformer / rmsd / group restraints).
-
-| key | type | default | meaning |
-|---|---|---|---|
-| `measure` | str | — (required) | which geometry to restrain (table below) |
-| `atom_selection` | str | — | the group, for **1-group** measures (`radius_of_gyration`); `atom_selection1` is also accepted |
-| `atom_selection1..N` | str | — | the groups, for **multi-group** measures (N = the measure's group count) |
-| `form` | str | `"harmonic"` | penalty shape: `harmonic` / `flat-bottomed` / `flat-bottomed1` / `flat-bottomed2` |
-| `target` | float | — (harmonic) | harmonic / single-bound target. **DEGREES** for `angle`/`dihedral`, **Å** for `distance`/`radius_of_gyration` |
-| `target1` / `target2` | float | — (flat-bottomed) | flat-bottomed window bounds (`flat-bottomed` needs `target1 < target2`; `flat-bottomed1` uses `target1`, `flat-bottomed2` uses `target2`) |
-| `weight` | float | `1.0` | energy scale. Groups translate **rigidly** (like the group restraints), so `1.0` drives any group size |
-| `move` | `"all"` / int / list / `"1,3"` | `all` | which groups are free; the rest are pinned (stop-gradient). Irrelevant for `radius_of_gyration` (1 group) |
-| `start_sigma` / `stop_sigma` | float | `+inf` / `-1` | sigma gating (as everywhere) |
-
-`measure` vocabulary:
-
-| measure | groups | restrains | target unit |
-|---|---|---|---|
-| `distance` (alias `centroid_distance`) | 2 | `\|centroid1 − centroid2\|` | Å |
-| `angle` | 3 | angle at centroid 2 between centroid 1 / centroid 3 | degrees |
-| `dihedral` | 4 | dihedral about the centroid2–centroid3 axis (harmonic is periodicity-safe) | degrees |
-| `radius_of_gyration` (alias `rg`) | 1 | RMS spread of the group's atoms about their centroid | Å |
-
-```yaml
-custom_restraints_config:
-  - measure: radius_of_gyration       # compact a domain
-    atom_selection: "chain A and resid 1 to 80"
-    form: harmonic
-    target: 12.0                       # Å
-    weight: 1.0
-  - measure: distance                  # same as a distance restraint, but CG-solved
-    atom_selection1: "(resid 5 to 84) or (resid 186 to 224)"
-    atom_selection2: "resid 90 to 180"
-    form: harmonic
-    target: 25.0                       # Å
-    move: all
-```
-
-For a restraint whose maths is **not** one of these measures, register a new type in code (a
-`RestraintType` with your own per-backend leaf energy) rather than stretching this block — see
-`../skills/implement-rgi/references/adding-a-restraint.md`.

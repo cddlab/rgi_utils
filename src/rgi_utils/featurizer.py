@@ -22,7 +22,6 @@ import logging
 import numpy as np
 from rdkit import Chem
 
-from rgi_utils import registry
 from rgi_utils._mol_build import uff_relax
 from rgi_utils.atom_context import LigandConf
 from rgi_utils.spec import (
@@ -425,7 +424,6 @@ def build_spec(
     rmsd_restraints: list | None = None,
     angle_restraints: list | None = None,
     dihedral_restraints: list | None = None,
-    registered_restraints: dict | None = None,
 ) -> RestraintSpec:
     """Build a RestraintSpec. ``distance_restraints`` are DistanceData with
     ``target_sites1``/``target_sites2`` already resolved to global indices;
@@ -469,16 +467,6 @@ def build_spec(
     dihedral_restraints = [
         dr for dr in (dihedral_restraints or []) if getattr(dr, "run_restr", False)
     ]
-    # custom (registry) restraints: same per-entry run_restr opt-in as the built-ins,
-    # keyed by restraint name. Drop entries/names with nothing active so the generic
-    # branch is a complete no-op when no custom restraint is configured.
-    registered_restraints = {
-        name: [it for it in items if getattr(it, "run_restr", False)]
-        for name, items in (registered_restraints or {}).items()
-    }
-    registered_restraints = {
-        name: items for name, items in registered_restraints.items() if items
-    }
     bw = cfg.get("bond", {}).get("weight", 0.05)
     bsl = cfg.get("bond", {}).get("slack", 0.0)
     aw = cfg.get("angle", {}).get("weight", 0.05)
@@ -541,11 +529,6 @@ def build_spec(
     if vdw_weight > 0:
         for lc in ligand_confs:
             active.update(int(g) for g in lc.global_indices)
-    # custom (registry) restraints contribute their referenced atoms too, so they share
-    # the same active_sites / g2l remap as the built-ins.
-    for items in registered_restraints.values():
-        for it in items:
-            active.update(int(s) for s in registry.iter_global_sites(it))
 
     active_sites = np.array(sorted(active), dtype=np.int64)
     g2l = {int(g): i for i, g in enumerate(active_sites)}
@@ -783,17 +766,6 @@ def build_spec(
             stop_sigma=stop_sigma,
         )
 
-    # ---- custom (registry) restraint arrays (padded, local indices) ----------------
-    # Each registered RestraintType's data_builder turns its resolved data objects + the
-    # global->local map into one padded arrays-dataclass (same local-index discipline as
-    # the built-ins). Stored by name in spec.registered; empty dict when none configured.
-    registered_specs: dict = {}
-    for name, items in registered_restraints.items():
-        rt = registry.get_registered(name)
-        if rt is None:
-            continue  # config referenced a now-unregistered type; the config layer warns
-        registered_specs[name] = rt.data_builder(items, g2l)
-
     spec = RestraintSpec(
         n_active=len(active_sites),
         active_sites=active_sites,
@@ -810,7 +782,6 @@ def build_spec(
         vdw_config=vdw_config,
         conf_start_sigma=conf_start_sigma,
         conf_stop_sigma=conf_stop_sigma,
-        registered=registered_specs,
     )
     vdw_parts = []
     if vdw_config is not None:
@@ -820,14 +791,9 @@ def build_spec(
     if vdw_arrays is not None:
         vdw_parts.append(f"{len(vdw_arrays.idx)}intra")
     vdw_desc = "+".join(vdw_parts) if vdw_parts else "off"
-    reg_desc = (
-        "+".join(f"{n}:{len(items)}" for n, items in registered_restraints.items())
-        if registered_specs
-        else "off"
-    )
     logger.info(
         "built spec: n_active=%d bonds=%d angles=%d chirals=%d impropers=%d cistrans=%d "
-        "distances=%d rmsd=%d group_angle=%d group_dihedral=%d vdw=%s registered=%s",
+        "distances=%d rmsd=%d group_angle=%d group_dihedral=%d vdw=%s",
         spec.n_active,
         len(bonds),
         len(angles),
@@ -839,6 +805,5 @@ def build_spec(
         len(angle_restraints),
         len(dihedral_restraints),
         vdw_desc,
-        reg_desc,
     )
     return spec

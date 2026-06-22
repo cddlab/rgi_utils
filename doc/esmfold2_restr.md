@@ -57,7 +57,7 @@ on `ChainInfo.ligand_bond_orders` (CCD via `get_ligand_ccd_bonds`, SMILES via Ke
 so the conformer cistrans term works for both CCD and SMILES ligands.
 
 The `RESTRAINTS_CONFIG` dict below writes **every usable variable** with a concrete value (distance
-/ angle / dihedral / conformer / RMSD, plus config-only `custom`); see [`config.md`](config.md) for the
+/ angle / dihedral / conformer / RMSD); see [`config.md`](config.md) for the
 alternatives (restraint types, RMSD `atom_selection` shorthand). `resid` is the **per-chain 1-based
 ordinal** (qualify protein groups with `chain A and (...)`). There is **no top-level `start_sigma`**.
 

@@ -32,7 +32,7 @@ AF3 reads RGI from a **`restraints_config` key inside the fold-input JSON** (bes
 
 1. **Per ligand** — `"conformer_restraints": true` on the ligand object.
 2. **The `restraints_config` object** — the distance / angle / dihedral / conformer /
-   RMSD restraints, plus config-only `custom` restraints. The example below writes **every usable variable** with a concrete value; see
+   RMSD restraints. The example below writes **every usable variable** with a concrete value; see
    [`config.md`](config.md) for the alternatives (restraint types, RMSD `atom_selection`
    shorthand).
 

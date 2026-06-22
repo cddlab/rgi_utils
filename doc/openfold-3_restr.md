@@ -30,7 +30,7 @@ OpenFold reads RGI from a **`restraints_config` field per query** in the input J
    restraints (below). Ligands are identified by `molecule_type_id == LIGAND` and accept `ccd_codes`.
 
 The example below writes **every usable variable** with a concrete value (distance / angle /
-dihedral / conformer / RMSD, plus config-only `custom`); see [`config.md`](config.md) for the alternatives
+dihedral / conformer / RMSD); see [`config.md`](config.md) for the alternatives
 (restraint types, RMSD `atom_selection` shorthand). `resid` is the **per-chain 1-based ordinal**
 (qualify protein groups with `chain A and (...)`). There is **no top-level `start_sigma`**.
 

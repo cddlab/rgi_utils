@@ -30,7 +30,7 @@ restraints on with:
 1. **Per ligand** — `"conformer_restraints": true` on the ligand object enables its conformer
    restraints.
 2. **The `restraints_config` object** — the distance / angle / dihedral / conformer /
-   RMSD restraints, plus config-only `custom` restraints. The example below writes **every usable variable** with a concrete value; see
+   RMSD restraints. The example below writes **every usable variable** with a concrete value; see
    [`config.md`](config.md) for what each does, the alternative restraint types
    (`flat-bottomed` etc.), and the RMSD `atom_selection_ref`/`atom_selection_target` shorthand.
 

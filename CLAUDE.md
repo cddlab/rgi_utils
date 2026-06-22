@@ -171,34 +171,6 @@ longer force-downgrades to intramolecular). VdW `weight` defaults to **0** (off)
 it > 0 to activate. The static `vdw_energy` (idx pairs) lives in the energy layer for
 parity across backends.
 
-### Custom restraints (the registry — the extension point)
-
-The five restraints above are **frozen** (the validated reference). NEW restraint types go
-through `registry.py`, NOT by hand-editing the spec/featurizer/config/energy/optim layers:
-`register_restraint(RestraintType(...))` registers one descriptor (config schema +
-data-class + per-backend leaf fns + gate) and the generic branches in each layer pick it
-up. `RestraintSpec.registered` (a `dict[name -> arrays]`) stores them; `_terms.spec_schema()`
-/ `terms()` / `breakdown_keys()` / `per_entry_keys()` splice registered entries into the
-built-in tables (so `pack_spec`/`term_energies`/the torch GPU pre-gate see them);
-`featurizer.build_spec(registered_restraints=...)`, `config.from_dict` (auto-extends the
-top-level whitelist) and the optim solver-condition (`has_registered()`) all branch
-generically. **Additive**: with an empty registry every accessor returns the built-in
-value, so the five are untouched (proven by the unchanged parity suite). Registered
-restraints are **per-entry, CG-solved** (the registry rejects the closed-form `dist` gate)
-and **must supply all three backends** (numpy/torch/jax — parity is structural; the leaf
-fns may be lazy `"module:func"` dotted paths so registering forces no torch/jax import,
-keeping top-level `import rgi_utils` numpy-only).
-
-Two authoring routes (both via the registry): **config-only** — the built-in `custom`
-restraint (`custom_restraint.py`) interprets `custom_restraints_config` (a vocabulary of
-`measure`s — distance / angle / dihedral / radius_of_gyration of atom-group centroids — ×
-the distance-style `form`s), registered at `import rgi_utils`; **code-level** — your own
-`RestraintType` with new maths. Full recipe + contracts:
-`skills/implement-rgi/references/adding-a-restraint.md`. The verification harness
-`tests/test_registry.py` drives any registered restraint through 3-backend energy+grad
-parity, the torch GPU pre-gate fold (the silent-ungating footgun), a torch + jax
-minimize-to-target, and a `@pytest.mark.gpu` CUDA NaN-free run — re-run it for a new type.
-
 ### Key design points
 
 - `CombinedRestraints` is **instance-scoped — a fresh `CombinedRestraints()` per
