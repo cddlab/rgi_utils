@@ -184,7 +184,7 @@ translates as a unit) means `weight: 1.0` drives any group size.
 The measured quantity is the angle at centroid $c_2$ (with $c_k$ the centroid of group $k$),
 
 ```math
-\theta = \arccos\!\left( \frac{(c_1 - c_2)\cdot(c_3 - c_2)}{\lVert c_1 - c_2 \rVert\,\lVert c_3 - c_2 \rVert} \right)
+\theta = \arccos\left( \frac{(c_1 - c_2)\cdot(c_3 - c_2)}{\lVert c_1 - c_2 \rVert\,\lVert c_3 - c_2 \rVert} \right)
 ```
 
 penalised by $E = \sum w\,\delta^2(\theta)$ with the usual shapes (see Penalty shapes). Targets are in **degrees**
@@ -263,7 +263,7 @@ quantity $x$:
 `vdw` is one-sided (repulsion only),
 
 ```math
-E = w \sum_{(i,j)} \min\!\big(0,\; d_{ij} - \text{scale}\cdot(r_i + r_j)\big)^2,
+E = w \sum_{(i,j)} \min\big(0,\; d_{ij} - \text{scale}\cdot(r_i + r_j)\big)^2,
 ```
 
 over non-bonded atom pairs closer than `dmax`, where $d_{ij}$ is the pair distance and $r_i, r_j$
@@ -357,7 +357,7 @@ $\lVert\cdot\rVert$ is the Euclidean norm:
 |---|---|---|
 | `centroid(A)` | vector | $c_A$ = mean of $A$'s atoms |
 | `distance(A,B)` | scalar | $\lVert c_A - c_B \rVert$ |
-| `angle(A,B,C)` | scalar (rad) | $\arccos\!\big( (c_A - c_B)\cdot(c_C - c_B) / (\lVert c_A - c_B \rVert\,\lVert c_C - c_B \rVert) \big)$, vertex $B$ |
+| `angle(A,B,C)` | scalar (rad) | $\arccos\big( (c_A - c_B)\cdot(c_C - c_B) / (\lVert c_A - c_B \rVert\,\lVert c_C - c_B \rVert) \big)$, vertex $B$ |
 | `dihedral(A,B,C,D)` | scalar (rad) | torsion about the B–C centroid axis, range $\pm\pi$ |
 | `rg(A)` | scalar | $\sqrt{\frac{1}{\lvert A\rvert}\sum_i \lVert x_i - c_A \rVert^2}$ — radius of gyration |
 | `norm(v)` | scalar | $\lVert v \rVert$ |
