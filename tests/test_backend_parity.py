@@ -408,6 +408,51 @@ def test_distance_closed_form_backend_parity():
     assert np.allclose(a_np, a_j, atol=1e-5)
 
 
+@pytest.mark.gpu
+def test_distance_closed_form_cuda_matches_cpu():
+    """R1 (the ops-facade distance_shift refactor) on a REAL CUDA device: the torch
+    closed-form shift on cuda must match the numpy reference and land the centroid on
+    target. The GPU counterpart to test_distance_closed_form_backend_parity -- it is what
+    exercises apply_distance_shift_torch's .long()/index_add/as_tensor on cuda (the
+    CPU parity test can't catch a device-only regression)."""
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("no cuda device")
+    from rgi_utils.optim import distance_shift as ds
+
+    d_np = dict(
+        grp1_idx=np.array([[0, 1]]),
+        grp2_idx=np.array([[2, 3]]),
+        grp1_mask=np.array([[1.0, 1.0]]),
+        grp2_mask=np.array([[1.0, 1.0]]),
+        target1=np.array([5.0]),
+        target2=np.array([0.0]),
+        dist_type=np.array([0]),
+        mask=np.array([1.0]),
+        start_sigma=np.array([1e30]),
+        stop_sigma=np.array([-1.0]),
+    )
+    active = np.zeros((4, 3))
+    active[2:, 0] = 20.0  # centroid1 at x=0, centroid2 at x=20 -> dist 20, target 5
+
+    a_np = ds.apply_distance_shift_numpy(active, d_np, 0.0)
+    a_cuda = (
+        ds.apply_distance_shift_torch(
+            torch.as_tensor(active, device="cuda"),
+            {k: torch.as_tensor(v, device="cuda") for k, v in d_np.items()},
+            0.0,
+        )
+        .cpu()
+        .numpy()
+    )
+
+    def centroid_dist(a):
+        return np.linalg.norm(a[2:].mean(0) - a[:2].mean(0))
+
+    assert abs(centroid_dist(a_cuda) - 5.0) < 1e-5
+    assert np.allclose(a_np, a_cuda, atol=1e-5)
+
+
 def test_distance_closed_form_stop_sigma_release():
     """The closed-form distance shift honours stop_sigma (lower noise bound) across all
     three backends: below stop the centroid shift is RELEASED (coords untouched), inside the

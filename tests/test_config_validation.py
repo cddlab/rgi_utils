@@ -76,22 +76,20 @@ def test_unknown_distance_entry_key_warns(caplog):
     )
 
 
-def test_bare_atom_selection_on_rmsd_warns(caplog):
-    """The documented footgun: a bare 'atom_selection' (only the _fit/_calc suffixed
-    keys are read) is silently ignored -> must now warn."""
-    with caplog.at_level(logging.WARNING):
-        rr = RmsdData()
+def test_bare_atom_selection_on_rmsd_raises():
+    """The documented footgun: a bare 'atom_selection' (only the _ref/_target shorthand
+    and the _fit/_calc keys are read) would be silently dropped, broadening the
+    superposition to the whole structure -- so it is now rejected loudly, like a
+    misspelled section name or a top-level start_sigma."""
+    rr = RmsdData()
+    with pytest.raises(ValueError, match="atom_selection"):
         rr.set_config(
             {
                 "ref_pdb": "x.pdb",
                 "target_rmsd": 1.0,
-                "atom_selection": "chain A",  # silently-ignored footgun
+                "atom_selection": "chain A",  # footgun: not a real key
             }
         )
-    assert any(
-        "unknown config key(s) ['atom_selection']" in r.getMessage()
-        for r in caplog.records
-    )
 
 
 # --- bool coercion trap (F4) ------------------------------------------------------

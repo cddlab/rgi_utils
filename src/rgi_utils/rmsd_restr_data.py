@@ -154,6 +154,19 @@ class RmsdData:
     run_restr: bool = None
 
     def set_config(self, config: dict):
+        # Bare 'atom_selection' is a footgun: only the _ref/_target shorthand and the
+        # _fit/_calc keys are honoured, so a bare one would be silently dropped and the
+        # superposition would quietly broaden to the WHOLE structure (a wrong-result
+        # no-op). Reject it loudly -- like the other dangerous config typos (top-level
+        # start_sigma, a misspelled section name) -- instead of leaving it to the muted
+        # warn_unknown_keys warning.
+        if "atom_selection" in config:
+            raise ValueError(
+                "rmsd_restraints_config entry: bare 'atom_selection' is not a valid key "
+                "-- use 'atom_selection_ref'/'atom_selection_target' (both-sides "
+                "shorthand) or the '_fit'/'_calc' suffixed keys "
+                "(e.g. atom_selection_target_fit)."
+            )
         warn_unknown_keys(
             config, _KNOWN_RMSD_KEYS, "rmsd_restraints_config entry", logger
         )

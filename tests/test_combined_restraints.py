@@ -6,6 +6,8 @@ flow: config parse -> distance resolution -> conformer spec build -> minimize.
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import pytest
 from rdkit import Chem
@@ -137,6 +139,33 @@ def test_setup_empty_is_inactive():
     coords = np.zeros((1, 2, 3))
     # minimize is a no-op and must not raise
     cr.minimize(coords, 0, sigma=0.0)
+
+
+class _ThrowingElementsAdapter(MockAdapter):
+    """MockAdapter whose get_elements() raises -- exercises the B3 path in setup():
+    elements feed ONLY the VdW term, so a failure is tolerated (warn) when VdW is off
+    but re-raised when vdw.weight > 0."""
+
+    def get_elements(self):
+        raise RuntimeError("boom: simulated broken get_elements")
+
+
+def test_get_elements_failure_loud_only_when_vdw_requested(caplog):
+    """B3: a broken get_elements() must not silently drop a REQUESTED VdW term.
+    weight 0 (default) -> tolerate (warn + continue); weight > 0 -> re-raise."""
+    atoms = [AtomRecord("A", 1, 0), AtomRecord("A", 2, 1)]
+    # (a) VdW OFF (default): tolerate the failure -> warn and continue, no raise.
+    cr = CombinedRestraints.get_instance()
+    cr.set_config({})
+    with caplog.at_level(logging.WARNING):
+        cr.setup(_ThrowingElementsAdapter(atoms))  # must NOT raise
+    assert any("get_elements failed" in r.getMessage() for r in caplog.records)
+    # (b) VdW requested (weight > 0): the failure is fatal -> re-raise the real error.
+    CombinedRestraints.reset()
+    cr = CombinedRestraints.get_instance()
+    cr.set_config({"conformer_restraints_config": {"vdw": {"weight": 1.0}}})
+    with pytest.raises(RuntimeError, match="boom"):
+        cr.setup(_ThrowingElementsAdapter(atoms))
 
 
 def test_distance_resolve_and_minimize():

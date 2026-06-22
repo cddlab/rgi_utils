@@ -24,16 +24,22 @@ atom/group the per-restraint shifts couple, so one pass would satisfy none of
 them; we then iterate (Jacobi) ``_COUPLED_PASSES`` times to converge (disjoint
 restraints reach the fixed point on pass 1, so later passes are no-ops).
 
-The three backends share the maths; only the gather/scatter primitives differ.
-``prepared`` is the ``distance`` dict that ``energy.*_energy.prepare_spec`` already
-builds (grp1_idx/grp2_idx local indices, grp1_mask/grp2_mask, target1/target2,
-dist_type, move_mode, mask, start_sigma, stop_sigma, start_step, stop_step). The gate is
-the active sigma window AND the active step window (a restraint uses one or the other;
-the unused axis is always-on). ``move_mode`` / the ``*_step`` keys may be absent in a
-hand-built dict -> ``move_mode`` treated as 0 (both), step window treated as always-on.
+The three backends share ONE body (``_apply_distance_shift``); a small per-backend
+``ops`` facade carries the gather/scatter/cast primitives that differ (the same
+ops-facade split as ``energy/_terms.py`` and ``custom/backends.py`` -- the arithmetic is
+identical across array libraries via operator overloading, so only sqrt/where/zeros_like/
+index/cast/scatter need a backend). ``prepared`` is the ``distance`` dict that
+``energy.*_energy.prepare_spec`` already builds (grp1_idx/grp2_idx local indices,
+grp1_mask/grp2_mask, target1/target2, dist_type, move_mode, mask, start_sigma, stop_sigma,
+start_step, stop_step). The gate is the active sigma window AND the active step window (a
+restraint uses one or the other; the unused axis is always-on). ``move_mode`` / the
+``*_step`` keys may be absent in a hand-built dict -> ``move_mode`` treated as 0 (both),
+step window treated as always-on.
 """
 
 from __future__ import annotations
+
+from collections import namedtuple
 
 import numpy as np
 
@@ -41,30 +47,48 @@ _EPS = 1e-12
 # Jacobi passes when restraints may couple (n_dist > 1); 1 restraint never couples.
 _COUPLED_PASSES = 16
 
+# Per-backend primitive facade. ``copy_in``: clone the coord tensor (numpy must, the
+# functional torch/jax are no-ops); ``index``: cast the local-index arrays (torch needs
+# .long()); ``asarray``: lift a sigma/step scalar to a backend array WITHOUT float()
+# (so the jax wrapper's traced scalars survive lax.scan); ``cast``: bool/array -> the
+# reference's float dtype (.astype vs torch's .to); ``scatter_add``: index_add return.
+_Ops = namedtuple(
+    "_Ops", "copy_in index asarray cast sqrt where zeros_like scatter_add"
+)
 
-def apply_distance_shift_numpy(active, d, sigma=None, step=None):
-    """active: (..., n_active, 3) float64. Returns a shifted copy."""
-    active = np.array(active, dtype=np.float64, copy=True)
-    idx1, idx2 = d["grp1_idx"], d["grp2_idx"]
+
+def _apply_distance_shift(active, d, sigma, step, ops):
+    """Closed-form centroid-distance shift shared by the numpy/torch/jax wrappers.
+
+    The maths is written with plain operators (``*``/``+``/``.sum``/``/``), which every
+    array library overloads identically; only the primitives in ``ops`` vary per backend.
+    The jax wrapper passes TRACED ``sigma``/``step`` scalars, so this body must never
+    coerce them with ``float()`` -- it lifts them through ``ops.asarray`` instead, keeping
+    the whole function JIT/scan-able.
+    """
+    active = ops.copy_in(active)
+    idx1, idx2 = ops.index(d["grp1_idx"]), ops.index(d["grp2_idx"])
     m1, m2 = d["grp1_mask"], d["grp2_mask"]
     t1, t2, dt = d["target1"], d["target2"], d["dist_type"]
     n1 = m1.sum(-1)
     n2 = m2.sum(-1)
     denom = n1 + n2 + _EPS
     mm = d.get("move_mode")  # 0=both / 1=grp1 only / 2=grp2 only (absent -> both)
-    mm = np.zeros_like(dt) if mm is None else mm
+    mm = ops.zeros_like(dt) if mm is None else mm
     c1, c2 = _split(mm, n1, n2, denom)  # constant across passes (no coord dependence)
-    gate = d["mask"].astype(np.float64)
+    gate = ops.cast(d["mask"], m1)
     if sigma is not None:
-        s = float(sigma)
-        gate = gate * (s <= d["start_sigma"]).astype(np.float64)
+        s = ops.asarray(sigma)
+        gate = gate * ops.cast(s <= d["start_sigma"], m1)
         # release below stop_sigma (-1 default -> s>=-1 always true -> never released)
-        gate = gate * (s >= d["stop_sigma"]).astype(np.float64)
+        gate = gate * ops.cast(s >= d["stop_sigma"], m1)
     if (
         step is not None and "start_step" in d
     ):  # step window (ANDed; -inf/+inf = always)
-        gate = gate * (step >= d["start_step"]).astype(np.float64)
-        gate = gate * (step <= d["stop_step"]).astype(np.float64)
+        st = ops.asarray(step)
+        gate = gate * ops.cast(st >= d["start_step"], m1)
+        gate = gate * ops.cast(st <= d["stop_step"], m1)
+    fidx1, fidx2 = idx1.reshape(-1), idx2.reshape(-1)
     passes = 1 if idx1.shape[0] <= 1 else _COUPLED_PASSES
     for _ in range(passes):
         g1 = active[..., idx1, :]
@@ -72,16 +96,67 @@ def apply_distance_shift_numpy(active, d, sigma=None, step=None):
         centroid1 = (g1 * m1[..., None]).sum(-2) / (n1[..., None] + _EPS)
         centroid2 = (g2 * m2[..., None]).sum(-2) / (n2[..., None] + _EPS)
         diff = centroid2 - centroid1
-        dist = np.sqrt((diff * diff).sum(-1) + _EPS)
+        dist = ops.sqrt((diff * diff).sum(-1) + _EPS)
         u = diff / (dist[..., None] + _EPS)
-        delta = _delta(dist, t1, t2, dt, np.where, np.zeros_like) * gate
+        delta = _delta(dist, t1, t2, dt, ops.where, ops.zeros_like) * gate
         centroid1_shift = (-delta * c1)[..., None] * u
         centroid2_shift = (delta * c2)[..., None] * u
         pa1 = _per_atom_shift(centroid1_shift, m1)
         pa2 = _per_atom_shift(centroid2_shift, m2)
-        _scatter_add_numpy(active, idx1.reshape(-1), pa1)
-        _scatter_add_numpy(active, idx2.reshape(-1), pa2)
+        active = ops.scatter_add(active, fidx1, pa1)
+        active = ops.scatter_add(active, fidx2, pa2)
     return active
+
+
+def apply_distance_shift_numpy(active, d, sigma=None, step=None):
+    """active: (..., n_active, 3) float64. Returns a shifted copy."""
+    ops = _Ops(
+        copy_in=lambda a: np.array(a, dtype=np.float64, copy=True),
+        index=lambda i: i,
+        asarray=np.asarray,
+        cast=lambda x, ref: np.asarray(x).astype(ref.dtype),
+        sqrt=np.sqrt,
+        where=np.where,
+        zeros_like=np.zeros_like,
+        scatter_add=_np_scatter_add,
+    )
+    return _apply_distance_shift(active, d, sigma, step, ops)
+
+
+def apply_distance_shift_torch(active, d, sigma=None, step=None):
+    """active: (..., n_active, 3) torch tensor. Returns a shifted tensor (the caller
+    runs this under no_grad / inference_mode(False); pure arithmetic, no autograd)."""
+    import torch
+
+    ops = _Ops(
+        copy_in=lambda a: a,
+        index=lambda i: i.long(),
+        asarray=torch.as_tensor,
+        cast=lambda x, ref: x.to(ref.dtype),
+        sqrt=torch.sqrt,
+        where=torch.where,
+        zeros_like=torch.zeros_like,
+        scatter_add=lambda a, idx, vals: a.index_add(-2, idx, vals.to(a.dtype)),
+    )
+    return _apply_distance_shift(active, d, sigma, step, ops)
+
+
+def apply_distance_shift_jax(active, d, sigma, step=None):
+    """active: (..., n_active, 3) jax array. Pure + JIT/scan-able. ``sigma`` (and the
+    optional ``step``) are (traced) scalars; gating folds into the per-restraint delta."""
+    import jax.numpy as jnp
+
+    ops = _Ops(
+        copy_in=lambda a: a,
+        index=lambda i: i,
+        asarray=jnp.asarray,
+        cast=lambda x, ref: jnp.asarray(x).astype(ref.dtype),
+        sqrt=jnp.sqrt,
+        where=jnp.where,
+        zeros_like=jnp.zeros_like,
+        scatter_add=lambda a, idx, vals: a.at[..., idx, :].add(vals),
+    )
+    return _apply_distance_shift(active, d, sigma, step, ops)
 
 
 def _delta(dist, t1, t2, dt, where, zeros_like):
@@ -135,92 +210,9 @@ def _scatter_add_numpy(active, flat_idx, vals):
     active[...] = flat.reshape(active.shape)
 
 
-def apply_distance_shift_torch(active, d, sigma=None, step=None):
-    """active: (..., n_active, 3) torch tensor. Returns a shifted tensor (the caller
-    runs this under no_grad / inference_mode(False); pure arithmetic, no autograd)."""
-    import torch
-
-    idx1, idx2 = d["grp1_idx"].long(), d["grp2_idx"].long()
-    m1, m2 = d["grp1_mask"], d["grp2_mask"]
-    t1, t2, dt = d["target1"], d["target2"], d["dist_type"]
-    n1 = m1.sum(-1)
-    n2 = m2.sum(-1)
-    denom = n1 + n2 + _EPS
-    mm = d.get("move_mode")  # 0=both / 1=grp1 only / 2=grp2 only (absent -> both)
-    mm = torch.zeros_like(dt) if mm is None else mm
-    c1, c2 = _split(mm, n1, n2, denom)  # constant across passes (no coord dependence)
-    gate = d["mask"].to(m1.dtype)
-    if sigma is not None:
-        s = float(sigma)
-        gate = gate * (s <= d["start_sigma"]).to(m1.dtype)
-        # release below stop_sigma (-1 default -> s>=-1 always true -> never released)
-        gate = gate * (s >= d["stop_sigma"]).to(m1.dtype)
-    if (
-        step is not None and "start_step" in d
-    ):  # step window (ANDed; -inf/+inf = always)
-        gate = gate * (step >= d["start_step"]).to(m1.dtype)
-        gate = gate * (step <= d["stop_step"]).to(m1.dtype)
-    fidx1, fidx2 = idx1.reshape(-1), idx2.reshape(-1)
-    passes = 1 if idx1.shape[0] <= 1 else _COUPLED_PASSES
-    for _ in range(passes):
-        g1 = active[..., idx1, :]
-        g2 = active[..., idx2, :]
-        centroid1 = (g1 * m1[..., None]).sum(-2) / (n1[..., None] + _EPS)
-        centroid2 = (g2 * m2[..., None]).sum(-2) / (n2[..., None] + _EPS)
-        diff = centroid2 - centroid1
-        dist = torch.sqrt((diff * diff).sum(-1) + _EPS)
-        u = diff / (dist[..., None] + _EPS)
-        delta = _delta(dist, t1, t2, dt, torch.where, torch.zeros_like) * gate
-        centroid1_shift = (-delta * c1)[..., None] * u
-        centroid2_shift = (delta * c2)[..., None] * u
-        pa1 = _per_atom_shift(centroid1_shift, m1)
-        pa2 = _per_atom_shift(centroid2_shift, m2)
-        active = active.index_add(-2, fidx1, pa1.to(active.dtype))
-        active = active.index_add(-2, fidx2, pa2.to(active.dtype))
-    return active
-
-
-def apply_distance_shift_jax(active, d, sigma, step=None):
-    """active: (..., n_active, 3) jax array. Pure + JIT/scan-able. ``sigma`` (and the
-    optional ``step``) are (traced) scalars; gating folds into the per-restraint delta."""
-    import jax.numpy as jnp
-
-    idx1, idx2 = d["grp1_idx"], d["grp2_idx"]
-    m1, m2 = d["grp1_mask"], d["grp2_mask"]
-    t1, t2, dt = d["target1"], d["target2"], d["dist_type"]
-    n1 = m1.sum(-1)
-    n2 = m2.sum(-1)
-    denom = n1 + n2 + _EPS
-    mm = d.get("move_mode")  # 0=both / 1=grp1 only / 2=grp2 only (absent -> both)
-    mm = jnp.zeros_like(dt) if mm is None else mm
-    c1, c2 = _split(mm, n1, n2, denom)  # constant across passes (no coord dependence)
-    gate = d["mask"]
-    if sigma is not None:
-        s = jnp.asarray(sigma)
-        gate = gate * (s <= d["start_sigma"]).astype(gate.dtype)
-        # release below stop_sigma (-1 default -> s>=-1 always true -> never released)
-        gate = gate * (s >= d["stop_sigma"]).astype(gate.dtype)
-    if (
-        step is not None and "start_step" in d
-    ):  # step window (ANDed; -inf/+inf = always)
-        st = jnp.asarray(step)
-        gate = gate * (st >= d["start_step"]).astype(gate.dtype)
-        gate = gate * (st <= d["stop_step"]).astype(gate.dtype)
-    fidx1, fidx2 = idx1.reshape(-1), idx2.reshape(-1)
-    passes = 1 if idx1.shape[0] <= 1 else _COUPLED_PASSES
-    for _ in range(passes):
-        g1 = active[..., idx1, :]
-        g2 = active[..., idx2, :]
-        centroid1 = (g1 * m1[..., None]).sum(-2) / (n1[..., None] + _EPS)
-        centroid2 = (g2 * m2[..., None]).sum(-2) / (n2[..., None] + _EPS)
-        diff = centroid2 - centroid1
-        dist = jnp.sqrt((diff * diff).sum(-1) + _EPS)
-        u = diff / (dist[..., None] + _EPS)
-        delta = _delta(dist, t1, t2, dt, jnp.where, jnp.zeros_like) * gate
-        centroid1_shift = (-delta * c1)[..., None] * u
-        centroid2_shift = (delta * c2)[..., None] * u
-        pa1 = _per_atom_shift(centroid1_shift, m1)
-        pa2 = _per_atom_shift(centroid2_shift, m2)
-        active = active.at[..., fidx1, :].add(pa1)
-        active = active.at[..., fidx2, :].add(pa2)
+def _np_scatter_add(active, flat_idx, vals):
+    """numpy ``ops.scatter_add``: mutate ``active`` in place (the wrapper already cloned
+    it) then return it, so the shared body's ``active = ops.scatter_add(...)`` reassign
+    matches the functional torch/jax backends."""
+    _scatter_add_numpy(active, flat_idx, vals)
     return active

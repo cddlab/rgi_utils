@@ -15,9 +15,11 @@ The backend (numpy/torch/jax) is chosen from the config; torch/jax optimizers ar
 imported lazily so importing this module needs neither. JAX tools that run inside
 ``jax.lax.scan`` should grab the pure minimizer via ``get_minimizer()``.
 
-``get_instance()`` / ``reset()`` are a back-compat singleton shim (kept only for
-existing tests); new code should use the instance-scoped lifecycle above, not the
-singleton.
+``get_instance()`` / ``reset()`` are a back-compat singleton shim (kept only because
+``tests/test_combined_restraints.py`` still uses it -- no production tool does); new
+code should use the instance-scoped lifecycle above, not the singleton. To delete the
+shim, migrate that test file to ``cr = CombinedRestraints()`` (a fresh per-test
+instance, which needs no ``reset()``).
 """
 
 from __future__ import annotations
@@ -166,7 +168,18 @@ class CombinedRestraints:
         if hasattr(adapter, "get_elements"):
             try:
                 elements = adapter.get_elements()
-            except Exception as exc:  # element info is optional (VdW only)
+            except Exception as exc:
+                # Elements feed ONLY the VdW conformer term (weight defaults to 0 = off).
+                # If VdW was actually requested, a get_elements failure is a real problem
+                # -> re-raise loudly rather than silently drop the term and quietly run
+                # without the contact penalty. Otherwise (the common case) tolerate it:
+                # no other restraint needs elements. This keeps a broken adapter from
+                # hiding behind "VdW disabled" exactly when VdW matters.
+                vdw_w = float(
+                    (cfg.conformer_config.get("vdw") or {}).get("weight", 0) or 0
+                )
+                if vdw_w > 0:
+                    raise
                 logger.warning("get_elements failed, VdW disabled: %s", exc)
 
         self.spec = build_spec(
@@ -515,8 +528,12 @@ class CombinedRestraints:
             )
             logger.info(msg)
             print(msg, flush=True)
-        except Exception as exc:  # stats are best-effort
-            logger.warning("finalize stats failed: %s", exc)
+        except Exception as exc:  # stats are best-effort (verbose-only diagnostic)
+            # finalize only runs under verbose, so the user asked for diagnostics:
+            # surface the traceback (exc_info) + print it, but never let a stats bug
+            # crash the real inference run.
+            logger.warning("finalize stats failed: %s", exc, exc_info=True)
+            print(f"[rgi_utils] WARNING: finalize stats failed: {exc}", flush=True)
 
     def _custom_breakdown(self, coords) -> dict:
         """``{name: energy}`` for each custom restraint at ``coords`` (numpy, diagnostic;

@@ -123,8 +123,8 @@ Supporting modules:
   atoms are selected INDEPENDENTLY by four keys — `atom_selection_target_fit`,
   `atom_selection_ref_fit`, `atom_selection_target_calc`, `atom_selection_ref_calc`
   (`atom_selection_target` / `atom_selection_ref` are a both-sides shorthand for the
-  fit+calc pair). **There is NO bare `atom_selection` key** — passing one is silently
-  ignored (a footgun), so use the suffixed keys. All four omitted ⇒ fit+measure over the
+  fit+calc pair). **There is NO bare `atom_selection` key** — passing one now RAISES
+  (it used to be silently dropped, a footgun), so use the suffixed keys. All four omitted ⇒ fit+measure over the
   WHOLE structure best-effort (atoms missing from the ref are skipped). `pairing`
   **defaults to `align`** (sequence-align polymer chains so a homolog ref maps on by
   residue; ligands + structures with no polymer fall back to ordinal identity, so the

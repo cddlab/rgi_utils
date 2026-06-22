@@ -466,10 +466,16 @@ def build_spec(
     # exist, but none opted in -> zero conformer restraints built (NOT "satisfied"). A
     # finalize term reading 0.00000 because the spec has 0 of that restraint is a no-op.
     if cfg_present and _n_before and not ligand_confs:
-        logger.warning(
+        # print() (not just logger.warning, which the package NullHandler mutes) so this
+        # misconfiguration alert survives host logging configs -- the same reasoning as
+        # the "NO ACTIVE RESTRAINTS" print in combined.setup. Fires only on the genuine
+        # footgun (conformer config + ligands present, but none opted in), so it is rare.
+        msg = (
             "conformer_restraints_config present but no ligand opted in "
             "(set conformer_restraints: true on the ligand) -- no conformer restraints built"
         )
+        logger.warning(msg)
+        print(f"[rgi_utils] WARNING: {msg}", flush=True)
     distance_restraints = [
         dr for dr in (distance_restraints or []) if getattr(dr, "run_restr", False)
     ]
