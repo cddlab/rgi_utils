@@ -227,6 +227,18 @@ safety). Full config surface: `doc/config.md`.
   `cg` in each backend's `_gates` (eager), plus `torch_optim._gated_prepared` /
   `distance_shift` (compiled GPU / closed-form). `stop_sigma > start_sigma` (empty window)
   is flagged by `_warn_never_active`.
+- **Step window (alternative to sigma):** every windowed entry (distance/rmsd/angle/dihedral/
+  custom + the conformer block) also accepts `start_step`/`stop_step` — the same window on the
+  **diffusion step index** (`minimize(coords, istep, sigma)`'s `istep`, threaded to the optimizer
+  and ANDed into every gate alongside sigma; defaults `-inf`/`+inf` = always-on). A restraint uses
+  EITHER the sigma window OR the step window — **mutually exclusive**, enforced at config by the
+  shared `_config_util.check_window_exclusive` (raises if both). `stop_step < start_step` (empty)
+  raises in `_warn_never_active`. **Step counts differ per tool**, so a step window is NOT portable
+  across tools the way a sigma window is (all tools share `sigma_data=16`) — prefer sigma. Plumbing
+  mirrors `stop_sigma` exactly: spec arrays `start_step`/`stop_step`, `pack_spec` conf scalars,
+  `_terms.sigma_gate` (now `(start_sigma, stop_sigma, start_step, stop_step, mask)`), the VdW gate
+  in both optimizers (hand-maintained — not a `_TERMS` entry), and `torch_optim._gated_prepared`'s
+  cache key. AF3 threads `istep` via a `jnp.arange(steps)` added to the diffusion `hk.scan` xs.
 - Distance restraints: `harmonic`, `flat-bottomed`, `flat-bottomed1`,
   `flat-bottomed2`; only `calc_method=unfixed-absolute` (centroid-based). The per-entry `move`
   key picks which group the closed-form centroid shift moves: `both` (default = minimal-
@@ -243,7 +255,9 @@ safety). Full config surface: `doc/config.md`.
   the groups' centroids. The config surface MIRRORS the distance restraint — the four types
   `harmonic{target_angle}` / `flat-bottomed{target_angle1,target_angle2}` / `flat-bottomed1`
   / `flat-bottomed2` (dihedral uses `target_dihedral*`), plus the `move` key. Targets are in
-  **DEGREES** (→ radians in `group_geom_restr_data.py`); the spec carries
+  **DEGREES** by default — set `unit: radians` on the entry to give them in radians instead
+  (single conversion point in `group_geom_restr_data._parse_geom_type`); stored internally as
+  radians either way. The spec carries
   `target1/target2/geom_type` (reusing the distance `DIST_TYPE_CODES`) + `move_free` (a
   per-group `(n, n_groups)` {0,1} mask). `weight` defaults 1.0; per-restraint
   `start_sigma`/`stop_sigma` like distance/rmsd. Unlike distance these are **CG-solved

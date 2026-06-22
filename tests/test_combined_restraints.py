@@ -82,7 +82,7 @@ def test_config_defaults():
     cr = CombinedRestraints.get_instance()
     cr.set_config({})
     assert cr.config.verbose is False
-    assert cr.config.gpu is False
+    assert cr.config.gpu is True
     assert cr.config.method == "CG"
     # gpu:false now defaults to torch (run on CPU), not the numpy/scipy fallback;
     # gpu:true also torch (on the accelerator); numpy is opt-in via backend:numpy.
@@ -655,6 +655,88 @@ def test_distance_stop_sigma_above_start_raises():
         cr.setup(MockAdapter(atoms))
 
 
+def test_distance_step_window_gates_e2e():
+    """A DISTANCE restraint with a STEP window (start_step/stop_step) is gated on the
+    diffusion step index instead of sigma: minimize OUTSIDE [start_step, stop_step] leaves
+    the centroid separation untouched, INSIDE it lands on target. End-to-end exercise of
+    config -> DistanceData.start_step/stop_step -> featurizer -> distance_shift step gate.
+    The 2nd positional minimize arg is the step index (istep)."""
+    cr = CombinedRestraints()
+    cr.set_config(
+        {
+            "backend": "torch",
+            "distance_restraints_config": [
+                {
+                    "atom_selection1": "chain A",
+                    "atom_selection2": "chain B",
+                    # step window only; sigma window stays at its always-on default
+                    "start_step": 5,
+                    "stop_step": 10,
+                    "harmonic": {"target_distance": 7.0},
+                }
+            ],
+        }
+    )
+    assert cr.config.distance_data[0].start_step == 5.0
+    assert cr.config.distance_data[0].stop_step == 10.0
+    atoms = [
+        AtomRecord("A", 1, 0),
+        AtomRecord("A", 2, 1),
+        AtomRecord("B", 1, 2),
+        AtomRecord("B", 2, 3),
+    ]
+    cr.setup(MockAdapter(atoms))
+
+    def centroid_dist(c):
+        return np.linalg.norm(c[0, 2:].mean(0) - c[0, :2].mean(0))
+
+    # step before the window -> gated off -> centroid separation unchanged (still 20)
+    coords = np.zeros((1, 4, 3))
+    coords[0, 2:, 0] = 20.0
+    cr.minimize(coords, 3, sigma=5.0)
+    assert centroid_dist(coords) == pytest.approx(20.0, abs=1e-6)
+
+    # step inside [start_step, stop_step] -> active -> closed-form shift lands on target
+    coords = np.zeros((1, 4, 3))
+    coords[0, 2:, 0] = 20.0
+    cr.minimize(coords, 7, sigma=5.0)
+    assert abs(centroid_dist(coords) - 7.0) < 1e-5
+
+    # step after the window -> gated off again -> unchanged
+    coords = np.zeros((1, 4, 3))
+    coords[0, 2:, 0] = 20.0
+    cr.minimize(coords, 12, sigma=5.0)
+    assert centroid_dist(coords) == pytest.approx(20.0, abs=1e-6)
+
+
+def test_distance_empty_step_window_raises():
+    """Empty STEP window (stop_step < start_step) on a DISTANCE restraint must RAISE,
+    mirroring the empty sigma-window check in _warn_never_active."""
+    cr = CombinedRestraints()
+    cr.set_config(
+        {
+            "backend": "torch",
+            "distance_restraints_config": [
+                {
+                    "atom_selection1": "chain A",
+                    "atom_selection2": "chain B",
+                    "start_step": 50,
+                    "stop_step": 10,  # < start_step -> empty step window
+                    "harmonic": {"target_distance": 5.0},
+                }
+            ],
+        }
+    )
+    atoms = [
+        AtomRecord("A", 1, 0),
+        AtomRecord("A", 2, 1),
+        AtomRecord("B", 1, 2),
+        AtomRecord("B", 2, 3),
+    ]
+    with pytest.raises(ValueError, match="stop_step < start_step"):
+        cr.setup(MockAdapter(atoms))
+
+
 def test_conformer_stop_sigma_above_start_raises():
     """Empty window (conf_stop_sigma > conf_start_sigma) on the CONFORMER block must
     RAISE. Builds a real conformer (flagged ligand) so has_conformer() is True and the
@@ -752,7 +834,9 @@ def test_gpu_false_uses_torch_on_cpu():
     CPU tensor (replacing the old numpy/scipy fallback)."""
     torch = pytest.importorskip("torch")
     cr = CombinedRestraints.get_instance()
-    cr.set_config(_dist_config())  # gpu omitted -> False; no explicit backend
+    cr.set_config(
+        _dist_config(gpu=False)
+    )  # gpu defaults True now; set False for the CPU path
     assert cr.config.resolve_backend() == "torch"
     cr.setup(MockAdapter(_dist_atoms()))
     assert cr._backend == "torch"

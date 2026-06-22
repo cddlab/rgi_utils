@@ -278,6 +278,18 @@ def _group_sigmas(restraints, conf_start_sigma):
     return start, stop
 
 
+def _group_steps(restraints):
+    """Per-restraint (start_step, stop_step) arrays for group angle/dihedral. The step
+    window is the alternative gate axis to the sigma window (mutually exclusive at config
+    time) and is independent of the conformer window — omitted -> the data object's
+    -inf/+inf default (always active). Mirrors the distance/rmsd step plumbing."""
+    start = np.array(
+        [float(getattr(r, "start_step", float("-inf"))) for r in restraints]
+    )
+    stop = np.array([float(getattr(r, "stop_step", float("inf"))) for r in restraints])
+    return start, stop
+
+
 def _dist_params(dr) -> tuple[int, float, float]:
     """Map a DistanceData (string type + targets) to (code, target1, target2)."""
     t = dr.distance_restraint_type
@@ -421,6 +433,8 @@ def build_spec(
     elements: np.ndarray | None = None,
     conf_start_sigma: float = -1.0,
     conf_stop_sigma: float = -1.0,
+    conf_start_step: float = float("-inf"),
+    conf_stop_step: float = float("inf"),
     rmsd_restraints: list | None = None,
     angle_restraints: list | None = None,
     dihedral_restraints: list | None = None,
@@ -648,6 +662,8 @@ def build_spec(
         move_mode = np.zeros(n, dtype=np.int64)  # 0=both / 1=grp1 only / 2=grp2 only
         dist_start_sigma = np.full(n, -1.0)
         dist_stop_sigma = np.full(n, -1.0)  # -1 = never released (off)
+        dist_start_step = np.full(n, float("-inf"))  # step-window; -inf/+inf = always
+        dist_stop_step = np.full(n, float("inf"))
         for di, dr in enumerate(distance_restraints):
             s1 = [g2l[int(s)] for s in dr.target_sites1]
             s2 = [g2l[int(s)] for s in dr.target_sites2]
@@ -663,6 +679,8 @@ def build_spec(
             ss = getattr(dr, "start_sigma", None)
             dist_start_sigma[di] = float(ss) if ss is not None else conf_start_sigma
             dist_stop_sigma[di] = float(getattr(dr, "stop_sigma", -1.0))
+            dist_start_step[di] = float(getattr(dr, "start_step", float("-inf")))
+            dist_stop_step[di] = float(getattr(dr, "stop_step", float("inf")))
         distance = DistanceArrays(
             grp1_idx=grp1_idx,
             grp2_idx=grp2_idx,
@@ -675,6 +693,8 @@ def build_spec(
             mask=np.ones(n),
             start_sigma=dist_start_sigma,
             stop_sigma=dist_stop_sigma,
+            start_step=dist_start_step,
+            stop_step=dist_stop_step,
         )
 
     # ---- RMSD arrays (padded; fit = superposition atoms, calc = measured atoms) --
@@ -693,6 +713,8 @@ def build_spec(
         rmsd_weight = np.zeros(n)
         rmsd_start_sigma = np.full(n, -1.0)
         rmsd_stop_sigma = np.full(n, -1.0)  # -1 = never released (active to sigma=0)
+        rmsd_start_step = np.full(n, float("-inf"))  # step-window; -inf/+inf = always
+        rmsd_stop_step = np.full(n, float("inf"))
         for ri, rr in enumerate(rmsd_restraints):
             f_local = [g2l[int(s)] for s in rr.fit_target_sites]
             kf = len(f_local)
@@ -713,6 +735,8 @@ def build_spec(
             ss = getattr(rr, "start_sigma", None)
             rmsd_start_sigma[ri] = float(ss) if ss is not None else conf_start_sigma
             rmsd_stop_sigma[ri] = float(getattr(rr, "stop_sigma", -1.0))
+            rmsd_start_step[ri] = float(getattr(rr, "start_step", float("-inf")))
+            rmsd_stop_step[ri] = float(getattr(rr, "stop_step", float("inf")))
         rmsd = RmsdArrays(
             fit_idx=fit_idx,
             fit_mask=fit_mask,
@@ -724,6 +748,8 @@ def build_spec(
             weight=rmsd_weight,
             start_sigma=rmsd_start_sigma,
             stop_sigma=rmsd_stop_sigma,
+            start_step=rmsd_start_step,
+            stop_step=rmsd_stop_step,
             mask=np.ones(n),
         )
 
@@ -733,6 +759,7 @@ def build_spec(
         n = len(angle_restraints)
         (g1, g2, g3), (m1, m2, m3) = _pad_groups(angle_restraints, 3, g2l)
         start_sigma, stop_sigma = _group_sigmas(angle_restraints, conf_start_sigma)
+        start_step, stop_step = _group_steps(angle_restraints)
         codes, t1, t2, move_free = _group_geom_params(angle_restraints)
         group_angle = GroupAngleArrays(
             grp1_idx=g1,
@@ -749,12 +776,15 @@ def build_spec(
             mask=np.ones(n),
             start_sigma=start_sigma,
             stop_sigma=stop_sigma,
+            start_step=start_step,
+            stop_step=stop_step,
         )
     group_dihedral = None
     if dihedral_restraints:
         n = len(dihedral_restraints)
         (g1, g2, g3, g4), (m1, m2, m3, m4) = _pad_groups(dihedral_restraints, 4, g2l)
         start_sigma, stop_sigma = _group_sigmas(dihedral_restraints, conf_start_sigma)
+        start_step, stop_step = _group_steps(dihedral_restraints)
         codes, t1, t2, move_free = _group_geom_params(dihedral_restraints)
         group_dihedral = GroupDihedralArrays(
             grp1_idx=g1,
@@ -773,6 +803,8 @@ def build_spec(
             mask=np.ones(n),
             start_sigma=start_sigma,
             stop_sigma=stop_sigma,
+            start_step=start_step,
+            stop_step=stop_step,
         )
 
     spec = RestraintSpec(
@@ -791,6 +823,8 @@ def build_spec(
         vdw_config=vdw_config,
         conf_start_sigma=conf_start_sigma,
         conf_stop_sigma=conf_stop_sigma,
+        conf_start_step=conf_start_step,
+        conf_stop_step=conf_stop_step,
         custom=custom_specs,
     )
     vdw_parts = []

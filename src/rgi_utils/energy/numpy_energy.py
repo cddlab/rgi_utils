@@ -343,38 +343,50 @@ _LEAF_FNS = {
 }
 
 
-def _gates(prepared, sigma):
-    """The conformer gate ``cg`` and a per-restraint ``sigma_gate`` for this noise
-    level (numpy: a plain boolean multiplier; identity when ``sigma is None``)."""
+def _gates(prepared, sigma, step=None):
+    """The conformer gate ``cg`` and a per-restraint ``sigma_gate`` for this noise level
+    + step (numpy: plain boolean multipliers). Each restraint is gated on EITHER a sigma
+    window OR a step window (mutually exclusive at config time); the gate ANDs both axes,
+    the unused axis always-on. ``sigma is None`` / ``step is None`` disable their own axis."""
     if sigma is None:
         cg = 1.0
     else:  # conformer window conf_stop <= sigma <= conf_start (conf_stop=-1 -> never)
         cg = (sigma <= prepared.get("conf_start_sigma", 1e30)) and (
             sigma >= prepared.get("conf_stop_sigma", -1.0)
         )
+    if step is not None:  # AND the conformer STEP window
+        cg = (
+            cg
+            and (step >= prepared.get("conf_start_step", float("-inf")))
+            and (step <= prepared.get("conf_stop_step", float("inf")))
+        )
 
-    def sigma_gate(start_sigma, stop_sigma, mask):
-        if sigma is None:
-            return mask
-        g = mask * (sigma <= start_sigma)
-        if stop_sigma is not None:  # released below stop_sigma (e.g. rmsd terminus fix)
-            g = g * (sigma >= stop_sigma)
+    def sigma_gate(start_sigma, stop_sigma, start_step, stop_step, mask):
+        g = mask
+        if sigma is not None:
+            g = g * (sigma <= start_sigma)
+            if stop_sigma is not None:  # released below stop_sigma (rmsd terminus fix)
+                g = g * (sigma >= stop_sigma)
+        if step is not None:  # step window (the alternative gate axis), ANDed in
+            if start_step is not None:
+                g = g * (step >= start_step)
+            if stop_step is not None:
+                g = g * (step <= stop_step)
         return g
 
     return cg, sigma_gate
 
 
-def total_energy(positions, prepared, sigma=None, include_distance=True):
+def total_energy(positions, prepared, sigma=None, step=None, include_distance=True):
     """Sum all restraint energies. ``prepared`` is the dict from ``prepare_spec``.
 
-    ``sigma`` is the current diffusion noise level: each restraint contributes only
-    when ``sigma <= start_sigma`` (a 0/1 gate folded into its mask). The conformer
-    terms (bond/angle/chiral/improper/cistrans/vdw) share one ``conf_start_sigma``; distance
-    and RMSD have their own per-restraint gate. RMSD is summed regardless of
-    ``include_distance`` (the CG solver calls with ``include_distance=False``).
-    ``sigma=None`` disables gating (all active).
+    ``sigma`` (noise level) and ``step`` (diffusion step index) gate each restraint: it
+    contributes only inside its active sigma window AND step window (a 0/1 gate folded
+    into its mask). Conformer terms share the conf window; distance/RMSD/group have their
+    own. RMSD is summed regardless of ``include_distance`` (the CG solver calls with
+    ``include_distance=False``). ``sigma=None``/``step=None`` disable that axis's gating.
     """
-    cg, sigma_gate = _gates(prepared, sigma)
+    cg, sigma_gate = _gates(prepared, sigma, step)
     ene = 0.0
     for v in term_energies(
         _LEAF_FNS, prepared, positions, cg, sigma_gate, include_distance
@@ -383,11 +395,11 @@ def total_energy(positions, prepared, sigma=None, include_distance=True):
     return ene
 
 
-def energy_breakdown(positions, prepared, sigma=None):
+def energy_breakdown(positions, prepared, sigma=None, step=None):
     """Per-term restraint energies (same maths + gating as ``total_energy``), as a
     ``{bond, angle, chiral, improper, cistrans, vdw, distance, rmsd}`` float dict for callers
     that report each term's contribution (e.g. ``finalize`` logging)."""
-    cg, sigma_gate = _gates(prepared, sigma)
+    cg, sigma_gate = _gates(prepared, sigma, step)
     out = dict.fromkeys(BREAKDOWN_KEYS, 0.0)
     for k, v in term_energies(
         _LEAF_FNS, prepared, positions, cg, sigma_gate, include_distance=True

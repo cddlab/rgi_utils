@@ -1,11 +1,11 @@
 """Scan-friendly wrapper around a pure restraint minimizer.
 
 JAX tools run the restraint minimizer INSIDE the diffusion ``lax.scan`` via a pure
-``(flat_coords, sigma) -> flat_coords`` closure (``CombinedRestraints.get_minimizer``),
+``(flat_coords, sigma, step) -> flat_coords`` closure (``CombinedRestraints.get_minimizer``),
 rather than calling ``CombinedRestraints.minimize`` per step like the eager torch tools.
 ``ScanMinimizer`` bundles that closure with its ``CombinedRestraints`` and exposes the
 duck-typed interface the network consumes — ``is_active()`` / ``minimize_gpu(positions,
-sigma)`` (plus ``n_active`` / ``finalize`` for host-side logging) — handling the only
+sigma, step)`` (plus ``n_active`` / ``finalize`` for host-side logging) — handling the only
 per-call shaping the model needs: flatten the coordinate tensor to ``(-1, 3)`` for the
 minimizer and restore the original shape. The flat ``(n_atom, 3)`` layout is the one the
 active-site indices address, so any tool whose per-step coordinate tensor carries extra
@@ -23,7 +23,8 @@ class ScanMinimizer:
     """Bundle a ``CombinedRestraints`` with its pure minimizer for in-scan use.
 
     Network code consumes this purely by duck typing: ``is_active()`` and
-    ``minimize_gpu(positions, sigma)`` (plus ``n_active`` / ``finalize`` for logging).
+    ``minimize_gpu(positions, sigma, step)`` (plus ``n_active`` / ``finalize`` for
+    logging).
     """
 
     def __init__(self, rgi, minimizer) -> None:
@@ -39,20 +40,22 @@ class ScanMinimizer:
         spec = getattr(self._rgi, "spec", None)
         return int(spec.n_active) if spec is not None else 0
 
-    def minimize_gpu(self, positions, sigma):
+    def minimize_gpu(self, positions, sigma, step=0):
         """One restraint-minimization step on active atoms inside the diffusion scan.
 
         ``positions`` is the per-step coordinate tensor; it is flattened to ``(-1, 3)``
         for the pure minimizer (whose active-site indices address a flat atom axis) and
-        restored to its original shape. The minimizer is pure and gated on the noise
-        level, so this stays JIT-compiled inside ``lax.scan`` / ``lax.vmap``. Reshaping
-        is shape-agnostic (it reads no tool-specific dims), so it works for any layout.
-        """
+        restored to its original shape. ``sigma`` is the noise level and ``step`` the
+        diffusion step index (both gate the restraints; ``step`` is a traced scalar inside
+        the scan). The minimizer is pure, so this stays JIT-compiled inside ``lax.scan`` /
+        ``lax.vmap``. Reshaping is shape-agnostic (it reads no tool-specific dims), so it
+        works for any layout. ``step`` defaults to 0 so a tool that threads no step counter
+        (i.e. uses only sigma windows) keeps working unchanged."""
         if self._minimizer is None:
             return positions
         shape = positions.shape
         flat = positions.reshape(-1, 3)
-        return self._minimizer(flat, sigma).reshape(shape)
+        return self._minimizer(flat, sigma, step).reshape(shape)
 
     def finalize(self, positions, istep: int = 0) -> None:
         """Log per-term restraint energy of a final structure (host-side, after the

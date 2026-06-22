@@ -100,11 +100,11 @@ def test_custom_energy_parity_3backend():
     assert spec.has_custom() and len(spec.custom) == 1
     pos = _positions(spec)
 
-    e_np = float(build_terms(spec.custom, "numpy")[0][3](pos))
+    e_np = float(build_terms(spec.custom, "numpy")[0][-1](pos))
     e_t = float(
-        build_terms(spec.custom, "torch")[0][3](torch.tensor(pos, dtype=torch.float64))
+        build_terms(spec.custom, "torch")[0][-1](torch.tensor(pos, dtype=torch.float64))
     )
-    e_j = float(build_terms(spec.custom, "jax")[0][3](jnp.asarray(pos)))
+    e_j = float(build_terms(spec.custom, "jax")[0][-1](jnp.asarray(pos)))
     assert e_np > 0.0
     assert abs(e_np - e_t) < 1e-6, f"numpy={e_np} torch={e_t}"
     assert abs(e_np - e_j) < 1e-6, f"numpy={e_np} jax={e_j}"
@@ -119,16 +119,16 @@ def test_custom_grad_matches_fd():
 
     spec = _sym_spec()
     pos = _positions(spec, seed=2)
-    np_clo = build_terms(spec.custom, "numpy")[0][3]
+    np_clo = build_terms(spec.custom, "numpy")[0][-1]
     g_fd = _fd_grad(lambda x: float(np_clo(x.reshape(spec.n_active, 3))), pos.flatten())
     g_fd = g_fd.reshape(spec.n_active, 3)
 
     pt = torch.tensor(pos, dtype=torch.float64, requires_grad=True)
-    build_terms(spec.custom, "torch")[0][3](pt).backward()
+    build_terms(spec.custom, "torch")[0][-1](pt).backward()
     assert np.allclose(pt.grad.numpy(), g_fd, atol=1e-4), (
         f"torch vs FD {np.abs(pt.grad.numpy() - g_fd).max()}"
     )
-    jax_clo = build_terms(spec.custom, "jax")[0][3]
+    jax_clo = build_terms(spec.custom, "jax")[0][-1]
     g_j = np.asarray(jax.grad(lambda x: jax_clo(x))(jnp.asarray(pos)))
     assert np.allclose(g_j, g_fd, atol=1e-4), f"jax vs FD {np.abs(g_j - g_fd).max()}"
 
@@ -154,11 +154,11 @@ def test_ctx_vocabulary_parity():
         ]
     )
     pos = _positions(spec, seed=4)
-    e_np = float(build_terms(spec.custom, "numpy")[0][3](pos))
+    e_np = float(build_terms(spec.custom, "numpy")[0][-1](pos))
     e_t = float(
-        build_terms(spec.custom, "torch")[0][3](torch.tensor(pos, dtype=torch.float64))
+        build_terms(spec.custom, "torch")[0][-1](torch.tensor(pos, dtype=torch.float64))
     )
-    e_j = float(build_terms(spec.custom, "jax")[0][3](jnp.asarray(pos)))
+    e_j = float(build_terms(spec.custom, "jax")[0][-1](jnp.asarray(pos)))
     assert abs(e_np - e_t) < 1e-6 and abs(e_np - e_j) < 1e-6
 
 
@@ -224,8 +224,8 @@ def test_code_ctx_restraint_parity_and_minimize():
         # parity vs the equivalent formula
         fspec = _dist_spec()
         pos = np.random.default_rng(7).standard_normal((2, 3))
-        a = float(build_terms(spec.custom, "numpy")[0][3](pos))
-        b = float(build_terms(fspec.custom, "numpy")[0][3](pos))
+        a = float(build_terms(spec.custom, "numpy")[0][-1](pos))
+        b = float(build_terms(fspec.custom, "numpy")[0][-1](pos))
         assert abs(a - b) < 1e-9, (a, b)
         # and it converges
         coords = torch.zeros((1, 2, 3), dtype=torch.float64)

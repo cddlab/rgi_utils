@@ -229,3 +229,67 @@ class TestConfigParsing:
         # explicit start_sigma is preserved
         assert cfg.dihedral_data[0].start_sigma == pytest.approx(1.0)
         assert cfg.dihedral_data[0].geom_type == "flat-bottomed"
+
+
+class TestAngleUnit:
+    def test_radians_unit_matches_degree_conversion(self):
+        """unit: radians takes the target verbatim; the default (degrees) converts. Both
+        must land on the same internal radian value for the equivalent input."""
+        deg = _angle({"harmonic": {"target_angle": 90.0}})
+        rad = _angle({"unit": "radians", "harmonic": {"target_angle": math.pi / 2}})
+        assert deg.target1 == pytest.approx(math.pi / 2)
+        assert rad.target1 == pytest.approx(math.pi / 2)
+        assert rad.target1 == pytest.approx(deg.target1)
+
+    def test_radians_unit_flat_bottomed_both_targets(self):
+        """unit applies to BOTH flat-bottomed targets of the entry."""
+        rad = _angle(
+            {
+                "unit": "radians",
+                "flat-bottomed": {"target_angle1": -0.5, "target_angle2": 0.5},
+            }
+        )
+        assert rad.target1 == pytest.approx(-0.5)
+        assert rad.target2 == pytest.approx(0.5)
+
+    def test_dihedral_radians_unit(self):
+        rad = _dihedral({"unit": "radians", "harmonic": {"target_dihedral": math.pi}})
+        assert rad.target1 == pytest.approx(math.pi)
+
+    def test_invalid_unit_raises(self):
+        with pytest.raises(ValueError, match="unit"):
+            _angle({"unit": "grad", "harmonic": {"target_angle": 90.0}})
+
+
+class TestStepWindow:
+    def test_step_window_parsed(self):
+        ad = _angle(
+            {"start_step": 5, "stop_step": 10, "harmonic": {"target_angle": 90.0}}
+        )
+        assert ad.start_step == pytest.approx(5.0)
+        assert ad.stop_step == pytest.approx(10.0)
+
+    def test_step_window_default_always_on(self):
+        ad = _angle({"harmonic": {"target_angle": 90.0}})
+        assert ad.start_step == float("-inf")
+        assert ad.stop_step == float("inf")
+
+    def test_sigma_and_step_windows_mutually_exclusive(self):
+        with pytest.raises(ValueError, match="mutually exclusive|not both"):
+            _angle(
+                {
+                    "start_sigma": 1.0,
+                    "start_step": 5,
+                    "harmonic": {"target_angle": 90.0},
+                }
+            )
+
+    def test_stop_sigma_with_stop_step_also_rejected(self):
+        with pytest.raises(ValueError, match="mutually exclusive|not both"):
+            _dihedral(
+                {
+                    "stop_sigma": 1.0,
+                    "stop_step": 50,
+                    "harmonic": {"target_dihedral": 180.0},
+                }
+            )

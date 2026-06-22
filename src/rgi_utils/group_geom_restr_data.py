@@ -4,9 +4,14 @@ These restrain the angle (3 groups) / dihedral (4 groups) formed by the centroid
 of atom groups — the angular analogue of the centroid-distance restraint in
 ``distance_restr_data.py``, and they mirror its config surface: the four restraint
 types ``harmonic`` / ``flat-bottomed`` / ``flat-bottomed1`` / ``flat-bottomed2`` and the
-``move`` key. Targets are given in DEGREES in the config and stored in RADIANS here
+``move`` key. Targets are given in DEGREES in the config by default (set
+``unit: radians`` on the entry to give them in radians) and stored in RADIANS here
 (matching the energy layer, and symmetric with the distance restraint storing
 Angstroms).
+
+Each entry is gated on EITHER a sigma window (``start_sigma`` / ``stop_sigma``, noise
+level) OR a step window (``start_step`` / ``stop_step``, diffusion step index) — the two
+are mutually exclusive (see ``check_window_exclusive``); an omitted window is always-on.
 
 Geometry convention (mirrors the conformer angle/dihedral terms):
   * angle    — groups 1-2-3, the VERTEX is group 2 (``centroid1 - centroid2 - centroid3``);
@@ -33,7 +38,7 @@ from __future__ import annotations
 import logging
 import math
 
-from rgi_utils._config_util import warn_unknown_keys
+from rgi_utils._config_util import check_window_exclusive, warn_unknown_keys
 from rgi_utils.atom_context import FrameworkAdapter
 from rgi_utils.selection import AtomSelector
 
@@ -46,6 +51,9 @@ _KNOWN_ANGLE_KEYS = {
     "weight",
     "start_sigma",
     "stop_sigma",
+    "start_step",
+    "stop_step",
+    "unit",
     "move",
     "harmonic",
     "flat-bottomed",
@@ -89,15 +97,32 @@ def _parse_geom_type(config: dict, base: str):
     """Parse the distance-style restraint-type block of an angle/dihedral entry.
 
     ``base`` is ``"target_angle"`` or ``"target_dihedral"``; the harmonic block carries
-    ``base``, the others ``base + "1"`` / ``base + "2"``. Values are DEGREES in the
-    config; returns ``(geom_type_str, target1_rad, target2_rad)`` (unused -> 0.0), or
-    ``(None, None, None)`` if no type block is present. Mirrors ``DistanceData``.
+    ``base``, the others ``base + "1"`` / ``base + "2"``. Targets are DEGREES by default;
+    set ``unit: radians`` on the entry to give them in radians instead. Returns
+    ``(geom_type_str, target1_rad, target2_rad)`` (unused -> 0.0; always RADIANS
+    internally), or ``(None, None, None)`` if no type block is present. Mirrors
+    ``DistanceData``.
     """
+    # Targets are stored internally in RADIANS. The config gives them in DEGREES unless
+    # `unit: radians` is set on the entry, in which case `conv` is the identity. The
+    # flat-bottomed `t1 < t2` ordering check is unit-agnostic (monotone), so it runs on
+    # the raw values before conversion.
+    unit = str(config.get("unit", "degrees")).strip().lower()
+    if unit not in ("degrees", "radians"):
+        raise ValueError(
+            f"angle/dihedral 'unit' must be 'degrees' or 'radians' "
+            f"(got {config.get('unit')!r})"
+        )
+    conv = (
+        (lambda x: float(x))
+        if unit == "radians"
+        else (lambda x: math.radians(float(x)))
+    )
     if "harmonic" in config:
         t = config["harmonic"].get(base)
         if t is None:
             raise ValueError(f"harmonic needs {base}")
-        return "harmonic", math.radians(float(t)), 0.0
+        return "harmonic", conv(t), 0.0
     if "flat-bottomed" in config:
         t1 = config["flat-bottomed"].get(f"{base}1")
         t2 = config["flat-bottomed"].get(f"{base}2")
@@ -106,17 +131,17 @@ def _parse_geom_type(config: dict, base: str):
         t1, t2 = float(t1), float(t2)
         if t1 >= t2:
             raise ValueError(f"{base}1 must be smaller than {base}2")
-        return "flat-bottomed", math.radians(t1), math.radians(t2)
+        return "flat-bottomed", conv(t1), conv(t2)
     if "flat-bottomed1" in config:
         t1 = config["flat-bottomed1"].get(f"{base}1")
         if t1 is None:
             raise ValueError(f"flat-bottomed1 needs {base}1")
-        return "flat-bottomed1", math.radians(float(t1)), 0.0
+        return "flat-bottomed1", conv(t1), 0.0
     if "flat-bottomed2" in config:
         t2 = config["flat-bottomed2"].get(f"{base}2")
         if t2 is None:
             raise ValueError(f"flat-bottomed2 needs {base}2")
-        return "flat-bottomed2", 0.0, math.radians(float(t2))
+        return "flat-bottomed2", 0.0, conv(t2)
     return None, None, None
 
 
@@ -170,12 +195,22 @@ def _parse_common(
     _w = config.get("weight")
     if _w is not None:
         self.weight = float(_w)
+    # sigma-window XOR step-window (mutually exclusive gates); shared check + message.
+    check_window_exclusive(config, "angle/dihedral_restraints_config entry")
     _ss = config.get("start_sigma")
     if _ss is not None:
         self.start_sigma = float(_ss)
     _stop = config.get("stop_sigma")
     if _stop is not None:
         self.stop_sigma = float(_stop)
+    # step-window: active for start_step <= step <= stop_step (omitted -> -inf/+inf =
+    # always; gate ANDs with the sigma window, which stays at its always-on default here).
+    _sa = config.get("start_step")
+    if _sa is not None:
+        self.start_step = float(_sa)
+    _so = config.get("stop_step")
+    if _so is not None:
+        self.stop_step = float(_so)
     self.move_free = _parse_move(config, n_groups, default_free)
     self.geom_type, self.target1, self.target2 = _parse_geom_type(config, base)
 
@@ -203,6 +238,8 @@ class AngleRestraintData:
     run_restr: bool
     start_sigma: float
     stop_sigma: float
+    start_step: float  # step-window lower bound (-inf = always); XOR the sigma window
+    stop_step: float  # step-window upper bound (+inf = always)
 
     def __init__(self):
         self.atom_selection1 = None
@@ -219,6 +256,10 @@ class AngleRestraintData:
         self.run_restr = None
         self.start_sigma = None  # from_dict defaults None -> +inf (every step)
         self.stop_sigma = -1.0  # never released (active down to sigma=0)
+        self.start_step = float(
+            "-inf"
+        )  # step-window (omitted -> always); XOR sigma win
+        self.stop_step = float("inf")
 
     def set_config(self, config: dict):
         warn_unknown_keys(
@@ -295,6 +336,8 @@ class DihedralRestraintData:
     run_restr: bool
     start_sigma: float
     stop_sigma: float
+    start_step: float  # step-window lower bound (-inf = always); XOR the sigma window
+    stop_step: float  # step-window upper bound (+inf = always)
 
     def __init__(self):
         self.atom_selection1 = None
@@ -313,6 +356,10 @@ class DihedralRestraintData:
         self.run_restr = None
         self.start_sigma = None  # from_dict defaults None -> +inf (every step)
         self.stop_sigma = -1.0  # never released
+        self.start_step = float(
+            "-inf"
+        )  # step-window (omitted -> always); XOR sigma win
+        self.stop_step = float("inf")
 
     def set_config(self, config: dict):
         warn_unknown_keys(

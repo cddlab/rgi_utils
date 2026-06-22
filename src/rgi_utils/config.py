@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from rgi_utils._config_util import coerce_bool
+from rgi_utils._config_util import check_window_exclusive, coerce_bool
 from rgi_utils.custom.data import CustomData
 from rgi_utils.distance_restr_data import DistanceData
 from rgi_utils.group_geom_restr_data import AngleRestraintData, DihedralRestraintData
@@ -22,12 +22,17 @@ logger = logging.getLogger(__name__)
 @dataclass
 class RestraintsConfig:
     verbose: bool = False
-    gpu: bool = False
+    gpu: bool = True
     backend: str | None = None  # "numpy" | "torch" | "jax"; None = auto
     method: str = "CG"
     max_iter: int = 100
     conf_start_sigma: float = -1.0  # one value for all conformer (ligand) restraints
     conf_stop_sigma: float = -1.0  # shared conformer lower bound; -1 = never released
+    # shared conformer STEP window (the alternative gate axis to the sigma window above):
+    # active for conf_start_step <= step <= conf_stop_step. -inf/+inf = always (default).
+    # Mutually exclusive with the conformer sigma window.
+    conf_start_step: float = float("-inf")
+    conf_stop_step: float = float("inf")
     conformer_config: dict = field(default_factory=dict)
     distance_data: list = field(default_factory=list)
     rmsd_data: list = field(default_factory=list)
@@ -92,16 +97,25 @@ class RestraintsConfig:
                 "conformer_restraints_config: 'dihedral' was renamed to 'cistrans' "
                 "(it restrains acyclic double bonds' cis/trans (E/Z) geometry)."
             )
+        # conformer terms share ONE gate window. Like every other restraint it is EITHER
+        # a sigma window OR a step window (mutually exclusive); reuse the shared check.
+        check_window_exclusive(conformer_config, "conformer_restraints_config")
         _css = conformer_config.get("start_sigma")
         conf_start_sigma = float(_css) if _css is not None else _ALWAYS_ON
         # shared conformer lower bound: release conformer terms below this noise level
         # (omitted -> -1 = off). Window: conf_stop <= sigma <= conf_start
         _csstop = conformer_config.get("stop_sigma")
         conf_stop_sigma = float(_csstop) if _csstop is not None else -1.0
-        # Coerce gpu to a real bool via the shared helper: a quoted/string value (e.g.
-        # "false"/"no"/"off"/"0") is truthy in Python and would otherwise pick the torch
-        # (GPU) backend for a CPU-intended run.
-        gpu = coerce_bool(config.get("gpu", False))
+        # shared conformer STEP window (omitted -> -inf/+inf = always): active for
+        # conf_start_step <= step <= conf_stop_step (the alternative gate axis).
+        _csa = conformer_config.get("start_step")
+        conf_start_step = float(_csa) if _csa is not None else float("-inf")
+        _cso = conformer_config.get("stop_step")
+        conf_stop_step = float(_cso) if _cso is not None else float("inf")
+        # Default GPU (gpu:true): minimize on whatever device the coords live on. Coerce
+        # via the shared helper so a quoted/string value (e.g. "false"/"no"/"off"/"0") --
+        # truthy in plain Python -- correctly turns the GPU off for a CPU-intended run.
+        gpu = coerce_bool(config.get("gpu", True))
         # Normalize/validate the explicit backend. The numpy/scipy optimizer backend
         # was removed (gpu:false now runs torch on CPU), so reject it loudly rather
         # than silently doing something else.
@@ -127,6 +141,8 @@ class RestraintsConfig:
             # one start_sigma for all conformer terms (omitted -> +inf = every step)
             conf_start_sigma=conf_start_sigma,
             conf_stop_sigma=conf_stop_sigma,
+            conf_start_step=conf_start_step,
+            conf_stop_step=conf_stop_step,
             conformer_config=conformer_config,
         )
         for entry in config.get("distance_restraints_config", []) or []:

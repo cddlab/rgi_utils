@@ -33,7 +33,7 @@ class _FakeRgi:
 def test_minimize_gpu_flattens_and_restores_shape():
     seen = {}
 
-    def minimizer(flat, sigma):
+    def minimizer(flat, sigma, step=0):
         seen["shape"] = flat.shape
         seen["sigma"] = sigma
         return flat + 1.0  # any transform; shape round-trip is what we check
@@ -51,7 +51,7 @@ def test_minimize_gpu_shape_agnostic():
     # an already-flat (n, 3) tensor round-trips unchanged in shape
     seen = {}
 
-    def minimizer(flat, sigma):
+    def minimizer(flat, sigma, step=0):
         seen["shape"] = flat.shape
         return flat
 

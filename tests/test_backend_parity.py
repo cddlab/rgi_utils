@@ -98,6 +98,8 @@ def _make_spec(
         mask=np.array([1.0, 1.0]),
         start_sigma=np.array([100.0, 5.0]),  # different per-distance start_sigma
         stop_sigma=np.array([-1.0, -1.0]),  # -1 = never released (off)
+        start_step=np.full(2, float("-inf")),  # step window unused -> always-on
+        stop_step=np.full(2, float("inf")),
     )
     # large r_min so these pairs are "clashing" (non-zero VdW energy) for the
     # random positions; the third pair is masked out (padding).
@@ -130,6 +132,8 @@ def _make_spec(
             mask=np.array([1.0, 1.0]),
             start_sigma=np.array([100.0, 5.0]),  # different per-restraint start_sigma
             stop_sigma=np.array([-1.0, -1.0]),
+            start_step=np.full(2, float("-inf")),  # step window unused -> always-on
+            stop_step=np.full(2, float("inf")),
         )
     )
     # group-centroid dihedral: 1 harmonic restraint + 1 masked padding row (per-restraint
@@ -156,6 +160,8 @@ def _make_spec(
             mask=np.array([1.0, 0.0]),  # second restraint is masked padding
             start_sigma=np.array([100.0, 100.0]),
             stop_sigma=np.array([-1.0, -1.0]),
+            start_step=np.full(2, float("-inf")),  # step window unused -> always-on
+            stop_step=np.full(2, float("inf")),
         )
     )
     return RestraintSpec(
@@ -809,6 +815,8 @@ def test_rmsd_stop_sigma_release_window():
             weight=np.array([1.0]),
             start_sigma=np.array([10.0]),
             stop_sigma=np.array([2.0]),
+            start_step=np.full(1, float("-inf")),
+            stop_step=np.full(1, float("inf")),
             mask=np.array([1.0]),
         ),
         conf_start_sigma=-1.0,
@@ -869,6 +877,8 @@ def test_conformer_distance_stop_sigma_window():
             mask=np.array([1.0]),
             start_sigma=np.array([10.0]),
             stop_sigma=np.array([2.0]),
+            start_step=np.full(1, float("-inf")),
+            stop_step=np.full(1, float("inf")),
         ),
         conf_start_sigma=10.0,
         conf_stop_sigma=2.0,
@@ -889,6 +899,77 @@ def test_conformer_distance_stop_sigma_window():
         assert e_below == pytest.approx(0.0, abs=1e-9), (name, e_below)
         assert e_in > 1e-3, (name, e_in)
         assert e_above == pytest.approx(0.0, abs=1e-9), (name, e_above)
+
+
+def test_step_window_gating_parity():
+    """The STEP window (start_step/stop_step) gates the CONFORMER terms (shared
+    conf_start_step/conf_stop_step) and the DISTANCE terms (per-restraint) on the
+    diffusion STEP index, exactly as the sigma window gates on noise: energy is 0 for
+    step < start_step, active in [start_step, stop_step], 0 above — identical across
+    backends. ``sigma=None`` so only the step axis gates (the two axes are mutually
+    exclusive per restraint anyway). Mirrors test_conformer_distance_stop_sigma_window."""
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.energy import jax_energy, torch_energy
+    from rgi_utils.spec import BondArrays, DistanceArrays, RestraintSpec
+
+    # bond 0-1 stretched (3 vs r0 1.5) and dist groups off target (centroid gap ~6.7 vs 2)
+    pos = np.array([[0.0, 0, 0], [3.0, 0, 0], [0, 5.0, 0], [0, 8.0, 0]])
+    spec = RestraintSpec(
+        n_active=4,
+        active_sites=np.arange(4),
+        bond=BondArrays(
+            idx=np.array([[0, 1]], dtype=np.int64),
+            r0=np.array([1.5]),
+            slack=np.array([0.0]),
+            weight=np.array([1.0]),
+            half=np.array([0.0]),
+            mask=np.array([1.0]),
+        ),
+        distance=DistanceArrays(
+            grp1_idx=np.array([[0, 1]], dtype=np.int64),
+            grp2_idx=np.array([[2, 3]], dtype=np.int64),
+            grp1_mask=np.array([[1.0, 1.0]]),
+            grp2_mask=np.array([[1.0, 1.0]]),
+            target1=np.array([2.0]),
+            target2=np.array([0.0]),
+            dist_type=np.array([0], dtype=np.int64),
+            move_mode=np.array([0], dtype=np.int64),
+            mask=np.array([1.0]),
+            # sigma window always-on (the unused axis); the step window [5, 10] gates.
+            start_sigma=np.array([float("inf")]),
+            stop_sigma=np.array([-1.0]),
+            start_step=np.array([5.0]),
+            stop_step=np.array([10.0]),
+        ),
+        conf_start_sigma=float("inf"),
+        conf_stop_sigma=-1.0,
+        conf_start_step=5.0,
+        conf_stop_step=10.0,
+    )
+    for name, mod, p, prep in (
+        ("numpy", numpy_energy, pos, numpy_energy.prepare_spec(spec)),
+        (
+            "torch",
+            torch_energy,
+            torch.tensor(pos),
+            torch_energy.prepare_spec(spec, dtype=torch.float64),
+        ),
+        ("jax", jax_energy, jnp.asarray(pos), jax_energy.prepare_spec(spec)),
+    ):
+        e_before = float(
+            mod.total_energy(p, prep, sigma=None, step=3)
+        )  # < start -> off
+        e_in = float(
+            mod.total_energy(p, prep, sigma=None, step=7)
+        )  # in window -> active
+        e_after = float(mod.total_energy(p, prep, sigma=None, step=12))  # > stop -> off
+        assert e_before == pytest.approx(0.0, abs=1e-9), (name, e_before)
+        assert e_in > 1e-3, (name, e_in)
+        assert e_after == pytest.approx(0.0, abs=1e-9), (name, e_after)
 
 
 def test_chiral_flat_bottom_zero_at_reference():

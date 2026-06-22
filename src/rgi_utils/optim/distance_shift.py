@@ -27,8 +27,10 @@ restraints reach the fixed point on pass 1, so later passes are no-ops).
 The three backends share the maths; only the gather/scatter primitives differ.
 ``prepared`` is the ``distance`` dict that ``energy.*_energy.prepare_spec`` already
 builds (grp1_idx/grp2_idx local indices, grp1_mask/grp2_mask, target1/target2,
-dist_type, move_mode, mask, start_sigma, stop_sigma). ``move_mode`` may be absent in a
-hand-built dict -> treated as 0 (both).
+dist_type, move_mode, mask, start_sigma, stop_sigma, start_step, stop_step). The gate is
+the active sigma window AND the active step window (a restraint uses one or the other;
+the unused axis is always-on). ``move_mode`` / the ``*_step`` keys may be absent in a
+hand-built dict -> ``move_mode`` treated as 0 (both), step window treated as always-on.
 """
 
 from __future__ import annotations
@@ -40,7 +42,7 @@ _EPS = 1e-12
 _COUPLED_PASSES = 16
 
 
-def apply_distance_shift_numpy(active, d, sigma=None):
+def apply_distance_shift_numpy(active, d, sigma=None, step=None):
     """active: (..., n_active, 3) float64. Returns a shifted copy."""
     active = np.array(active, dtype=np.float64, copy=True)
     idx1, idx2 = d["grp1_idx"], d["grp2_idx"]
@@ -58,6 +60,11 @@ def apply_distance_shift_numpy(active, d, sigma=None):
         gate = gate * (s <= d["start_sigma"]).astype(np.float64)
         # release below stop_sigma (-1 default -> s>=-1 always true -> never released)
         gate = gate * (s >= d["stop_sigma"]).astype(np.float64)
+    if (
+        step is not None and "start_step" in d
+    ):  # step window (ANDed; -inf/+inf = always)
+        gate = gate * (step >= d["start_step"]).astype(np.float64)
+        gate = gate * (step <= d["stop_step"]).astype(np.float64)
     passes = 1 if idx1.shape[0] <= 1 else _COUPLED_PASSES
     for _ in range(passes):
         g1 = active[..., idx1, :]
@@ -128,7 +135,7 @@ def _scatter_add_numpy(active, flat_idx, vals):
     active[...] = flat.reshape(active.shape)
 
 
-def apply_distance_shift_torch(active, d, sigma=None):
+def apply_distance_shift_torch(active, d, sigma=None, step=None):
     """active: (..., n_active, 3) torch tensor. Returns a shifted tensor (the caller
     runs this under no_grad / inference_mode(False); pure arithmetic, no autograd)."""
     import torch
@@ -148,6 +155,11 @@ def apply_distance_shift_torch(active, d, sigma=None):
         gate = gate * (s <= d["start_sigma"]).to(m1.dtype)
         # release below stop_sigma (-1 default -> s>=-1 always true -> never released)
         gate = gate * (s >= d["stop_sigma"]).to(m1.dtype)
+    if (
+        step is not None and "start_step" in d
+    ):  # step window (ANDed; -inf/+inf = always)
+        gate = gate * (step >= d["start_step"]).to(m1.dtype)
+        gate = gate * (step <= d["stop_step"]).to(m1.dtype)
     fidx1, fidx2 = idx1.reshape(-1), idx2.reshape(-1)
     passes = 1 if idx1.shape[0] <= 1 else _COUPLED_PASSES
     for _ in range(passes):
@@ -168,9 +180,9 @@ def apply_distance_shift_torch(active, d, sigma=None):
     return active
 
 
-def apply_distance_shift_jax(active, d, sigma):
-    """active: (..., n_active, 3) jax array. Pure + JIT/scan-able. ``sigma`` is a
-    (traced) scalar; gating folds into the per-restraint delta."""
+def apply_distance_shift_jax(active, d, sigma, step=None):
+    """active: (..., n_active, 3) jax array. Pure + JIT/scan-able. ``sigma`` (and the
+    optional ``step``) are (traced) scalars; gating folds into the per-restraint delta."""
     import jax.numpy as jnp
 
     idx1, idx2 = d["grp1_idx"], d["grp2_idx"]
@@ -188,6 +200,12 @@ def apply_distance_shift_jax(active, d, sigma):
         gate = gate * (s <= d["start_sigma"]).astype(gate.dtype)
         # release below stop_sigma (-1 default -> s>=-1 always true -> never released)
         gate = gate * (s >= d["stop_sigma"]).astype(gate.dtype)
+    if (
+        step is not None and "start_step" in d
+    ):  # step window (ANDed; -inf/+inf = always)
+        st = jnp.asarray(step)
+        gate = gate * (st >= d["start_step"]).astype(gate.dtype)
+        gate = gate * (st <= d["stop_step"]).astype(gate.dtype)
     fidx1, fidx2 = idx1.reshape(-1), idx2.reshape(-1)
     passes = 1 if idx1.shape[0] <= 1 else _COUPLED_PASSES
     for _ in range(passes):

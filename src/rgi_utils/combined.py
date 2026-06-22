@@ -82,7 +82,9 @@ class CombinedRestraints:
         selections: dict | None = None,
         weight: float = 1.0,
         start_sigma=None,
-        stop_sigma: float = -1.0,
+        stop_sigma=None,
+        start_step=None,
+        stop_step=None,
         name: str = "custom",
     ) -> "CombinedRestraints":
         """Add a custom restraint in code (the quick / throwaway path) — call BEFORE setup.
@@ -91,16 +93,28 @@ class CombinedRestraints:
         (a formula string in the same DSL as config) + a ``selections`` map. Both use the
         shared ctx vocabulary (geometry + math + penalty) and run on every backend.
         Equivalent to one ``custom_restraints_config`` entry; merged into the spec at
-        ``setup``. Returns self for chaining."""
+        ``setup``. Gate on EITHER a sigma window (``start_sigma`` / ``stop_sigma``) OR a
+        step window (``start_step`` / ``stop_step``) — not both (mutually exclusive); each
+        window key is forwarded only when given (omitted -> the always-on default).
+        Returns self for chaining."""
         from rgi_utils.custom.data import CustomData
 
         if (fn is None) == (energy is None):
             raise ValueError(
                 "add_custom: pass exactly one of fn (callable) or energy (formula string)"
             )
-        entry: dict = {"weight": weight, "stop_sigma": stop_sigma, "name": name}
+        # Only forward the window keys the caller actually set, so the mutually-exclusive
+        # sigma/step check in CustomData.set_config sees a clean entry (always including
+        # stop_sigma would otherwise collide with a step window).
+        entry: dict = {"weight": weight, "name": name}
         if start_sigma is not None:
             entry["start_sigma"] = start_sigma
+        if stop_sigma is not None:
+            entry["stop_sigma"] = stop_sigma
+        if start_step is not None:
+            entry["start_step"] = start_step
+        if stop_step is not None:
+            entry["stop_step"] = stop_step
         if selections is not None:
             entry["selections"] = selections
         entry["fn" if fn is not None else "energy"] = fn if fn is not None else energy
@@ -162,6 +176,8 @@ class CombinedRestraints:
             elements=elements,
             conf_start_sigma=cfg.conf_start_sigma,
             conf_stop_sigma=cfg.conf_stop_sigma,
+            conf_start_step=cfg.conf_start_step,
+            conf_stop_step=cfg.conf_stop_step,
             rmsd_restraints=cfg.rmsd_data,
             angle_restraints=cfg.angle_data,
             dihedral_restraints=cfg.dihedral_data,
@@ -249,6 +265,16 @@ class CombinedRestraints:
                 "(conf_stop_sigma <= sigma <= conf_start_sigma) is EMPTY and the "
                 "conformer terms NEVER activate — set conf_stop_sigma below it"
             )
+        # empty STEP window (conf_stop_step < conf_start_step) — same silent-no-op trap as
+        # the empty sigma window above; the step window is the alternative gate axis.
+        if spec.has_conformer() and float(
+            getattr(spec, "conf_stop_step", float("inf"))
+        ) < float(getattr(spec, "conf_start_step", float("-inf"))):
+            errors.append(
+                "conformer conf_stop_step < conf_start_step, so the active step window "
+                "(conf_start_step <= step <= conf_stop_step) is EMPTY and the conformer "
+                "terms NEVER activate — set conf_stop_step above conf_start_step"
+            )
         d = spec.distance
         if d is not None and d.mask.sum() > 0:
             active = np.asarray(d.mask) > 0
@@ -263,6 +289,13 @@ class CombinedRestraints:
                 errors.append(
                     "one or more distance restraints have stop_sigma > start_sigma, so "
                     "their active window is EMPTY and they NEVER activate"
+                )
+            sstep = np.asarray(d.start_step)[active]
+            estep = np.asarray(d.stop_step)[active]
+            if estep.size and np.any(estep < sstep):
+                errors.append(
+                    "one or more distance restraints have stop_step < start_step, so "
+                    "their active step window is EMPTY and they NEVER activate"
                 )
         rm = spec.rmsd
         if rm is not None and rm.mask.sum() > 0:
@@ -282,6 +315,13 @@ class CombinedRestraints:
                     "one or more RMSD restraints have stop_sigma > start_sigma, so the "
                     "active window (stop_sigma <= sigma <= start_sigma) is EMPTY and "
                     "they NEVER activate — set stop_sigma below start_sigma"
+                )
+            sstep = np.asarray(rm.start_step)[active]
+            estep = np.asarray(rm.stop_step)[active]
+            if estep.size and np.any(estep < sstep):
+                errors.append(
+                    "one or more RMSD restraints have stop_step < start_step, so their "
+                    "active step window is EMPTY and they NEVER activate"
                 )
         # group-centroid angle/dihedral: same per-restraint gate as distance/rmsd, so the
         # same silent-no-op traps apply (start_sigma < 0 never fires; stop > start is an
@@ -305,6 +345,13 @@ class CombinedRestraints:
                     f"one or more group {label} restraints have stop_sigma > "
                     f"start_sigma, so their active window is EMPTY and they NEVER "
                     f"activate — set stop_sigma below start_sigma"
+                )
+            sstep = np.asarray(arr.start_step)[active]
+            estep = np.asarray(arr.stop_step)[active]
+            if estep.size and np.any(estep < sstep):
+                errors.append(
+                    f"one or more group {label} restraints have stop_step < start_step, "
+                    f"so their active step window is EMPTY and they NEVER activate"
                 )
         for m in msgs:
             logger.warning(m)
@@ -353,29 +400,33 @@ class CombinedRestraints:
         return self.spec is not None and self.spec.is_active()
 
     def get_minimizer(self):
-        """Return the pure ``(coords, sigma) -> coords`` jax minimizer (jax backend)."""
+        """Return the pure ``(coords, sigma, step) -> coords`` jax minimizer (jax
+        backend). ``step`` is the diffusion step index (for the step-window gate); a JAX
+        tool that does not thread a step counter can pass a constant (e.g. 0)."""
         return self._minimize_fn
 
     def minimize(self, coords, istep: int = 0, sigma=None):
         """Optimize coordinates for one denoising step. Returns the (possibly new)
-        coordinate object. torch mutates in place; jax returns a new array."""
+        coordinate object. torch mutates in place; jax returns a new array. ``istep`` is
+        the diffusion step index, threaded to the optimizer for the step-window gate
+        (alongside ``sigma`` for the sigma-window gate)."""
         if not self.is_active():
             return coords
         b = self._backend
-        # Per-restraint gating now lives in the energy (sigma <= start_sigma per
-        # term); each optimizer additionally skips the step when sigma exceeds
-        # every restraint's start_sigma (spec.max_start_sigma()).
+        # Per-restraint gating lives in the energy (active sigma window AND active step
+        # window per term); each optimizer additionally skips the whole step when sigma
+        # exceeds every restraint's start_sigma (spec.max_start_sigma()).
         if b == "jax":
-            # sigma=None means "no gating, all restraints active" (matching the torch
-            # branch). The gate is `sigma <= start_sigma`, so the None sentinel must be
-            # LOW (-inf) to pass every gate; 1e30 would skip everything.
+            # sigma=None means "no sigma gating, all restraints active" (matching the
+            # torch branch). The gate is `sigma <= start_sigma`, so the None sentinel must
+            # be LOW (-inf) to pass every gate; 1e30 would skip everything.
             s = sigma if sigma is not None else float("-inf")
-            return self._minimize_fn(coords, s)
+            return self._minimize_fn(coords, s, istep)
         if b == "torch":
-            return self._minimize_torch(coords, sigma)
+            return self._minimize_torch(coords, sigma, istep)
         return coords
 
-    def _minimize_torch(self, coords, sigma=None):
+    def _minimize_torch(self, coords, sigma=None, step=None):
         """Run the torch optimizer (the only CPU/GPU restraint optimizer — the
         numpy/scipy backend was removed).
 
@@ -390,20 +441,20 @@ class CombinedRestraints:
         if isinstance(coords, torch.Tensor):
             if not self.config.gpu and coords.device.type != "cpu":
                 cpu_coords = coords.detach().to("cpu")
-                self._optimizer.minimize(cpu_coords, sigma=sigma)
+                self._optimizer.minimize(cpu_coords, sigma=sigma, step=step)
                 with torch.no_grad():
                     coords.copy_(
                         cpu_coords.to(device=coords.device, dtype=coords.dtype)
                     )
             else:
-                self._optimizer.minimize(coords, sigma=sigma)
+                self._optimizer.minimize(coords, sigma=sigma, step=step)
             return coords
 
         import numpy as np
 
         arr = np.asarray(coords)
         t = torch.as_tensor(arr, dtype=torch.float64)
-        self._optimizer.minimize(t, sigma=sigma)
+        self._optimizer.minimize(t, sigma=sigma, step=step)
         out = t.detach().cpu().numpy()
         if (
             isinstance(arr, np.ndarray)
@@ -483,7 +534,10 @@ class CombinedRestraints:
         )
         active = c[..., self.spec.active_sites, :]
         out: dict = {}
-        for name, _start, _stop, closure in build_terms(self.spec.custom, "numpy"):
+        # finalize is diagnostic + ungated (no sigma/step), so the window bounds are unused.
+        for name, _ss, _es, _sstep, _estep, closure in build_terms(
+            self.spec.custom, "numpy"
+        ):
             out[name] = out.get(name, 0.0) + float(closure(active))
         return out
 

@@ -126,14 +126,15 @@ def make_minimizer(
     max_iter: int = 100,
     method: str = "cg",
 ):
-    """Return ``minimize(coords, sigma) -> coords``.
+    """Return ``minimize(coords, sigma, step) -> coords``.
 
-    ``coords`` has shape (..., n_atom, 3). The returned function is pure and
-    JIT/vmap-able, so it runs inside the diffusion loop's ``hk.scan``/``hk.vmap``.
-    ``method='cg'`` (the default) runs the pure-jax ``_cg_minimize``; any other value
-    uses ``jaxopt.LBFGS`` (lazily imported). Per-restraint gating uses
-    ``spec.max_start_sigma()`` and the per-term masks baked into the spec, so there is
-    no ``start_sigma`` arg.
+    ``coords`` has shape (..., n_atom, 3); ``step`` is the diffusion step index (for the
+    step-window gate, alongside ``sigma`` for the sigma-window gate). The returned function
+    is pure and JIT/vmap-able, so it runs inside the diffusion loop's ``hk.scan``/``hk.vmap``
+    (``step`` is a traced scalar there). ``method='cg'`` (the default) runs the pure-jax
+    ``_cg_minimize``; any other value uses ``jaxopt.LBFGS`` (lazily imported). Per-restraint
+    gating uses ``spec.max_start_sigma()`` and the per-term masks baked into the spec, so
+    there is no ``start_sigma`` arg.
     """
     active_idx = jnp.asarray(spec.active_sites, dtype=jnp.int32)
     prepared = jax_energy.prepare_spec(spec)
@@ -168,13 +169,16 @@ def make_minimizer(
         vdw_weight = jnp.asarray(float(_vc.weight))
         conf_ss = jnp.asarray(float(spec.conf_start_sigma))
         conf_stop = jnp.asarray(float(getattr(spec, "conf_stop_sigma", -1.0)))
+        # conformer STEP window (the alternative gate axis; ANDed with the sigma window).
+        conf_sstep = jnp.asarray(float(getattr(spec, "conf_start_step", float("-inf"))))
+        conf_estep = jnp.asarray(float(getattr(spec, "conf_stop_step", float("inf"))))
 
-    def _descend(coords, sigma):
+    def _descend(coords, sigma, step):
         active = coords[..., active_idx, :]
         # 1) Distance restraints: closed-form rigid centroid translation (pure jnp, no
         #    solver) -- a centroid-distance restraint is 1-DOF. Gated per-restraint inside.
         if has_dist:
-            active = apply_distance_shift_jax(active, dist_prepared, sigma)
+            active = apply_distance_shift_jax(active, dist_prepared, sigma, step)
         # 2) Conformer + RMSD restraints: jaxopt on the non-distance energy (distance is
         #    applied above; total_energy(include_distance=False) covers conformer AND
         #    RMSD), plus the ligand-protein VdW term (gated on conf_start_sigma -- the
@@ -183,13 +187,23 @@ def make_minimizer(
         if has_conf or has_rmsd or has_vdw or has_group or has_custom:
             if has_vdw:
                 prot_pos = coords[..., vdw_prot_global, :]
-                # conformer window conf_stop <= sigma <= conf_start (conf_stop=-1 = off)
+                # conformer window: active sigma window (conf_stop <= sigma <= conf_start)
+                # AND active step window (conf_sstep <= step <= conf_estep). NOT a _TERMS
+                # entry, so this gate is maintained by hand (mirrors torch_optim).
                 _s = jnp.asarray(sigma)
-                in_win = (_s <= conf_ss) & (_s >= conf_stop)
+                _st = jnp.asarray(step)
+                in_win = (
+                    (_s <= conf_ss)
+                    & (_s >= conf_stop)
+                    & (_st >= conf_sstep)
+                    & (_st <= conf_estep)
+                )
                 vdw_w = jnp.where(in_win, vdw_weight, 0.0)
 
             def energy_fn(a):
-                e = jax_energy.total_energy(a, prepared, sigma, include_distance=False)
+                e = jax_energy.total_energy(
+                    a, prepared, sigma, step, include_distance=False
+                )
                 if has_vdw:
                     e = e + _vdw_pair_energy(
                         a,
@@ -200,9 +214,18 @@ def make_minimizer(
                         vdw_scale,
                         vdw_w,
                     )
-                for _name, start, stop, closure in custom_terms:
+                # per-custom gate: active sigma window AND active step window.
+                for _name, start, stop, start_step, stop_step, closure in custom_terms:
                     _sc = jnp.asarray(sigma)
-                    gate = jnp.where((_sc <= start) & (_sc >= stop), 1.0, 0.0)
+                    _stc = jnp.asarray(step)
+                    gate = jnp.where(
+                        (_sc <= start)
+                        & (_sc >= stop)
+                        & (_stc >= start_step)
+                        & (_stc <= stop_step),
+                        1.0,
+                        0.0,
+                    )
                     e = e + gate * closure(a)
                 return e
 
@@ -227,13 +250,16 @@ def make_minimizer(
             active = jnp.where(jnp.all(jnp.isfinite(opt)), opt, active)
         return coords.at[..., active_idx, :].set(active)
 
-    def minimize(coords, sigma):
+    def minimize(coords, sigma, step=0):
         if not spec.is_active():
             return coords
-        # skip the whole step only when sigma exceeds every restraint's start_sigma
+        # Skip the whole step only when sigma exceeds every restraint's start_sigma. A
+        # step-windowed restraint keeps start_sigma=+inf -> max_ss=+inf -> never skipped
+        # here; its step gate (inside _descend) handles activation. The per-restraint
+        # sigma+step gates inside the energy still zero anything out of its window.
         return jax.lax.cond(
             jnp.asarray(sigma) <= max_ss,
-            lambda c: _descend(c, sigma),
+            lambda c: _descend(c, sigma, step),
             lambda c: c,
             coords,
         )

@@ -38,11 +38,21 @@ def build_closure(cspec, ops):
 
 def build_terms(custom_specs, backend: str, device=None):
     """For an optimizer on ``backend``: a list of ``(name, start_sigma, stop_sigma,
-    closure)`` — one per custom restraint. ``closure(active_coords) -> scalar`` (weight
-    folded); the optimizer applies the sigma gate. ``device`` (torch only) places the
-    baked selection-index tensors on the coords' device."""
+    start_step, stop_step, closure)`` — one per custom restraint.
+    ``closure(active_coords) -> scalar`` (weight folded); the optimizer applies the gate,
+    which is the active sigma window AND the active step window (a restraint uses one or
+    the other — mutually exclusive at config time; the unused axis is always-on).
+    ``device`` (torch only) places the baked selection-index tensors on the coords' device.
+    """
     ops = get_ops(backend, device)
     return [
-        (c.name, c.start_sigma, c.stop_sigma, build_closure(c, ops))
+        (
+            c.name,
+            c.start_sigma,
+            c.stop_sigma,
+            c.start_step,
+            c.stop_step,
+            build_closure(c, ops),
+        )
         for c in custom_specs
     ]

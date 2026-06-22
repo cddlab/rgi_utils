@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from rgi_utils._config_util import warn_unknown_keys
+from rgi_utils._config_util import check_window_exclusive, warn_unknown_keys
 from rgi_utils.atom_context import FrameworkAdapter
 from rgi_utils.selection import AtomSelector
 
@@ -15,6 +15,8 @@ _KNOWN_DISTANCE_KEYS = {
     "calc_method",
     "start_sigma",
     "stop_sigma",
+    "start_step",
+    "stop_step",
     "move",
     "harmonic",
     "flat-bottomed",
@@ -38,6 +40,8 @@ class DistanceData:
     run_restr: bool
     start_sigma: float  # apply this restraint only when noise level <= start_sigma
     stop_sigma: float  # RELEASE this restraint when noise level < stop_sigma (-1=never)
+    start_step: float  # step-window lower bound (-inf = always); XOR the sigma window
+    stop_step: float  # step-window upper bound (+inf = always)
     move_mode: int  # 0=both / 1=grp1 only / 2=grp2 only (the 'move' config key)
 
     def __init__(self):
@@ -58,6 +62,10 @@ class DistanceData:
             None  # per-restraint; optional (from_dict defaults None -> +inf)
         )
         self.stop_sigma = -1.0  # per-restraint lower bound; -1 = never released (off)
+        # step-window: active for start_step <= step <= stop_step (omitted -> -inf/+inf =
+        # always). Mutually exclusive with the sigma window; ANDed with it in the gate.
+        self.start_step = float("-inf")
+        self.stop_step = float("inf")
         self.move_mode = 0  # which group moves: 0=both (default) / 1=grp1 / 2=grp2
 
     def set_config(self, config: dict):
@@ -67,6 +75,8 @@ class DistanceData:
         self.atom_selection1 = config.get("atom_selection1", None)
         self.atom_selection2 = config.get("atom_selection2", None)
         self.calc_method = config.get("calc_method", "unfixed-absolute")
+        # sigma-window XOR step-window (mutually exclusive gates); shared check + message.
+        check_window_exclusive(config, "distance_restraints_config entry")
         # per-distance start_sigma (OPTIONAL; from_dict defaults None -> +inf = every
         # step). Guard float() against an explicit null so a `start_sigma:` /
         # `"start_sigma": null` entry is treated as omitted (-> the default) not a crash.
@@ -79,6 +89,16 @@ class DistanceData:
         _stop = config.get("stop_sigma")
         if _stop is not None:
             self.stop_sigma = float(_stop)
+        # per-distance step-window (OPTIONAL; omitted -> -inf/+inf = always). The
+        # alternative gate axis to the sigma window: active for start_step <= step <=
+        # stop_step (diffusion step index). Note step counts differ per tool, so a
+        # step window is NOT portable across tools the way a sigma window is.
+        _sa = config.get("start_step")
+        if _sa is not None:
+            self.start_step = float(_sa)
+        _so = config.get("stop_step")
+        if _so is not None:
+            self.stop_step = float(_so)
         # per-distance move mode (OPTIONAL; default "both"): which group(s) the closed-
         # form centroid shift moves. both/omitted -> 0 (split, both move); 1 -> only
         # atom_selection1's group; 2 -> only atom_selection2's group. Accepts int or str

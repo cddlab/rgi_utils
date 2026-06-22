@@ -70,6 +70,58 @@ def test_jax_minimize_reduces_energy():
     assert e1 < 0.5 * e0, f"{e0} -> {e1}"
 
 
+def test_jax_minimizer_step_window_traced_under_jit():
+    """The jax minimizer (the exact path AF3 drives in its hk.scan) gates a distance
+    restraint on its STEP window with ``step`` as a TRACED value under ``jax.jit`` — not a
+    concrete Python int. This covers ``apply_distance_shift_jax``'s step gate + ``_descend``
+    /``minimize``'s step threading, which the concrete-``step`` energy parity test does NOT
+    exercise (different module). Distance is closed-form: OUTSIDE [start_step, stop_step]
+    the centroid separation is untouched; INSIDE it lands on target."""
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.optim.jax_optim import make_minimizer
+    from rgi_utils.spec import DistanceArrays, RestraintSpec
+
+    # distance restraint with a STEP window [5, 10]; sigma window stays always-on so only
+    # the step axis gates (start_sigma=+inf -> max_start_sigma=+inf -> lax.cond never skips).
+    spec = RestraintSpec(
+        n_active=4,
+        active_sites=np.arange(4),
+        distance=DistanceArrays(
+            grp1_idx=np.array([[0, 1]], dtype=np.int64),
+            grp2_idx=np.array([[2, 3]], dtype=np.int64),
+            grp1_mask=np.array([[1.0, 1.0]]),
+            grp2_mask=np.array([[1.0, 1.0]]),
+            target1=np.array([7.0]),
+            target2=np.array([0.0]),
+            dist_type=np.array([0], dtype=np.int64),
+            move_mode=np.array([0], dtype=np.int64),
+            mask=np.array([1.0]),
+            start_sigma=np.array([float("inf")]),
+            stop_sigma=np.array([-1.0]),
+            start_step=np.array([5.0]),
+            stop_step=np.array([10.0]),
+        ),
+    )
+    # jit so all of (coords, sigma, step) become tracers — the AF3-in-scan condition.
+    mini = jax.jit(make_minimizer(spec, max_iter=50))
+    base = np.zeros((4, 3))
+    base[2:, 0] = 20.0  # centroid separation 20 along x (off the 7.0 target)
+
+    def cdist(c):
+        c = np.asarray(c)
+        return float(np.linalg.norm(c[2:].mean(0) - c[:2].mean(0)))
+
+    out_before = mini(jnp.asarray(base), 5.0, 3)  # step 3 < start_step -> gated off
+    out_in = mini(jnp.asarray(base), 5.0, 7)  # step 7 in window -> active
+    out_after = mini(jnp.asarray(base), 5.0, 12)  # step 12 > stop_step -> gated off
+    assert cdist(out_before) == pytest.approx(20.0, abs=1e-5), cdist(out_before)
+    assert abs(cdist(out_in) - 7.0) < 1e-4, cdist(out_in)
+    assert cdist(out_after) == pytest.approx(20.0, abs=1e-5), cdist(out_after)
+
+
 def test_jax_minimizer_move_mode_end_to_end():
     """jax E2E (build_spec -> jax_energy.prepare_spec -> pack_spec -> make_minimizer ->
     apply_distance_shift_jax): move_mode=2 moves ONLY group2; group1 stays fixed while
@@ -464,6 +516,8 @@ def _rmsd_spec(n=6, seed=3):
             weight=np.array([1.0]),
             start_sigma=np.array([1e30]),
             stop_sigma=np.array([0.0]),
+            start_step=np.full(1, float("-inf")),
+            stop_step=np.full(1, float("inf")),
             mask=np.array([1.0]),
         ),
         conf_start_sigma=1e30,
@@ -662,6 +716,8 @@ def test_gated_prepared_matches_energy_gate():
             weight=np.array([1.0]),
             start_sigma=np.array([5.0]),
             stop_sigma=np.array([0.0]),
+            start_step=np.full(1, float("-inf")),
+            stop_step=np.full(1, float("inf")),
             mask=np.array([1.0]),
         ),
         conf_start_sigma=10.0,
@@ -717,6 +773,8 @@ def test_compiled_energy_matches_eager():
         mask=np.array([1.0]),
         start_sigma=np.array([1e30]),
         stop_sigma=np.array([-1.0]),
+        start_step=np.full(1, float("-inf")),
+        stop_step=np.full(1, float("inf")),
     )
     spec.group_dihedral = GroupDihedralArrays(
         grp1_idx=np.array([[0]]),
@@ -735,6 +793,8 @@ def test_compiled_energy_matches_eager():
         mask=np.array([1.0]),
         start_sigma=np.array([1e30]),
         stop_sigma=np.array([-1.0]),
+        start_step=np.full(1, float("-inf")),
+        stop_step=np.full(1, float("inf")),
     )
     prepared = torch_energy.prepare_spec(spec, dtype=torch.float64)
     pos = torch.tensor(pos_np[0], dtype=torch.float64)

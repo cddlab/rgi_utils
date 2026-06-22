@@ -49,3 +49,28 @@ def warn_unknown_keys(
             sorted(unknown),
             sorted(known),
         )
+
+
+# the two mutually-exclusive gate windows a restraint entry may carry
+_SIGMA_WINDOW_KEYS = ("start_sigma", "stop_sigma")
+_STEP_WINDOW_KEYS = ("start_step", "stop_step")
+
+
+def check_window_exclusive(config: dict, label: str = "restraint entry") -> None:
+    """Raise if an entry mixes the sigma-window and the step-window gate keys.
+
+    A restraint is gated on EITHER the noise level (``start_sigma`` / ``stop_sigma``) OR
+    the diffusion step index (``start_step`` / ``stop_step``) — the two are mutually
+    exclusive (排他選択). Mixing them is a config error, not a silent precedence rule,
+    so this raises rather than warning. Shared by every restraint type so the rule (and
+    its message) can't diverge across distance / rmsd / angle / dihedral / conformer /
+    custom.
+    """
+    has_sigma = any(k in config for k in _SIGMA_WINDOW_KEYS)
+    has_step = any(k in config for k in _STEP_WINDOW_KEYS)
+    if has_sigma and has_step:
+        raise ValueError(
+            f"{label}: choose either the sigma-window (start_sigma/stop_sigma) OR the "
+            f"step-window (start_step/stop_step), not both — they are mutually exclusive "
+            f"gates (noise level vs diffusion step index)."
+        )

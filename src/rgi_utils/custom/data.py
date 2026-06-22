@@ -17,7 +17,7 @@ from typing import Any
 
 import numpy as np
 
-from rgi_utils._config_util import warn_unknown_keys
+from rgi_utils._config_util import check_window_exclusive, warn_unknown_keys
 from rgi_utils.custom.context import ResolveContext
 from rgi_utils.custom.dsl import eval_formula, parse_formula
 from rgi_utils.custom.registry import get_custom_fn
@@ -34,6 +34,8 @@ _KNOWN_CUSTOM_KEYS = {
     "weight",
     "start_sigma",
     "stop_sigma",
+    "start_step",
+    "stop_step",
 }
 
 
@@ -53,6 +55,8 @@ class CustomSpec:
     weight: float
     start_sigma: float
     stop_sigma: float
+    start_step: float  # step-window lower bound (-inf = always); XOR the sigma window
+    stop_step: float  # step-window upper bound (+inf = always)
 
 
 class CustomData:
@@ -67,6 +71,9 @@ class CustomData:
         self.weight: float = 1.0
         self.start_sigma: float | None = None
         self.stop_sigma: float = -1.0
+        # step-window (XOR the sigma window); omitted -> -inf/+inf = always.
+        self.start_step: float = float("-inf")
+        self.stop_step: float = float("inf")
         self.run_restr: bool = False
         self._identifiers: list[str] = []
         self._global: dict[str, list[int]] = {}
@@ -80,10 +87,19 @@ class CustomData:
         _w = config.get("weight")
         if _w is not None:
             self.weight = float(_w)
+        # sigma-window XOR step-window (mutually exclusive gates); shared check + message.
+        check_window_exclusive(config, "custom_restraints_config entry")
         _ss = config.get("start_sigma")
         self.start_sigma = float(_ss) if _ss is not None else None
         _stop = config.get("stop_sigma")
         self.stop_sigma = float(_stop) if _stop is not None else -1.0
+        # step-window alternative (omitted -> -inf/+inf = always).
+        _sa = config.get("start_step")
+        if _sa is not None:
+            self.start_step = float(_sa)
+        _so = config.get("stop_step")
+        if _so is not None:
+            self.stop_step = float(_so)
 
         sources = [k for k in ("energy", "use", "fn") if config.get(k) is not None]
         if len(sources) != 1:
@@ -160,4 +176,6 @@ class CustomData:
             if self.start_sigma is not None
             else float("inf"),
             stop_sigma=float(self.stop_sigma),
+            start_step=float(self.start_step),
+            stop_step=float(self.stop_step),
         )

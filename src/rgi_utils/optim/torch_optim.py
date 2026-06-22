@@ -58,16 +58,20 @@ class TorchRestraintOptimizer:
         # module-global gpu_cg energy can't see them). None=unbuilt, False=disabled/failed.
         self._custom_cvg = None
 
-    def _custom_energy(self, active, sigma):
-        """Per-entry sigma-gated sum of the custom-restraint closure energies at ``active``
+    def _custom_energy(self, active, sigma, step):
+        """Per-entry gated sum of the custom-restraint closure energies at ``active``
         (local coords). Returns ``None`` when no custom term is active so the caller can
-        skip adding it. Gate: ``stop_sigma <= sigma <= start_sigma`` (a python-float
-        compare, since the eager CG has a python-float sigma)."""
+        skip adding it. Gate: the active sigma window (``stop_sigma <= sigma <=
+        start_sigma``) AND the active step window (``start_step <= step <= stop_step``);
+        a restraint uses one or the other (mutually exclusive). Python-float compares,
+        since the eager CG has python-float sigma/step."""
         if not self._custom_terms:
             return None
         total = None
-        for _name, start, stop, closure in self._custom_terms:
+        for _name, start, stop, start_step, stop_step, closure in self._custom_terms:
             if sigma is not None and not (sigma <= start and sigma >= stop):
+                continue
+            if step is not None and not (start_step <= step <= stop_step):
                 continue
             e = closure(active)
             total = e if total is None else total + e
@@ -88,7 +92,7 @@ class TorchRestraintOptimizer:
         if os.environ.get("RGI_DISABLE_COMPILE", "") not in ("", "0", "false"):
             self._custom_cvg = False
             return None
-        closures = [c for _n, _s, _st, c in self._custom_terms]
+        closures = [c for *_meta, c in self._custom_terms]
 
         def energy(a, prepared, gates):
             e = torch_energy.total_energy(
@@ -110,7 +114,7 @@ class TorchRestraintOptimizer:
             return None
         return self._custom_cvg
 
-    def _minimize_custom_gpu(self, active, sigma, mi) -> bool:
+    def _minimize_custom_gpu(self, active, sigma, step, mi) -> bool:
         """GPU CG with the torch.compile'd custom-inclusive energy. Returns False (caller
         falls back to the eager CG) when compile is unavailable or the artifact fails."""
         cvg = self._get_custom_cvg()
@@ -118,11 +122,15 @@ class TorchRestraintOptimizer:
             return False
         from rgi_utils.optim._torch_cg_gpu import _cg_minimize_torch
 
-        prepared_g = self._gated_prepared(sigma)
+        prepared_g = self._gated_prepared(sigma, step)
+        # per-custom gate: active sigma window AND active step window (one or the other).
         gates = torch.tensor(
             [
-                1.0 if sigma is None or (sigma <= s and sigma >= st) else 0.0
-                for _n, s, st, _c in self._custom_terms
+                1.0
+                if (sigma is None or (sigma <= s and sigma >= st))
+                and (step is None or (sstep <= step <= estep))
+                else 0.0
+                for _n, s, st, sstep, estep, _c in self._custom_terms
             ],
             dtype=active.dtype,
             device=active.device,
@@ -168,40 +176,48 @@ class TorchRestraintOptimizer:
                 len(self._custom_terms),
             )
 
-    def _gated_prepared(self, sigma):
+    def _gated_prepared(self, sigma, step=None):
         """Stable pre-gated ``prepared`` for the compiled GPU CG, cached by the discrete
-        GATE STATE — the conformer gate (``sigma <= conf_start_sigma``) plus the
-        per-restraint gate (``stop_sigma <= sigma <= start_sigma``) of every per-entry
-        term (rmsd, group_angle, group_dihedral — ``PER_ENTRY_KEYS``). The noise
-        gate is folded into the masks here so the compiled energy is called with
+        GATE STATE — the conformer gate plus the per-restraint gate of every per-entry
+        term (rmsd, group_angle, group_dihedral — ``PER_ENTRY_KEYS``). Each gate is the
+        active sigma window (``stop_sigma <= sigma <= start_sigma``) AND the active step
+        window (``start_step <= step <= stop_step``) — a restraint uses one or the other
+        (mutually exclusive at config), the unused axis always-on so the AND is correct.
+        The gate is folded into the masks here so the compiled energy is called with
         ``sigma=None``; scalar leaves (e.g. ``conf_start_sigma``) are DROPPED because a
         python-float in the compiled energy's pytree makes dynamo guard on its value and
         recompile per distinct value. Stable object identity per gate state lets
-        ``torch.compile`` reuse its artifact; sigma decreases monotonically so each gate
-        flips at most once -> a few states -> a few compiles, then reuse. distance is
-        excluded (closed-form). The conformer-gated key set (``CONF_KEYS``) and the
-        per-entry-gated set (``PER_ENTRY_KEYS``) both come from ``_TERMS``, so adding a
-        term can't silently leave it ungated on the compiled path."""
+        ``torch.compile`` reuse its artifact; sigma decreases / step increases
+        monotonically so each gate flips at most once -> a few states -> a few compiles,
+        then reuse. distance is excluded (closed-form). The conformer-gated key set
+        (``CONF_KEYS``) and the per-entry-gated set (``PER_ENTRY_KEYS``) both come from
+        ``_TERMS``, so adding a term can't silently leave it ungated on the compiled path."""
         p = self._prepared
-        # conformer gate over the window conf_stop <= sigma <= conf_start (conf_stop=-1
-        # -> never released, so this reduces to the old sigma<=conf_start gate).
-        cg_key = (
-            1.0
-            if sigma is None
-            else float(
-                (sigma <= float(self.spec.conf_start_sigma))
-                and (sigma >= float(self.spec.conf_stop_sigma))
-            )
+        # conformer gate: active sigma window (conf_stop <= sigma <= conf_start) AND
+        # active step window (conf_start_step <= step <= conf_stop_step).
+        cg_on = sigma is None or (
+            (sigma <= float(self.spec.conf_start_sigma))
+            and (sigma >= float(self.spec.conf_stop_sigma))
         )
+        if step is not None:
+            cg_on = cg_on and (
+                step >= float(self.spec.conf_start_step)
+                and step <= float(self.spec.conf_stop_step)
+            )
+        cg_key = 1.0 if (sigma is None and step is None) else float(cg_on)
         # per-restraint on/off for every per-entry term present (one tiny sync each),
-        # over the active window stop_sigma <= sigma <= start_sigma (released below
-        # stop_sigma so the model's final low-sigma steps re-idealise geometry).
+        # over the active sigma window AND step window.
         gates: dict[str, tuple] = {}
-        if sigma is not None:
+        if sigma is not None or step is not None:
             for gk in PER_ENTRY_KEYS:
                 if gk in p:
                     pe = p[gk]
-                    on = (sigma <= pe["start_sigma"]) & (sigma >= pe["stop_sigma"])
+                    on = None
+                    if sigma is not None:
+                        on = (sigma <= pe["start_sigma"]) & (sigma >= pe["stop_sigma"])
+                    if step is not None:
+                        step_on = (step >= pe["start_step"]) & (step <= pe["stop_step"])
+                        on = step_on if on is None else (on & step_on)
                     gates[gk] = tuple(bool(b) for b in on.tolist())
         # the cache key carries EVERY gate state, so a step flipping only a group gate
         # gets its own (correct) entry instead of reusing a stale conf/rmsd mask.
@@ -265,10 +281,12 @@ class TorchRestraintOptimizer:
             v["weight"],
         )
 
-    def minimize(self, coords, sigma=None, start_sigma=None, max_iter=None):
-        """Optimize ``coords`` (..., n_atom, 3) in-place. Each restraint is gated
-        on ``sigma <= its start_sigma`` inside the energy; the whole step is
-        skipped only when ``sigma`` exceeds every restraint's start_sigma."""
+    def minimize(self, coords, sigma=None, step=None, start_sigma=None, max_iter=None):
+        """Optimize ``coords`` (..., n_atom, 3) in-place. Each restraint is gated on its
+        active sigma window AND its active step window (``step`` = diffusion step index)
+        inside the energy; the whole step is skipped only when ``sigma`` exceeds every
+        restraint's start_sigma (a step-windowed restraint keeps start_sigma=+inf, so it
+        is never whole-step-skipped — its step gate handles activation)."""
         if not self.spec.is_active():
             return coords
         # sigma is the per-step scalar noise level. Coerce to a python float: the skip
@@ -276,6 +294,10 @@ class TorchRestraintOptimizer:
         # assume a scalar; a stray multi-element tensor would otherwise fail GPU-only.
         if sigma is not None:
             sigma = float(sigma)
+        # step is the diffusion step index (int); coerce so the python-float gate compares
+        # in the eager CG / GPU pre-gate behave (a tensor step would break the GPU path).
+        if step is not None:
+            step = int(step)
         if sigma is not None and sigma > self.spec.max_start_sigma():
             return coords
         # Optimize in fp32 even when the model runs the diffusion in bf16/fp16: a
@@ -291,13 +313,25 @@ class TorchRestraintOptimizer:
         )
         self._ensure(coords.device, work_dtype)
         mi = max_iter if max_iter is not None else self.max_iter
-        # VdW is a conformer restraint -> gated by the conformer window
-        # conf_stop <= sigma <= conf_start (conf_stop=-1 -> never released)
-        vdw_active = self._vdw is not None and (
-            sigma is None
-            or (
-                sigma <= float(self.spec.conf_start_sigma)
-                and sigma >= float(self.spec.conf_stop_sigma)
+        # VdW is a conformer restraint -> gated by the conformer window: active sigma
+        # window (conf_stop <= sigma <= conf_start) AND active step window
+        # (conf_start_step <= step <= conf_stop_step). NOT a _TERMS entry, so this gate is
+        # maintained by hand (the PER_ENTRY/CONF_KEYS safety net does not cover it).
+        vdw_active = (
+            self._vdw is not None
+            and (
+                sigma is None
+                or (
+                    sigma <= float(self.spec.conf_start_sigma)
+                    and sigma >= float(self.spec.conf_stop_sigma)
+                )
+            )
+            and (
+                step is None
+                or (
+                    step >= float(self.spec.conf_start_step)
+                    and step <= float(self.spec.conf_stop_step)
+                )
             )
         )
 
@@ -327,7 +361,7 @@ class TorchRestraintOptimizer:
             if has_dist:
                 with torch.no_grad():
                     active = apply_distance_shift_torch(
-                        active, prepared["distance"], sigma
+                        active, prepared["distance"], sigma, step
                     )
 
             # 2) Conformer (bond/angle/chiral/cistrans/vdw) + RMSD + group-centroid
@@ -348,11 +382,11 @@ class TorchRestraintOptimizer:
 
                 def energy_fn():
                     e = torch_energy.total_energy(
-                        active, prepared, sigma, include_distance=False
+                        active, prepared, sigma, step, include_distance=False
                     )
                     if prot_pos is not None:
                         e = e + self._vdw_energy(active, prot_pos)
-                    ce = self._custom_energy(active, sigma)
+                    ce = self._custom_energy(active, sigma, step)
                     if ce is not None:
                         e = e + ce
                     return e
@@ -362,7 +396,7 @@ class TorchRestraintOptimizer:
                     # torch.compile'd energy that INCLUDES the custom closures (gpu_cg's
                     # module-global energy can't see them). Falls back to the eager CG if
                     # compile is disabled / fails. (custom + dynamic VdW stays eager below.)
-                    if not self._minimize_custom_gpu(active, sigma, mi):
+                    if not self._minimize_custom_gpu(active, sigma, step, mi):
                         self._minimize_cg(active, energy_fn, mi)
                 elif self._is_cg() and active.is_cuda and not has_custom:
                     # GPU: the same early-exit CG as the CPU path, but with an
@@ -387,7 +421,7 @@ class TorchRestraintOptimizer:
                             v["scale"],
                             v["weight"],
                         )
-                    prepared_g = self._gated_prepared(sigma)
+                    prepared_g = self._gated_prepared(sigma, step)
                     opt = gpu_cg(prepared_g, active.detach(), mi, vdw=vdw)
                     with torch.no_grad():
                         active.copy_(opt)

@@ -40,7 +40,7 @@ last section.
 | key | type | default | meaning |
 |---|---|---|---|
 | `verbose` | bool | `false` | Log the built spec (per-restraint counts) at setup and per-term energies at finalize. Strongly recommended — it is how you confirm a restraint was actually built. |
-| `gpu` | bool | `false` | Torch **device**: `true` = accelerator, `false` = CPU. It does **not** change the backend. (Inert for AF3, which always runs the JAX minimizer on the model's device.) Accepts `true/false` and the strings `1/0/yes/no/on/off`. |
+| `gpu` | bool | `true` | Torch **device**: `true` = accelerator (default), `false` = CPU. It does **not** change the backend. (Inert for AF3, which always runs the JAX minimizer on the model's device.) Accepts `true/false` and the strings `1/0/yes/no/on/off`. |
 | `backend` | str / null | `null` → `torch` | Compute backend: `"torch"` (default) or `"jax"` (the AF3 tool forces `jax`). `"numpy"` is rejected (no numpy optimizer). |
 | `method` | str | `"CG"` | Optimizer: `"CG"` (nonlinear conjugate gradient) or `"l-bfgs"` (opt-in). |
 | `max_iter` | int | `100` | Max optimizer iterations per denoising step. The examples use 1000 (2000 for AF3). |
@@ -59,15 +59,39 @@ window:
 - **`stop_sigma`** (float) — the restraint is **released** once `sigma < stop_sigma`. **Omitted →
   `-1`** (never released; any value `<= 0` means off).
 - **Active window:** `stop_sigma <= sigma <= start_sigma`. `stop_sigma > start_sigma` is an empty
-  window (warned).
+  window and **raises** (a silent no-op would read as "satisfied").
 
-Where they live: **once per `distance` / `angle` / `dihedral` / `rmsd` entry**, and **once for all
-conformer terms** (`conformer_restraints_config.start_sigma` / `.stop_sigma`). When `sigma` exceeds
-every active restraint's `start_sigma`, the whole minimization step is skipped (cheap at high noise).
+Where they live: **once per `distance` / `angle` / `dihedral` / `rmsd` / `custom` entry**, and **once
+for all conformer terms** (`conformer_restraints_config.start_sigma` / `.stop_sigma`). When `sigma`
+exceeds every active restraint's `start_sigma`, the whole minimization step is skipped (cheap at high
+noise).
 
 The RMSD restraint's `stop_sigma` has a specific use: releasing it late (e.g. `1.0`) lets the model
 re-idealise geometry the restraint held distorted — the fix for a peptide bond broken at a
 restrained-residue / free unmodeled-tail boundary.
+
+## Step gating: `start_step` & `stop_step` (alternative to sigma)
+
+Instead of the noise level, a restraint may be gated on the **diffusion step index** (the 0-based
+denoising iteration counter). Same shape as the sigma window, on the step axis:
+
+- **`start_step`** (int) — active once `step >= start_step`. **Omitted → `-inf`** (active from the
+  first step).
+- **`stop_step`** (int) — released once `step > stop_step`. **Omitted → `+inf`** (never released).
+- **Active window:** `start_step <= step <= stop_step`. `stop_step < start_step` is an empty window
+  and **raises**.
+
+Available on the same entries as the sigma window (`distance` / `angle` / `dihedral` / `rmsd` /
+`custom`, and the shared `conformer_restraints_config`).
+
+> **A restraint uses EITHER the sigma window OR the step window — never both.** Setting any of
+> `start_sigma` / `stop_sigma` together with any of `start_step` / `stop_step` on one entry **raises**
+> (mutually exclusive — 排他選択). The unused axis stays always-on.
+
+> ⚠️ **Step windows are NOT portable across tools.** The number of denoising steps differs per tool
+> (e.g. boltz vs AF3 vs protenix), so `start_step: 50` means a *different point in the trajectory* in
+> each tool. `sigma` windows ARE portable (all tools share `sigma_data=16`). Prefer `sigma` windows
+> unless you specifically need step-index control for one tool.
 
 ## Atom-selection DSL
 
@@ -100,6 +124,7 @@ so it has **no `weight`**.
 | `atom_selection2` | str | — (required) | group 2 |
 | `start_sigma` | float | `+inf` | activation upper bound (see Sigma gating) |
 | `stop_sigma` | float | `-1` | release lower bound |
+| `start_step` / `stop_step` | int | `-inf` / `+inf` | step gating — the alternative to the sigma window (mutually exclusive; see Step gating) |
 | `move` | `"both"`/`1`/`2` | `"both"` | which group the correction moves: `both` = minimal-displacement split; `1` / `2` move only that group and **pin** the other (e.g. move a ligand toward a fixed pocket) |
 | one restraint-type block | dict | — (required) | the penalty (below) |
 
@@ -116,16 +141,19 @@ Restraint-type block (exactly one):
 
 The **angle of 3 group centroids** (vertex = group 2) or the **dihedral of 4 group centroids** (axis
 = groups 2–3). These are the group-centroid analogues of the distance restraint — distinct from the
-per-ligand-atom conformer `angle`/`cistrans` terms. Targets are in **degrees**. CG-solved; rigid
-group motion means `weight: 1.0` drives any group size.
+per-ligand-atom conformer `angle`/`cistrans` terms. Targets are in **degrees** by default (set
+`unit: radians` on the entry to give them in radians). CG-solved; rigid group motion means
+`weight: 1.0` drives any group size.
 
 | key | type | default | meaning |
 |---|---|---|---|
 | `atom_selection1..3` (angle) / `..4` (dihedral) | str | — (required) | the groups; group 2 is the angle vertex, groups 2–3 the dihedral axis |
 | `start_sigma` / `stop_sigma` | float | `+inf` / `-1` | sigma gating |
+| `start_step` / `stop_step` | int | `-inf` / `+inf` | step gating (mutually exclusive with the sigma window; see Step gating) |
+| `unit` | `"degrees"`/`"radians"` | `"degrees"` | unit of the target angle(s) for this entry |
 | `weight` | float | `1.0` | energy scale |
 | `move` | `"all"` / int / list / `"1,3"` | angle: arms (1,3) free, vertex pinned · dihedral: ends (1,4) free, axis pinned | which groups are free; the rest are pinned (stop-gradient). `"all"` frees every group |
-| one restraint-type block | dict | — (required) | `harmonic {target_angle\|target_dihedral}` or `flat-bottomed{,1,2}` with `target_angle1/2` / `target_dihedral1/2` (degrees) |
+| one restraint-type block | dict | — (required) | `harmonic {target_angle\|target_dihedral}` or `flat-bottomed{,1,2}` with `target_angle1/2` / `target_dihedral1/2` (degrees, or radians if `unit: radians`) |
 
 `harmonic` for the dihedral is periodicity-safe (deviation wrapped to ±180°); `flat-bottomed`
 windows cannot straddle ±180°.
@@ -139,7 +167,8 @@ set `conformer_restraints: true` on the ligand object; esmfold2 sets `conformer_
 the `LigandInput`; chai (whose FASTA can't carry it) uses a sidecar `conformer_restraints` map keyed
 by ligand chain id (e.g. `{B: true}`).
 
-Top-level (shared by all terms): `start_sigma` (`+inf`), `stop_sigma` (`-1`).
+Top-level (shared by all terms): `start_sigma` (`+inf`), `stop_sigma` (`-1`) — or the step-window
+alternative `start_step` (`-inf`) / `stop_step` (`+inf`) (mutually exclusive with the sigma window).
 
 Each term is a sub-dict; a term with `weight <= 0` is disabled (and not built).
 
@@ -168,6 +197,7 @@ The reference must be generated first (a vanilla prediction → PDB via gemmi); 
 | `target_rmsd` | float | — (required) | target RMSD in Å (`0.0` = match the reference) |
 | `weight` | float | `1.0` | energy scale |
 | `start_sigma` / `stop_sigma` | float | `+inf` / `-1` | sigma gating (set `stop_sigma`, e.g. `1.0`, to release late and heal a strained terminus) |
+| `start_step` / `stop_step` | int | `-inf` / `+inf` | step gating (mutually exclusive with the sigma window; see Step gating) |
 | `pairing` | `"align"` / `"identity"` | `"align"` | how reference and prediction residues correspond. `align` = sequence-align polymer chains (BLOSUM62) so a **homolog** ref maps on despite substitutions/indels/renumbering; non-polymer atoms always pair by ordinal. `identity` = strict (chain, resid, name) ordinal pairing. |
 | `best_effort` | bool | `true` | skip atoms with no match in the ref (instead of raising); `false` = strict |
 
@@ -207,6 +237,7 @@ Each entry's energy (× `weight`) is added to the CG objective, gated by the usu
 | `weight` | float | `1.0` | scales the whole energy |
 | `name` | str | `"custom"` | label shown in the `finalize` per-term log |
 | `start_sigma` / `stop_sigma` | float | `+inf` / `-1` | sigma gating (as everywhere) |
+| `start_step` / `stop_step` | int | `-inf` / `+inf` | step gating (mutually exclusive with the sigma window; see Step gating) |
 
 **Vocabulary** (the only names a formula / `ctx` may call):
 

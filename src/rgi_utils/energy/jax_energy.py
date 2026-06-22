@@ -329,34 +329,49 @@ _LEAF_FNS = {
 }
 
 
-def _gates(prepared, positions, sigma):
+def _gates(prepared, positions, sigma, step=None):
     """The conformer gate ``cg`` and a per-restraint ``sigma_gate``. jnp comparisons
-    (tracer-safe inside ``lax.scan``); identity when ``sigma is None``."""
-    if sigma is None:
-        return 1.0, (lambda start_sigma, stop_sigma, mask: mask)
-    s = jnp.asarray(sigma)
-    # conformer window conf_stop <= sigma <= conf_start (conf_stop=-1 -> never)
-    cg = (
-        (s <= prepared.get("conf_start_sigma", 1e30))
-        & (s >= prepared.get("conf_stop_sigma", -1.0))
-    ).astype(positions.dtype)
+    (tracer-safe inside ``lax.scan``). Each restraint is gated on EITHER a sigma window OR
+    a step window (mutually exclusive at config time); the gate ANDs both axes, the unused
+    axis always-on. ``sigma is None`` / ``step is None`` each disable their own axis (both
+    None -> identity gate)."""
+    s = None if sigma is None else jnp.asarray(sigma)
+    st = None if step is None else jnp.asarray(step)
+    cg = jnp.asarray(1.0, dtype=positions.dtype)
+    if s is not None:  # conformer window conf_stop <= sigma <= conf_start
+        cg = cg * (
+            (s <= prepared.get("conf_start_sigma", 1e30))
+            & (s >= prepared.get("conf_stop_sigma", -1.0))
+        ).astype(positions.dtype)
+    if st is not None:  # AND the conformer STEP window conf_start_step..conf_stop_step
+        cg = cg * (
+            (st >= prepared.get("conf_start_step", float("-inf")))
+            & (st <= prepared.get("conf_stop_step", float("inf")))
+        ).astype(positions.dtype)
 
-    def sigma_gate(start_sigma, stop_sigma, mask):
-        g = mask * (s <= start_sigma).astype(mask.dtype)
-        if stop_sigma is not None:  # released below stop_sigma (e.g. rmsd terminus fix)
-            g = g * (s >= stop_sigma).astype(mask.dtype)
+    def sigma_gate(start_sigma, stop_sigma, start_step, stop_step, mask):
+        g = mask
+        if s is not None:
+            g = g * (s <= start_sigma).astype(mask.dtype)
+            if stop_sigma is not None:  # released below stop_sigma (rmsd terminus fix)
+                g = g * (s >= stop_sigma).astype(mask.dtype)
+        if st is not None:  # step window (the alternative gate axis), ANDed in
+            if start_step is not None:
+                g = g * (st >= start_step).astype(mask.dtype)
+            if stop_step is not None:
+                g = g * (st <= stop_step).astype(mask.dtype)
         return g
 
     return cg, sigma_gate
 
 
-def total_energy(positions, prepared, sigma=None, include_distance=True):
-    """Sum all restraint energies. ``sigma`` (current noise level) gates each
-    restraint via ``sigma <= start_sigma`` folded into the mask (conformer terms share
-    ``conf_start_sigma``; distance/RMSD have their own). RMSD is summed regardless of
-    ``include_distance``. ``sigma=None`` disables gating. Pure jnp so it stays
-    JIT/vmap-able."""
-    cg, sigma_gate = _gates(prepared, positions, sigma)
+def total_energy(positions, prepared, sigma=None, step=None, include_distance=True):
+    """Sum all restraint energies. ``sigma`` (noise level) and ``step`` (diffusion step
+    index) gate each restraint via its active sigma window AND step window folded into the
+    mask (conformer terms share the conf window; distance/RMSD/group have their own). RMSD
+    is summed regardless of ``include_distance``. ``sigma=None``/``step=None`` disable that
+    axis's gating. Pure jnp so it stays JIT/vmap-able."""
+    cg, sigma_gate = _gates(prepared, positions, sigma, step)
     ene = jnp.asarray(0.0, dtype=positions.dtype)
     for v in term_energies(
         _LEAF_FNS, prepared, positions, cg, sigma_gate, include_distance
@@ -365,11 +380,11 @@ def total_energy(positions, prepared, sigma=None, include_distance=True):
     return ene
 
 
-def energy_breakdown(positions, prepared, sigma=None):
+def energy_breakdown(positions, prepared, sigma=None, step=None):
     """Per-term restraint energies (same maths + gating as ``total_energy``), as a
     ``{bond, angle, chiral, improper, cistrans, vdw, distance, rmsd}`` python-float dict. Not
     for use inside JIT (the floats force a device->host sync); for diagnostics."""
-    cg, sigma_gate = _gates(prepared, positions, sigma)
+    cg, sigma_gate = _gates(prepared, positions, sigma, step)
     out = dict.fromkeys(BREAKDOWN_KEYS, 0.0)
     for k, v in term_energies(
         _LEAF_FNS, prepared, positions, cg, sigma_gate, include_distance=True

@@ -78,7 +78,11 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from rgi_utils._align import pair_residues
-from rgi_utils._config_util import coerce_bool, warn_unknown_keys
+from rgi_utils._config_util import (
+    check_window_exclusive,
+    coerce_bool,
+    warn_unknown_keys,
+)
 from rgi_utils._moltype import polymer_type
 from rgi_utils.atom_context import FrameworkAdapter
 from rgi_utils.pdb_ref import read_pdb_atoms
@@ -92,6 +96,8 @@ _KNOWN_RMSD_KEYS = {
     "weight",
     "start_sigma",
     "stop_sigma",
+    "start_step",
+    "stop_step",
     "atom_selection_ref",
     "atom_selection_target",
     "atom_selection_ref_fit",
@@ -117,6 +123,12 @@ class RmsdData:
     # model repair it). -1 (default) = never released (sigma>=-1 always true), active
     # down to sigma=0 (old behaviour); any value <= 0 is "off".
     stop_sigma: float = -1.0
+    # step-window (the alternative gate axis to the sigma window above): active for
+    # start_step <= step <= stop_step (diffusion step index). Omitted -> -inf/+inf =
+    # always. Mutually exclusive with the sigma window; NOT portable across tools (step
+    # counts differ per tool, unlike sigma).
+    start_step: float = float("-inf")
+    stop_step: float = float("inf")
     # selection strings (fit = superposition atoms, calc = measured atoms)
     sel_ref_fit: str = None
     sel_target_fit: str = None
@@ -152,6 +164,8 @@ class RmsdData:
         # so `or 1.0` truthiness must NOT be used here.
         _w = config.get("weight")
         self.weight = 1.0 if _w is None else float(_w)
+        # sigma-window XOR step-window (mutually exclusive gates); shared check + message.
+        check_window_exclusive(config, "rmsd_restraints_config entry")
         _ss = config.get("start_sigma")
         if _ss is not None:
             self.start_sigma = float(_ss)
@@ -160,6 +174,14 @@ class RmsdData:
         # never released).
         _stop = config.get("stop_sigma")
         self.stop_sigma = -1.0 if _stop is None else float(_stop)
+        # step-window alternative (omitted -> -inf/+inf = always): active for
+        # start_step <= step <= stop_step. ANDed with the (always-on) sigma window.
+        _sa = config.get("start_step")
+        if _sa is not None:
+            self.start_step = float(_sa)
+        _so = config.get("stop_step")
+        if _so is not None:
+            self.stop_step = float(_so)
         # explicit _fit / _calc override the shared ref/target shorthand. A selection
         # left None means "the whole structure on that side" (resolved best-effort).
         ref = config.get("atom_selection_ref")

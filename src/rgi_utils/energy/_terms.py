@@ -66,6 +66,8 @@ _SPEC_SCHEMA = [
             ("mask", "f"),
             ("start_sigma", "f"),
             ("stop_sigma", "f"),
+            ("start_step", "f"),
+            ("stop_step", "f"),
         ],
     ),
     (
@@ -83,6 +85,8 @@ _SPEC_SCHEMA = [
             ("mask", "f"),
             ("start_sigma", "f"),
             ("stop_sigma", "f"),
+            ("start_step", "f"),
+            ("stop_step", "f"),
         ],
     ),
     # group-centroid angle (3 groups, vertex = group 2) / dihedral (4 groups, axis =
@@ -109,6 +113,8 @@ _SPEC_SCHEMA = [
             ("mask", "f"),
             ("start_sigma", "f"),
             ("stop_sigma", "f"),
+            ("start_step", "f"),
+            ("stop_step", "f"),
         ],
     ),
     (
@@ -131,6 +137,8 @@ _SPEC_SCHEMA = [
             ("mask", "f"),
             ("start_sigma", "f"),
             ("stop_sigma", "f"),
+            ("start_step", "f"),
+            ("stop_step", "f"),
         ],
     ),
 ]
@@ -144,6 +152,9 @@ def pack_spec(spec, to_int, to_float):
     prepared = {
         "conf_start_sigma": float(getattr(spec, "conf_start_sigma", -1.0)),
         "conf_stop_sigma": float(getattr(spec, "conf_stop_sigma", -1.0)),
+        # shared conformer STEP window (the alternative gate axis); -inf/+inf = always.
+        "conf_start_step": float(getattr(spec, "conf_start_step", float("-inf"))),
+        "conf_stop_step": float(getattr(spec, "conf_stop_step", float("inf"))),
     }
     for key, attr, fields in _SPEC_SCHEMA:
         arr = getattr(spec, attr, None)
@@ -244,12 +255,14 @@ _TERMS = [
 
 
 def term_energies(fns, prepared, positions, cg, sigma_gate, include_distance):
-    """Return ``{key: energy}`` for every active restraint term, with the right noise
-    gate folded into each term's mask. Shared by all three backends' total_energy and
+    """Return ``{key: energy}`` for every active restraint term, with the right gate
+    folded into each term's mask. Shared by all three backends' total_energy and
     energy_breakdown — only ``fns`` (the backend leaf functions), ``cg`` (the
     conformer gate multiplier) and ``sigma_gate`` (a per-restraint
-    ``(start_sigma, stop_sigma, mask) -> gated_mask`` callable; ``stop_sigma`` may be
-    ``None`` for a term with no lower bound) vary per backend / noise level.
+    ``(start_sigma, stop_sigma, start_step, stop_step, mask) -> gated_mask`` callable;
+    any bound may be ``None`` = no bound on that side) vary per backend / noise level.
+    The gate is the AND of the sigma window AND the step window — a restraint uses one or
+    the other (mutually exclusive at config time); the unused axis is always-on by default.
 
     ``cg``/``sigma_gate`` are precomputed by the caller so the backend-specific casts
     (numpy bool, torch ``.to``, jax tracer-safe ``.astype``) stay out of this loop.
@@ -261,12 +274,21 @@ def term_energies(fns, prepared, positions, cg, sigma_gate, include_distance):
         if gate == "dist" and not include_distance:
             continue
         p = prepared[key]
-        # rmsd carries a lower noise bound (stop_sigma -> released for sigma below it);
-        # distance has none (p.get -> None == no lower bound).
+        # Per-entry terms (distance/rmsd/group) carry both a sigma window (start_sigma,
+        # stop_sigma) and a step window (start_step, stop_step); the gate ANDs them.
+        # Conformer terms instead use the shared conformer gate ``cg`` (which already
+        # folds the conf sigma+step windows). ``p.get`` keeps a hand-built dict lacking
+        # the step keys working (treated as no step bound).
         mask = (
             p["mask"] * cg
             if gate == "conf"
-            else sigma_gate(p["start_sigma"], p.get("stop_sigma"), p["mask"])
+            else sigma_gate(
+                p["start_sigma"],
+                p.get("stop_sigma"),
+                p.get("start_step"),
+                p.get("stop_step"),
+                p["mask"],
+            )
         )
         out[key] = fns[fn_name](positions, *[p[f] for f in fields], mask)
     return out

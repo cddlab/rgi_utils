@@ -173,6 +173,10 @@ class DistanceArrays:
     mask: np.ndarray  # (n_dist,)
     start_sigma: np.ndarray  # (n_dist,) per-restraint; active when sigma<=start_sigma
     stop_sigma: np.ndarray  # (n_dist,) released when sigma<stop_sigma (-1=never)
+    # per-restraint STEP window (the alternative gate axis; ANDed with the sigma window):
+    # active when start_step <= step <= stop_step. -inf/+inf = always (default).
+    start_step: np.ndarray  # (n_dist,) step-window lower bound
+    stop_step: np.ndarray  # (n_dist,) step-window upper bound
 
 
 @dataclass
@@ -204,6 +208,9 @@ class RmsdArrays:
     # and a free unmodeled tail). -1 = never released (active down to sigma=0 = old
     # behaviour). The active window is stop_sigma <= sigma <= start_sigma.
     stop_sigma: np.ndarray  # (n_rmsd,) per-restraint; active when sigma>=stop_sigma
+    # per-restraint STEP window (ANDed with the sigma window); -inf/+inf = always.
+    start_step: np.ndarray  # (n_rmsd,) step-window lower bound
+    stop_step: np.ndarray  # (n_rmsd,) step-window upper bound
     mask: np.ndarray  # (n_rmsd,) float {0,1}: 1 = valid, 0 = padding
 
 
@@ -238,6 +245,9 @@ class GroupAngleArrays:
     mask: np.ndarray  # (n_grp_angle,) float {0,1}: 1 = valid restraint, 0 = padding
     start_sigma: np.ndarray  # (n_grp_angle,) per-restraint; active when sigma<=start
     stop_sigma: np.ndarray  # (n_grp_angle,) released when sigma<stop_sigma (-1=never)
+    # per-restraint STEP window (ANDed with the sigma window); -inf/+inf = always.
+    start_step: np.ndarray  # (n_grp_angle,) step-window lower bound
+    stop_step: np.ndarray  # (n_grp_angle,) step-window upper bound
 
 
 @dataclass
@@ -274,6 +284,9 @@ class GroupDihedralArrays:
     mask: np.ndarray  # (n_grp_dih,) float {0,1}: 1 = valid restraint, 0 = padding
     start_sigma: np.ndarray  # (n_grp_dih,) per-restraint; active when sigma<=start
     stop_sigma: np.ndarray  # (n_grp_dih,) released when sigma<stop_sigma (-1=never)
+    # per-restraint STEP window (ANDed with the sigma window); -inf/+inf = always.
+    start_step: np.ndarray  # (n_grp_dih,) step-window lower bound
+    stop_step: np.ndarray  # (n_grp_dih,) step-window upper bound
 
 
 @dataclass
@@ -308,6 +321,10 @@ class RestraintSpec:
     # shared conformer LOWER bound (mirrors conf_start_sigma): conformer terms are
     # released for sigma < conf_stop_sigma. -1 (default) = never released (off).
     conf_stop_sigma: float = -1.0
+    # shared conformer STEP window (the alternative gate axis; ANDed with the sigma
+    # window). Active for conf_start_step <= step <= conf_stop_step; -inf/+inf = always.
+    conf_start_step: float = float("-inf")
+    conf_stop_step: float = float("inf")
     # custom restraints (rgi_utils.custom): a list of CustomSpec (backend-agnostic — local
     # index arrays + a config-formula AST or a code energy fn + weight/sigmas), each
     # compiled to a closure and added to the CG objective by the optimizers. NOT numpy
