@@ -113,10 +113,49 @@ a ligand atom gets its own ordinal. It is **not** 0-based and **not** the author
 Always qualify protein groups with `chain A and (...)`, or a bare `resid` range will also match the
 ligand chain's atoms with the same ordinal. This convention is identical across all tools.
 
+## Penalty shapes (shared)
+
+Every built-in restraint is defined by the same squared penalty,
+
+```
+E = Σᵢ wᵢ · δᵢ²
+```
+
+where `wᵢ` is the entry `weight` and `δᵢ` is the deviation of a measured quantity `x` (a distance,
+angle, volume, …) from its target. Four block names choose how `δ` is shaped:
+
+```
+harmonic         δ = x − t                         penalise any deviation from t
+flat-bottomed    δ = 0          for t₁ ≤ x ≤ t₂    no penalty inside the window
+                 δ = x − t₁     for x < t₁
+                 δ = x − t₂     for x > t₂
+flat-bottomed1   δ = min(0, x − t₁)                lower bound (penalise only x < t₁)
+flat-bottomed2   δ = max(0, x − t₂)                upper bound (penalise only x > t₂)
+```
+
+The same four shapes drive the `distance` / `angle` / `dihedral` blocks (only the target key
+differs: `target_distance` / `target_angle` / `target_dihedral`, with `…1` / `…2` for the
+flat-bottomed bounds). The **conformer** terms use the flat-bottomed shape with a symmetric `slack`:
+`δ = 0` within `±slack` of the RDKit-ideal value, quadratic outside (`slack = 0` ⇒ pure harmonic).
+
+`distance` is the one restraint with **no `weight`**: a centroid distance is 1-DOF, so it is solved
+closed-form (the `harmonic` minimum `d = target` is reached exactly in a single shift) instead of
+being added to the optimiser objective. Every other restraint is CG-minimised and scales with
+`weight`.
+
 ## `distance_restraints_config` (list)
 
 Pulls the **centroid distance** between two atom groups toward a target. Applied closed-form (1-DOF),
 so it has **no `weight`**.
+
+The measured quantity is the distance between the two groups' centroids,
+
+```
+d = ‖c₂ − c₁‖,    cₖ = (1 / |Gₖ|) Σ_{a ∈ Gₖ} xₐ    (plain masked-mean centroid)
+```
+
+shaped by one of the penalty blocks below (see Penalty shapes); being closed-form, `harmonic`
+reaches `d = target_distance` exactly.
 
 | key | type | default | meaning |
 |---|---|---|---|
@@ -137,26 +176,60 @@ Restraint-type block (exactly one):
 | `flat-bottomed1` | `target_distance1` | penalise only below `d1` |
 | `flat-bottomed2` | `target_distance2` | penalise only above `d2` |
 
-## `angle_restraints_config` / `dihedral_restraints_config` (lists)
+## `angle_restraints_config` (list)
 
-The **angle of 3 group centroids** (vertex = group 2) or the **dihedral of 4 group centroids** (axis
-= groups 2–3). These are the group-centroid analogues of the distance restraint — distinct from the
-per-ligand-atom conformer `angle`/`cistrans` terms. Targets are in **degrees** by default (set
-`unit: radians` on the entry to give them in radians). CG-solved; rigid group motion means
-`weight: 1.0` drives any group size.
+The **angle of 3 group centroids**, with the vertex at group 2 — the group-centroid analogue of the
+distance restraint, distinct from the per-ligand-atom conformer `angle` term. CG-solved; rigid group
+motion (the centroid-only energy gives every atom in a free group the same gradient, so the group
+translates as a unit) means `weight: 1.0` drives any group size.
+
+The measured quantity is the angle at centroid `c₂`,
+
+```
+θ = arccos( (c₁ − c₂) · (c₃ − c₂) / (‖c₁ − c₂‖ · ‖c₃ − c₂‖) ),    cₖ = centroid of group k
+```
+
+penalised by `E = Σ w · δ²(θ)` with the usual shapes (see Penalty shapes). Targets are in **degrees**
+by default — set `unit: radians` on the entry to give them in radians (stored internally as radians
+either way).
 
 | key | type | default | meaning |
 |---|---|---|---|
-| `atom_selection1..3` (angle) / `..4` (dihedral) | str | — (required) | the groups; group 2 is the angle vertex, groups 2–3 the dihedral axis |
+| `atom_selection1..3` | str | — (required) | the three groups; group 2 is the vertex |
 | `start_sigma` / `stop_sigma` | float | `+inf` / `-1` | sigma gating |
 | `start_step` / `stop_step` | int | `-inf` / `+inf` | step gating (mutually exclusive with the sigma window; see Step gating) |
 | `unit` | `"degrees"`/`"radians"` | `"degrees"` | unit of the target angle(s) for this entry |
 | `weight` | float | `1.0` | energy scale |
-| `move` | `"all"` / int / list / `"1,3"` | angle: arms (1,3) free, vertex pinned · dihedral: ends (1,4) free, axis pinned | which groups are free; the rest are pinned (stop-gradient). `"all"` frees every group |
-| one restraint-type block | dict | — (required) | `harmonic {target_angle\|target_dihedral}` or `flat-bottomed{,1,2}` with `target_angle1/2` / `target_dihedral1/2` (degrees, or radians if `unit: radians`) |
+| `move` | `"all"` / int / list / `"1,3"` | arms (1,3) free, vertex (2) pinned | which groups are free; the rest are pinned (stop-gradient). `"all"` frees every group |
+| one restraint-type block | dict | — (required) | `harmonic {target_angle}` or `flat-bottomed{,1,2}` with `target_angle1` / `target_angle2` (degrees, or radians if `unit: radians`) |
 
-`harmonic` for the dihedral is periodicity-safe (deviation wrapped to ±180°); `flat-bottomed`
-windows cannot straddle ±180°.
+## `dihedral_restraints_config` (list)
+
+The **dihedral of 4 group centroids**, about the axis through groups 2–3 — the group-centroid
+analogue of the distance restraint, distinct from the per-ligand-atom conformer `cistrans` term.
+CG-solved; `weight: 1.0` drives any group size, as for the angle.
+
+The measured quantity is the torsion about the `c₂`–`c₃` axis,
+
+```
+φ = atan2(y, x)   from the four centroids c₁, c₂, c₃, c₄   (standard 4-point torsion)
+```
+
+penalised by `E = Σ w · δ²(φ)` (see Penalty shapes). The `harmonic` shape is **periodicity-safe**: the deviation
+`φ − target_dihedral` is wrapped to ±180° before squaring, so e.g. +179° and −179° count as a 2°
+difference. The `flat-bottomed` shapes use the raw angle and therefore **cannot straddle ±180°**
+(`target_dihedral1 < target_dihedral2` is enforced). Targets in **degrees** by default
+(`unit: radians` to override).
+
+| key | type | default | meaning |
+|---|---|---|---|
+| `atom_selection1..4` | str | — (required) | the four groups; groups 2–3 are the axis |
+| `start_sigma` / `stop_sigma` | float | `+inf` / `-1` | sigma gating |
+| `start_step` / `stop_step` | int | `-inf` / `+inf` | step gating (mutually exclusive with the sigma window; see Step gating) |
+| `unit` | `"degrees"`/`"radians"` | `"degrees"` | unit of the target dihedral(s) for this entry |
+| `weight` | float | `1.0` | energy scale |
+| `move` | `"all"` / int / list / `"1,4"` | ends (1,4) free, axis (2,3) pinned | which groups are free; the rest are pinned (stop-gradient). `"all"` frees every group |
+| one restraint-type block | dict | — (required) | `harmonic {target_dihedral}` or `flat-bottomed{,1,2}` with `target_dihedral1` / `target_dihedral2` (degrees, or radians if `unit: radians`) |
 
 ## `conformer_restraints_config` (single dict)
 
@@ -181,6 +254,20 @@ Each term is a sub-dict; a term with `weight <= 0` is disabled (and not built).
 | `cistrans` | `weight` (0.1), `slack` (0.0 rad) | **cis/trans (E/Z)** of acyclic, non-aromatic double bonds (needs real bond orders; detects 0 for ligands with none, e.g. ATP/NAD/GLN) |
 | `vdw` | `weight` (**0.0**, off), `mode` (`"both"`), `scale` (0.75), `dmax` (5.0 Å) | non-bonded clash avoidance |
 
+**Energy.** Each term applies the shared flat-bottomed squared penalty — `δ = 0` within `±slack` of
+the RDKit-ideal value, quadratic outside (see Penalty shapes) — to a per-tuple quantity `x`:
+
+```
+bond      x = bond length r                                          ideal r₀
+angle     x = bond angle θ (radians)                                 ideal θ₀
+chiral    x = signed volume V = (a₁ − a₀) · ((a₂ − a₀) × (a₃ − a₀))  ideal V₀ (handedness)
+improper  x = the same signed volume V                               target V₀ ≈ 0 (planarity)
+cistrans  x = double-bond torsion φ (deviation wrapped to ±180°)     ideal φ₀ (E/Z)
+```
+
+`vdw` is one-sided (repulsion only): `E = w · Σ min(0, d − scale·(rᵢ + rⱼ))²` over non-bonded atom
+pairs closer than `dmax`, where `d` is the pair distance and `rᵢ`, `rⱼ` are their VdW radii.
+
 `vdw.mode`: `"intramolecular"` (static ligand-internal pairs, all backends), `"ligand_protein"`
 (dynamic ligand-vs-fixed-protein, torch/jax), or `"both"` (default). `scale` = fraction of the
 summed VdW radii used as the contact threshold; `dmax` = pairs farther than this are ignored. Note
@@ -190,6 +277,17 @@ summed VdW radii used as the contact threshold; `dmax` = pairs farther than this
 
 Drives the **Kabsch-superposed RMSD** of a moving group toward `target_rmsd` versus a reference PDB.
 The reference must be generated first (a vanilla prediction → PDB via gemmi); see each tool's page.
+
+The energy is
+
+```
+E = Σ w · (RMSD − target_rmsd)²,    RMSD = √( (1 / n) Σ_a ‖ Pₐ − R̂ · Qₐ ‖² )
+```
+
+where `Pₐ` / `Qₐ` are the prediction / reference **calc** atoms centred on their fit-atom centroids,
+`n = n_calc`, and `R̂` is the optimal rotation from a Kabsch SVD on the **fit** atoms. `R̂` (and the
+centroids) are treated as **fixed** (stop-gradient), so the gradient pulls the moving atoms, not the
+rotation — `target_rmsd = 0` drives the group onto the reference.
 
 | key | type | default | meaning |
 |---|---|---|---|
@@ -239,18 +337,51 @@ Each entry's energy (× `weight`) is added to the CG objective, gated by the usu
 | `start_sigma` / `stop_sigma` | float | `+inf` / `-1` | sigma gating (as everywhere) |
 | `start_step` / `stop_step` | int | `-inf` / `+inf` | step gating (mutually exclusive with the sigma window; see Step gating) |
 
-**Vocabulary** (the only names a formula / `ctx` may call):
+**How it works.** Each entry compiles to a closure `energy(active_coords) → scalar`. A selection name
+in a formula (`A`) is resolved from the entry's `selections` map to that group's atoms; a string
+literal (`"chain A"`) is a raw selection. Selection names resolve to their group **centroids** at
+setup (a dry run records which names the energy touches). The formula must reduce to a **scalar** (a
+`sum` over any batch dimension). It is parsed safely — no `eval`, and `import` / attribute access /
+subscripting / `lambda` all raise — so only the vocabulary below is callable.
 
-| group | names | notes |
-|---|---|---|
-| geometry | `distance(A,B)` `angle(A,B,C)` `dihedral(A,B,C,D)` `centroid(A)` `rg(A)` `norm(v)` `dot(u,v)` | over selection centroids; angles in **radians** |
-| penalty | `harmonic(x,t)` `flat_bottom(x,lo,hi)` `lower(x,lo)` `upper(x,hi)` | convenience squared penalties |
-| math | `sqrt exp log abs sin cos clip(x,lo,hi) minimum maximum where(cond,a,b) sum` | elementwise |
-| operators | `+ - * / ** %`, unary `-`, comparisons (`<` `<=` ...), `&` `|` | use `where(cond, a, b)` for branching — **no `if`** (keeps it jax-traceable) |
+The vocabulary has three groups — **geometry** (coordinates → a number), **penalty** (a number → an
+energy), and **math** (elementwise / reduction helpers) — plus operators.
 
-A selection name in a formula (`A`) is resolved from the entry's `selections` map; a string literal
-(`"chain A"`) is a raw selection. The formula is parsed safely (no `eval`, no attribute/`import`/
-subscript/lambda) and fails loudly on anything outside the vocabulary.
+**Geometry** — all operate on selection **centroids**; angular results are in **radians** (note: the
+built-in `angle` / `dihedral` configs take *degrees*, but a custom formula is in radians). `‖·‖` is
+the Euclidean norm:
+
+```
+centroid(A)        c_A = mean of A's atoms                                  → vector
+distance(A,B)      ‖c_A − c_B‖                                              → scalar
+angle(A,B,C)       arccos( (c_A−c_B)·(c_C−c_B) / (‖c_A−c_B‖ · ‖c_C−c_B‖) )  → scalar (rad), vertex B
+dihedral(A,B,C,D)  torsion about the B–C centroid axis, range ±π            → scalar (rad)
+rg(A)              √( meanᵢ ‖xᵢ − c_A‖² )   radius of gyration              → scalar
+norm(v)            ‖v‖   Euclidean norm of a vector quantity                → scalar
+dot(u,v)           u · v   dot product of two vector quantities             → scalar
+```
+
+**Penalty** — convenience squared penalties (you may also write the algebra directly):
+
+```
+harmonic(x, t)          (x − t)²                       quadratic toward t
+flat_bottom(x, lo, hi)  min(0, x−lo)² + max(0, x−hi)²  zero inside [lo, hi]
+lower(x, lo)            min(0, x−lo)²                  penalise only x < lo
+upper(x, hi)            max(0, x−hi)²                  penalise only x > hi
+```
+
+`lower` / `upper` are the same maths as the built-in `flat-bottomed1` / `flat-bottomed2` blocks.
+
+**Math** — elementwise and reductions, dispatched to the active backend:
+
+| group | names |
+|---|---|
+| elementwise | `sqrt` `exp` `log` `abs` `sin` `cos` `clip(x, lo, hi)` |
+| reductions | `sum` `minimum` `maximum` |
+| branching | `where(cond, a, b)` — there is **no `if`** (keeps the closure jax-traceable, since it must trace inside `lax.scan`) |
+
+**Operators**: `+ - * / ** %`, unary `-`, comparisons (`<` `<=` …), and `&` `|` (combine boolean
+masks for `where`).
 
 ```yaml
 custom_restraints_config:
