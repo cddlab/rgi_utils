@@ -145,6 +145,13 @@ def make_minimizer(
     # group-centroid angle/dihedral are CG-solved (energy terms gated per-restraint inside
     # total_energy via sigma), so the solver branch must run when either is present.
     has_group = spec.has_group_angle() or spec.has_group_dihedral()
+    # custom restraints -> jnp closures (active_coords) -> scalar (weight folded);
+    # selections baked as static jnp index arrays, so they trace inside lax.scan. Added to
+    # the CG objective with a per-entry sigma gate (jnp.where).
+    has_custom = spec.has_custom()
+    from rgi_utils.custom.closure import build_terms
+
+    custom_terms = build_terms(spec.custom, "jax") if has_custom else []
     dist_prepared = prepared.get("distance")
     # dynamic ligand-protein VdW (formerly torch-only; now jax too). The protein
     # background is read from the FULL coords at minimize time (it moves per diffusion
@@ -173,7 +180,7 @@ def make_minimizer(
         #    RMSD), plus the ligand-protein VdW term (gated on conf_start_sigma -- the
         #    `jnp.where` zeroes its weight AND gradient above the gate). Skipped for a
         #    distance-only spec. has_conf is already True when vdw_config is set.
-        if has_conf or has_rmsd or has_vdw or has_group:
+        if has_conf or has_rmsd or has_vdw or has_group or has_custom:
             if has_vdw:
                 prot_pos = coords[..., vdw_prot_global, :]
                 # conformer window conf_stop <= sigma <= conf_start (conf_stop=-1 = off)
@@ -193,6 +200,10 @@ def make_minimizer(
                         vdw_scale,
                         vdw_w,
                     )
+                for _name, start, stop, closure in custom_terms:
+                    _sc = jnp.asarray(sigma)
+                    gate = jnp.where((_sc <= start) & (_sc >= stop), 1.0, 0.0)
+                    e = e + gate * closure(a)
                 return e
 
             if is_cg:

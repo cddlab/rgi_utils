@@ -19,7 +19,7 @@ Restraint-Guided Inference (RGI) utilities for diffusion-based structure predict
 See each tool's guide in [`doc/`](doc/) for install / run details, and
 [`doc/config.md`](doc/config.md) for the full `restraints_config` schema.
 
-Five restraint types, all minimized during the denoising loop to guide coordinate optimization:
+Five **built-in** restraint types, all minimized during the denoising loop to guide coordinate optimization:
 
 - **conformer** — ligand bond / angle / chiral-volume / cistrans (E/Z) / improper
   (sp2 double-bond planarity, opt-in) toward an ideal RDKit geometry, plus **VdW**
@@ -30,6 +30,9 @@ Five restraint types, all minimized during the denoising loop to guide coordinat
 - **angle** — the angle of three atom groups' centroids (vertex = group 2), in degrees;
   the angular analogue of the distance restraint.
 - **dihedral** — the dihedral of four atom groups' centroids (axis = groups 2–3), in degrees.
+
+Beyond these five built-ins you can define your **own** restraint — see
+[Custom restraints](#custom-restraints) below.
 
 The default `method='CG'` solver (a nonlinear conjugate gradient with autodiff gradients)
 runs on GPU or CPU via the same torch/jax backend (`gpu: false` runs it on CPU); distance
@@ -151,6 +154,44 @@ types as distance (`harmonic` / `flat-bottomed` / `flat-bottomed1` / `flat-botto
 but targets are in **degrees** (`target_angle` / `target_dihedral`). `weight` defaults to
 1.0 and translates any group size rigidly. `move` selects which groups are free (default:
 the arms move, the anchor group is pinned).
+
+### Custom restraints
+
+Define your **own** restraint — not one of the five built-ins — as a differentiable energy,
+two ways (same vocabulary, both run on every backend):
+
+**Config only** — write the energy as a math **formula** over named selections, no Python:
+
+```yaml
+custom_restraints_config:
+  - name: symmetric                       # keep two inter-domain distances equal
+    energy: "(distance(A, B) - distance(C, D))**2"
+    selections: {A: "chain A and resid 10", B: "chain B and resid 10",
+                 C: "chain A and resid 90", D: "chain B and resid 90"}
+    weight: 1.0
+```
+
+**Code** — write `energy(ctx) -> scalar` and pass it directly (or register it for config reuse):
+
+```python
+from rgi_utils import CombinedRestraints, custom_restraint
+
+restr = CombinedRestraints()
+restr.add_custom(                         # throwaway: a callable, no registration
+    fn=lambda ctx: (ctx.distance("chain A and resid 10", "chain B and resid 10")
+                  - ctx.distance("chain A and resid 90", "chain B and resid 90"))**2)
+restr.setup(adapter, config=restraints_config)   # add_custom BEFORE setup
+
+@custom_restraint("symmetric")            # reusable: config can {use: "symmetric"}
+def energy(ctx): ...
+```
+
+`ctx` / the formula expose one **vocabulary**: geometry (`distance` `angle` `dihedral` `centroid`
+`rg` `norm` `dot`), penalty (`harmonic` `flat_bottom` `lower` `upper`), and math (`sqrt` `exp` `log`
+`abs` `sin` `cos` `clip` `minimum` `maximum` `where` `sum` + arithmetic). Use `where(cond, a, b)`,
+not `if` (keeps it jax-traceable). The energy (× `weight`) is added to the CG objective with the
+usual `start_sigma` / `stop_sigma` gating. Formulas are parsed safely (no `eval`). Full reference:
+[`doc/config.md`](doc/config.md) (the `custom_restraints_config` section).
 
 ### Implementing a framework adapter
 

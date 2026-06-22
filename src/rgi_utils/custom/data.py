@@ -1,0 +1,163 @@
+"""One ``custom_restraints_config`` entry: parse + per-structure selection resolution.
+
+A custom restraint is a backend-agnostic energy ``energy(ctx) -> scalar`` given as either
+a config ``energy`` formula string, a registered function referenced by ``use``, or a
+callable passed directly via ``fn``. ``CustomData`` parses the entry and, at setup,
+resolves the selections the energy touches to atoms via a *resolve pass* (run the energy
+with a ``ResolveContext`` that records selection identifiers and returns shaped dummies).
+The featurizer turns the resolved global indices into ``CustomSpec`` (local indices +
+the AST/fn + weight/sigmas) which the optimizers compile to a per-backend closure.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from typing import Any
+
+import numpy as np
+
+from rgi_utils._config_util import warn_unknown_keys
+from rgi_utils.custom.context import ResolveContext
+from rgi_utils.custom.dsl import eval_formula, parse_formula
+from rgi_utils.custom.registry import get_custom_fn
+from rgi_utils.group_geom_restr_data import _resolve_group_sites
+
+logger = logging.getLogger(__name__)
+
+_KNOWN_CUSTOM_KEYS = {
+    "name",
+    "energy",
+    "use",
+    "fn",
+    "selections",
+    "weight",
+    "start_sigma",
+    "stop_sigma",
+}
+
+
+@dataclass
+class CustomSpec:
+    """Backend-agnostic resolved custom restraint (stored in ``RestraintSpec.custom``).
+
+    ``selections`` maps each identifier to its LOCAL indices (into active_sites). ``kind``
+    is ``"formula"`` (evaluate ``ast``) or ``"fn"`` (call ``fn``). Optimizers build a
+    backend closure ``(active_coords) -> scalar`` from this (see ``custom.closure``)."""
+
+    name: str
+    selections: dict[str, np.ndarray]
+    kind: str
+    ast: Any
+    fn: Any
+    weight: float
+    start_sigma: float
+    stop_sigma: float
+
+
+class CustomData:
+    """Parse one entry + resolve its selections to global atom indices."""
+
+    def __init__(self) -> None:
+        self.name: str = "custom"
+        self.kind: str | None = None  # "formula" | "fn"
+        self.ast: Any = None
+        self.fn: Any = None
+        self.selections: dict[str, str] = {}  # config name -> selection string
+        self.weight: float = 1.0
+        self.start_sigma: float | None = None
+        self.stop_sigma: float = -1.0
+        self.run_restr: bool = False
+        self._identifiers: list[str] = []
+        self._global: dict[str, list[int]] = {}
+
+    def set_config(self, config: dict) -> None:
+        warn_unknown_keys(
+            config, _KNOWN_CUSTOM_KEYS, "custom_restraints_config entry", logger
+        )
+        self.name = str(config.get("name", "custom"))
+        self.selections = dict(config.get("selections", {}) or {})
+        _w = config.get("weight")
+        if _w is not None:
+            self.weight = float(_w)
+        _ss = config.get("start_sigma")
+        self.start_sigma = float(_ss) if _ss is not None else None
+        _stop = config.get("stop_sigma")
+        self.stop_sigma = float(_stop) if _stop is not None else -1.0
+
+        sources = [k for k in ("energy", "use", "fn") if config.get(k) is not None]
+        if len(sources) != 1:
+            raise ValueError(
+                "custom_restraints_config entry needs exactly one of 'energy' (formula), "
+                f"'use' (registered name), or 'fn' (callable); got {sources}"
+            )
+        src = sources[0]
+        if src == "energy":
+            self.kind = "formula"
+            self.ast = parse_formula(str(config["energy"]))
+        elif src == "use":
+            fn = get_custom_fn(str(config["use"]))
+            if fn is None:
+                raise ValueError(
+                    f"custom restraint 'use': no function registered as "
+                    f"{config['use']!r} (register it with @custom_restraint)"
+                )
+            self.kind, self.fn = "fn", fn
+        else:  # direct callable
+            if not callable(config["fn"]):
+                raise ValueError("custom_restraints_config 'fn' must be a callable")
+            self.kind, self.fn = "fn", config["fn"]
+        self.run_restr = True
+
+    def _evaluate_resolve(self, rc: ResolveContext) -> None:
+        if self.kind == "formula":
+            eval_formula(self.ast, rc)
+        else:
+            self.fn(rc)
+
+    def resolve_sites(self, adapter) -> None:
+        if not self.run_restr:
+            return
+        # resolve pass: run the energy with a recording ctx to collect selection identifiers
+        rc = ResolveContext()
+        self._evaluate_resolve(rc)
+        self._identifiers = list(rc.selections)
+        if not self._identifiers:
+            raise ValueError(
+                f"custom restraint {self.name!r} references no atom selection "
+                "(use distance/angle/.../centroid/rg over named or string selections)"
+            )
+        # a config name maps via 'selections'; a raw string is its own selection
+        sel_strings = [self.selections.get(i, i) for i in self._identifiers]
+        resolved = _resolve_group_sites(adapter, sel_strings)
+        self._global = dict(zip(self._identifiers, resolved))
+        logger.info(
+            "custom restraint (%s) resolved: %s",
+            self.name,
+            ", ".join(f"{i}={len(s)}" for i, s in self._global.items()),
+        )
+
+    def iter_global_sites(self):
+        out: list[int] = []
+        for s in self._global.values():
+            out.extend(int(x) for x in s)
+        return out
+
+    def build_spec(self, g2l: dict[int, int]) -> CustomSpec:
+        """Resolved global indices -> CustomSpec with LOCAL index arrays."""
+        local = {
+            i: np.array([g2l[int(x)] for x in sites], dtype=np.int64)
+            for i, sites in self._global.items()
+        }
+        return CustomSpec(
+            name=self.name,
+            selections=local,
+            kind=self.kind,
+            ast=self.ast,
+            fn=self.fn,
+            weight=float(self.weight),
+            start_sigma=float(self.start_sigma)
+            if self.start_sigma is not None
+            else float("inf"),
+            stop_sigma=float(self.stop_sigma),
+        )

@@ -48,6 +48,31 @@ class TorchRestraintOptimizer:
         self._active_idx = None
         self._device = None
         self._vdw = None  # dict of device tensors for the ligand-protein VdW term
+        # custom restraints -> torch closures (active_coords) -> scalar, weight folded.
+        # Built once; selections are baked as torch index tensors. The CG objective adds
+        # the per-entry sigma-gated sum of these (see minimize).
+        from rgi_utils.custom.closure import build_terms
+
+        self._custom_terms = build_terms(spec.custom, "torch")
+        if self._custom_terms:
+            logger.info(
+                "%d custom restraint(s): torch CG runs EAGER (the fused torch.compile GPU "
+                "path bypasses closure terms, so it is skipped when customs are present)",
+                len(self._custom_terms),
+            )
+
+    def _custom_energy(self, active, sigma):
+        """Per-entry sigma-gated sum of the custom-restraint closure energies at ``active``
+        (local coords). Returns ``None`` when no custom term is active so the caller can
+        skip adding it. Gate: ``stop_sigma <= sigma <= start_sigma`` (a python-float
+        compare, since the eager CG has a python-float sigma)."""
+        total = None
+        for _name, start, stop, closure in self._custom_terms:
+            if sigma is not None and not (sigma <= start and sigma >= stop):
+                continue
+            e = closure(active)
+            total = e if total is None else total + e
+        return total
 
     def _ensure(self, device, dtype) -> None:
         if self._prepared is not None and self._device == device:
@@ -204,6 +229,7 @@ class TorchRestraintOptimizer:
         # group-centroid angle/dihedral are CG-solved like rmsd (not closed-form), so the
         # solver branch must run when either is present.
         has_group = self.spec.has_group_angle() or self.spec.has_group_dihedral()
+        has_custom = self.spec.has_custom()
         prepared = self._prepared
 
         # boltz / Lightning run prediction under torch.inference_mode, where leaf
@@ -230,7 +256,7 @@ class TorchRestraintOptimizer:
             #    angle/dihedral restraints: gradient solver on the non-distance energy
             #    (distance already applied above; total_energy(include_distance=False)
             #    covers conformer, RMSD AND the group terms). Skipped for distance-only.
-            if has_conf or has_rmsd or has_group:
+            if has_conf or has_rmsd or has_group or has_custom:
                 active = active.detach().clone()
                 active.requires_grad_(True)
                 prot_pos = None
@@ -248,9 +274,15 @@ class TorchRestraintOptimizer:
                     )
                     if prot_pos is not None:
                         e = e + self._vdw_energy(active, prot_pos)
+                    ce = self._custom_energy(active, sigma)
+                    if ce is not None:
+                        e = e + ce
                     return e
 
-                if self._is_cg() and active.is_cuda:
+                # custom restraints are arbitrary closures that the fused gpu_cg energy
+                # cannot read, so force the eager early-exit CG (correct on CUDA, unfused)
+                # whenever any custom restraint is present.
+                if self._is_cg() and active.is_cuda and not has_custom:
                     # GPU: the same early-exit CG as the CPU path, but with an
                     # inductor-fused (NOT CUDA-graph) torch.compile'd energy+grad so the
                     # launch-bound eval stops dominating (the eager _minimize_cg below is

@@ -424,6 +424,7 @@ def build_spec(
     rmsd_restraints: list | None = None,
     angle_restraints: list | None = None,
     dihedral_restraints: list | None = None,
+    custom_restraints: list | None = None,
 ) -> RestraintSpec:
     """Build a RestraintSpec. ``distance_restraints`` are DistanceData with
     ``target_sites1``/``target_sites2`` already resolved to global indices;
@@ -466,6 +467,9 @@ def build_spec(
     ]
     dihedral_restraints = [
         dr for dr in (dihedral_restraints or []) if getattr(dr, "run_restr", False)
+    ]
+    custom_restraints = [
+        c for c in (custom_restraints or []) if getattr(c, "run_restr", False)
     ]
     bw = cfg.get("bond", {}).get("weight", 0.05)
     bsl = cfg.get("bond", {}).get("slack", 0.0)
@@ -524,6 +528,9 @@ def build_spec(
     for gdr in dihedral_restraints:
         for g in range(4):
             active.update(int(s) for s in getattr(gdr, f"target_sites{g + 1}"))
+    # custom restraints contribute every atom their selections resolved to.
+    for cr in custom_restraints:
+        active.update(int(s) for s in cr.iter_global_sites())
     # VdW pushes the whole ligand, so every ligand atom must be optimisable even
     # if it carries no bond/angle/chiral term (e.g. a monatomic ion).
     if vdw_weight > 0:
@@ -532,6 +539,8 @@ def build_spec(
 
     active_sites = np.array(sorted(active), dtype=np.int64)
     g2l = {int(g): i for i, g in enumerate(active_sites)}
+    # custom restraints: remap each resolved selection to LOCAL indices (CustomSpec).
+    custom_specs = [cr.build_spec(g2l) for cr in custom_restraints]
     # Two VdW flavours share the conformer_config['vdw'] block: static intramolecular
     # (VdwArrays in the spec -> energy layer, all backends) and the dynamic
     # ligand-protein term (VdwConfig -> torch/jax optimizer). `mode` picks one, or the
@@ -782,6 +791,7 @@ def build_spec(
         vdw_config=vdw_config,
         conf_start_sigma=conf_start_sigma,
         conf_stop_sigma=conf_stop_sigma,
+        custom=custom_specs,
     )
     vdw_parts = []
     if vdw_config is not None:
@@ -793,7 +803,7 @@ def build_spec(
     vdw_desc = "+".join(vdw_parts) if vdw_parts else "off"
     logger.info(
         "built spec: n_active=%d bonds=%d angles=%d chirals=%d impropers=%d cistrans=%d "
-        "distances=%d rmsd=%d group_angle=%d group_dihedral=%d vdw=%s",
+        "distances=%d rmsd=%d group_angle=%d group_dihedral=%d vdw=%s custom=%d",
         spec.n_active,
         len(bonds),
         len(angles),
@@ -805,5 +815,6 @@ def build_spec(
         len(angle_restraints),
         len(dihedral_restraints),
         vdw_desc,
+        len(custom_specs),
     )
     return spec

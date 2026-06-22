@@ -133,7 +133,17 @@ restraints_config:
       #   re-idealises geometry the restraint held distorted (e.g. a broken peptide bond at a free tail)
       # atom_selection_{target,ref}_{fit,calc}: independently pick superposition vs measured atoms
       #   (a `backbone` / `name CA` fit superposes on main chain only). All omitted -> whole structure.
+  custom_restraints_config:         # define your OWN restraint (not a built-in) — see doc/config.md
+    - energy: "(distance(A,B) - distance(C,D))**2"   # a math formula (expression DSL) over...
+      selections: {A: "...", B: "...", C: "...", D: "..."}   # ...named atom selections
+      weight: 1.0                   # or: use: "<registered name>"  (a @custom_restraint fn)
 ```
+
+The `custom` restraint is the extension point: define an original restraint as a config
+`energy` formula (the DSL — geometry/penalty/math vocabulary over named `selections`) or a
+Python `energy(ctx)` function (`@custom_restraint` / `CombinedRestraints.add_custom`). It needs
+no tool-side change (same `restraints_config` + `CombinedRestraints`) and runs on every backend.
+Full vocabulary + examples: `doc/config.md` (the `custom_restraints_config` section).
 
 The `cistrans` term needs the ligand mol to carry real bond ORDERS (it keys on
 `BondType.DOUBLE`). boltz (CCD mol), protenix/openfold (biotite BondList), AF3

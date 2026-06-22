@@ -64,11 +64,50 @@ class CombinedRestraints:
         self._backend = None
         self._optimizer = None
         self._minimize_fn = None
+        # custom restraints added in code via add_custom() (the throwaway / Pythonic path).
+        # Kept separate from config so set_config does not wipe them; setup() merges them
+        # into cfg.custom_data before resolving + building the spec.
+        self._pending_custom: list = []
 
     def set_config(self, config: dict) -> None:
         self.config = RestraintsConfig.from_dict(config)
         if self.config.verbose:
             _enable_verbose_logging()
+
+    def add_custom(
+        self,
+        fn=None,
+        *,
+        energy: str | None = None,
+        selections: dict | None = None,
+        weight: float = 1.0,
+        start_sigma=None,
+        stop_sigma: float = -1.0,
+        name: str = "custom",
+    ) -> "CombinedRestraints":
+        """Add a custom restraint in code (the quick / throwaway path) — call BEFORE setup.
+
+        Pass exactly one of: ``fn`` (a callable ``energy(ctx) -> scalar``) or ``energy``
+        (a formula string in the same DSL as config) + a ``selections`` map. Both use the
+        shared ctx vocabulary (geometry + math + penalty) and run on every backend.
+        Equivalent to one ``custom_restraints_config`` entry; merged into the spec at
+        ``setup``. Returns self for chaining."""
+        from rgi_utils.custom.data import CustomData
+
+        if (fn is None) == (energy is None):
+            raise ValueError(
+                "add_custom: pass exactly one of fn (callable) or energy (formula string)"
+            )
+        entry: dict = {"weight": weight, "stop_sigma": stop_sigma, "name": name}
+        if start_sigma is not None:
+            entry["start_sigma"] = start_sigma
+        if selections is not None:
+            entry["selections"] = selections
+        entry["fn" if fn is not None else "energy"] = fn if fn is not None else energy
+        cd = CustomData()
+        cd.set_config(entry)
+        self._pending_custom.append(cd)
+        return self
 
     def setup(self, adapter, nbatch: int = 1, config: dict | None = None) -> None:
         """Build the restraint spec from the adapter (and optional ``config``).
@@ -100,6 +139,10 @@ class CombinedRestraints:
             ar.resolve_sites(adapter)
         for dr in cfg.dihedral_data:
             dr.resolve_sites(adapter)
+        # merge code-added custom restraints, then resolve every custom entry's selections
+        cfg.custom_data.extend(self._pending_custom)
+        for cd in cfg.custom_data:
+            cd.resolve_sites(adapter)
 
         ligand_confs = []
         if hasattr(adapter, "iter_ligand_confs"):
@@ -122,6 +165,7 @@ class CombinedRestraints:
             rmsd_restraints=cfg.rmsd_data,
             angle_restraints=cfg.angle_data,
             dihedral_restraints=cfg.dihedral_data,
+            custom_restraints=cfg.custom_data,
         )
         self._backend = cfg.resolve_backend()
         self._optimizer = None
@@ -387,6 +431,11 @@ class CombinedRestraints:
                 + bd.get("group_angle", 0.0)
                 + bd.get("group_dihedral", 0.0)
             )
+            # custom restraints are closures (not in the array breakdown) — evaluate each
+            # at the final coords and report by name. A 0.0 here with custom > 0 in the
+            # setup spec means SATISFIED (cross-check the setup `custom=N` count).
+            custom_bd = self._custom_breakdown(coords)
+            total += sum(custom_bd.values())
             # The dynamic ligand-protein VdW (spec.vdw_config) is applied only inside
             # the torch optimizer and is absent from the static per-term breakdown
             # above (energy_breakdown reads only spec.vdw). Add it directly (it is
@@ -410,12 +459,33 @@ class CombinedRestraints:
                 f"distance={bd['distance']:.5f} rmsd={bd.get('rmsd', 0.0):.5f} "
                 f"group_angle={bd.get('group_angle', 0.0):.5f} "
                 f"group_dihedral={bd.get('group_dihedral', 0.0):.5f} "
-                f"total={total:.5f}"
+                + "".join(f"{n}={v:.5f} " for n, v in custom_bd.items())
+                + f"total={total:.5f}"
             )
             logger.info(msg)
             print(msg, flush=True)
         except Exception as exc:  # stats are best-effort
             logger.warning("finalize stats failed: %s", exc)
+
+    def _custom_breakdown(self, coords) -> dict:
+        """``{name: energy}`` for each custom restraint at ``coords`` (numpy, diagnostic;
+        weight folded). Same-named entries are summed. Empty when no custom restraint."""
+        if not self.spec.custom:
+            return {}
+        import numpy as np
+
+        from rgi_utils.custom.closure import build_terms
+
+        c = (
+            coords.detach().cpu().numpy()
+            if hasattr(coords, "detach")
+            else np.asarray(coords)
+        )
+        active = c[..., self.spec.active_sites, :]
+        out: dict = {}
+        for name, _start, _stop, closure in build_terms(self.spec.custom, "numpy"):
+            out[name] = out.get(name, 0.0) + float(closure(active))
+        return out
 
     def _restraint_breakdown(self, coords) -> dict:
         """Per-term restraint energies at ``coords`` (active atoms), backend-aware."""

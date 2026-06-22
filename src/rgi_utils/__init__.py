@@ -14,6 +14,7 @@ from rgi_utils.atom_context import (
     LigandConf,
 )
 from rgi_utils.combined import CombinedRestraints
+from rgi_utils.custom import custom_restraint
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
@@ -23,4 +24,6 @@ __all__ = [
     "ConformerAdapter",
     "LigandConf",
     "CombinedRestraints",
+    # custom restraints: register a reusable code energy fn (config refs it by {use: name})
+    "custom_restraint",
 ]

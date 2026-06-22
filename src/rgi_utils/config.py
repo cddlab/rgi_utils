@@ -11,6 +11,7 @@ import logging
 from dataclasses import dataclass, field
 
 from rgi_utils._config_util import coerce_bool
+from rgi_utils.custom.data import CustomData
 from rgi_utils.distance_restr_data import DistanceData
 from rgi_utils.group_geom_restr_data import AngleRestraintData, DihedralRestraintData
 from rgi_utils.rmsd_restr_data import RmsdData
@@ -34,6 +35,9 @@ class RestraintsConfig:
     dihedral_data: list = field(
         default_factory=list
     )  # group-centroid dihedral restraints
+    custom_data: list = field(
+        default_factory=list
+    )  # custom restraints (rgi_utils.custom)
 
     @classmethod
     def from_dict(cls, config: dict | None) -> "RestraintsConfig":
@@ -57,6 +61,7 @@ class RestraintsConfig:
             "rmsd_restraints_config",
             "angle_restraints_config",
             "dihedral_restraints_config",
+            "custom_restraints_config",
         }
         _unknown_top = set(config) - _KNOWN_TOP_LEVEL - {"start_sigma"}
         if _unknown_top:
@@ -152,6 +157,12 @@ class RestraintsConfig:
             if dd.start_sigma is None:
                 dd.start_sigma = _ALWAYS_ON
             cfg.dihedral_data.append(dd)
+        # custom restraints (expression DSL / code fn). start_sigma None -> +inf (active
+        # every step) is applied when the CustomSpec is built (CustomData.build_spec).
+        for entry in config.get("custom_restraints_config", []) or []:
+            cd = CustomData()
+            cd.set_config(entry)
+            cfg.custom_data.append(cd)
         return cfg
 
     def resolve_backend(self) -> str:

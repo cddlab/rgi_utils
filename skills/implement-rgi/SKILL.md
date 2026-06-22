@@ -40,6 +40,12 @@ These are flat-bottomed squared penalties minimized on GPU (or CPU). The energy
 maths is identical across the torch and jax backends (with a numpy energy
 reference); distance is applied closed-form rather than through the solver.
 
+Beyond these five built-ins, a user can define an **original** restraint with no
+hand-wiring — a config-only `custom_restraints_config` math **formula** (the expression
+DSL) or a Python `energy(ctx)` function — both run on every backend. This needs **no
+tool-side change** (it flows through the same `restraints_config` + `CombinedRestraints`).
+See `references/lifecycle-and-hooks.md` and `doc/config.md`.
+
 ## Core principle: rgi_utils does the heavy lifting
 
 **Everything reusable already lives in `rgi_utils`** — the restraint spec

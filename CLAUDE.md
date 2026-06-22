@@ -171,6 +171,37 @@ longer force-downgrades to intramolecular). VdW `weight` defaults to **0** (off)
 it > 0 to activate. The static `vdw_energy` (idx pairs) lives in the energy layer for
 parity across backends.
 
+### Custom restraints (the extension point — `rgi_utils/custom/`)
+
+Beyond the five built-ins, a user can define an **original** restraint as a backend-agnostic
+energy `energy(ctx) -> scalar`. Two authoring paths, ONE mechanism:
+- **config (expression DSL)**: a `custom_restraints_config` entry with an `energy` formula string
+  over a shared vocabulary + named `selections` (e.g. `"(distance(A,B) - distance(C,D))**2"`).
+- **code (ctx fn)**: a Python `energy(ctx)` — passed directly (`CombinedRestraints.add_custom(fn=…)`
+  / config `{"fn": …}`) or registered (`@custom_restraint("name")`, config `{"use": "name"}`).
+
+Both compile to a **closure** `(active_coords) -> scalar` that the optimizers ADD to the CG
+objective (`torch_optim` `energy_fn` / `jax_optim` `_descend.energy_fn`, like the dynamic VdW) with a
+per-entry sigma gate — they are NOT array-dispatch terms (`_terms`/`total_energy` are untouched), so
+arbitrary formulas with variable selections fit. Package layout: `custom/backends.py` (the `ops`
+facade — geometry written ONCE per the `axis=`/`dim=` split, so parity is structural),
+`vocabulary.py` (geometry+penalty), `context.py` (`RestraintContext` + the setup-time
+`ResolveContext` that records selections via shaped-numpy dummies), `dsl.py` (safe `ast` parse — node
+whitelist, no `eval`), `registry.py` (`@custom_restraint`), `data.py` (`CustomData`/`CustomSpec`),
+`closure.py` (`build_terms`). Storage: `RestraintSpec.custom: list[CustomSpec]` (Python AST/fn + local
+index arrays — NOT numpy term arrays, hence a separate field); `has_custom()` joins `is_active()` /
+the solver-run condition / `max_start_sigma()`.
+
+Non-obvious invariants: custom energies use **plain centroids** (no `_move_centroid` rigid-translation
+trick), so autodiff grad == numpy-FD (the harness checks this strictly, unlike the group restraints).
+The closure must reduce to a **scalar** (`ops.sum` over batch dims) or `jax.value_and_grad` rejects it.
+Selections resolve at setup via a **resolve pass** (run the energy with `ResolveContext`). On CUDA the
+torch CG runs **eager** when any custom is present (the fused `gpu_cg` `_energy` bypasses `energy_fn`,
+so it can't see closures) — correct, just unfused; the built-ins keep the fused path. `import
+rgi_utils` stays numpy-only (torch/jax pulled lazily per backend by `get_ops`). Harness:
+`tests/test_custom.py` (both paths × 3-backend energy/grad parity + jax-scan + torch minimize + DSL
+safety). Full config surface: `doc/config.md`.
+
 ### Key design points
 
 - `CombinedRestraints` is **instance-scoped — a fresh `CombinedRestraints()` per

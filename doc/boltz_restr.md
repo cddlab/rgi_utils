@@ -31,7 +31,7 @@ same YAML that lists the sequences). Two things turn restraints on:
 1. **Per ligand** — add `conformer_restraints: true` next to the ligand's `ccd`/`smiles` to enable
    the bond/angle/chiral/cistrans/VdW conformer restraints for that ligand.
 2. **The `restraints_config:` block** — the distance / angle / dihedral / conformer /
-   RMSD restraints. The example below writes **every usable variable** with a concrete value; see
+   RMSD restraints, plus config-only `custom` restraints (define your own — see config.md). The example below writes **every usable variable** with a concrete value; see
    [`config.md`](config.md) for what each does, the alternative restraint types (`flat-bottomed`
    etc.), and the RMSD `atom_selection_ref`/`atom_selection_target` shorthand.
 

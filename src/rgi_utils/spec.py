@@ -11,7 +11,7 @@ indices; backends convert the NumPy arrays into their own tensor type.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -308,6 +308,12 @@ class RestraintSpec:
     # shared conformer LOWER bound (mirrors conf_start_sigma): conformer terms are
     # released for sigma < conf_stop_sigma. -1 (default) = never released (off).
     conf_stop_sigma: float = -1.0
+    # custom restraints (rgi_utils.custom): a list of CustomSpec (backend-agnostic — local
+    # index arrays + a config-formula AST or a code energy fn + weight/sigmas), each
+    # compiled to a closure and added to the CG objective by the optimizers. NOT numpy
+    # arrays (Python AST/fn live here), so this is a separate field, not part of the
+    # array-based terms above. Empty when no custom restraint is configured.
+    custom: list = field(default_factory=list)
 
     def has_conformer(self) -> bool:
         """True if any conformer (bond/angle/chiral/improper/cistrans/vdw) restraint
@@ -345,6 +351,11 @@ class RestraintSpec:
         closed-form), so the solver must run when this is True."""
         return self.group_dihedral is not None and self.group_dihedral.mask.sum() > 0
 
+    def has_custom(self) -> bool:
+        """True if any custom restraint (rgi_utils.custom) is configured. Custom restraints
+        are CG-solved closures added to the objective, so the solver must run when True."""
+        return len(self.custom) > 0
+
     def is_active(self) -> bool:
         """True if there is any work to do."""
         return self.n_active > 0 and (
@@ -353,6 +364,7 @@ class RestraintSpec:
             or self.has_rmsd()
             or self.has_group_angle()
             or self.has_group_dihedral()
+            or self.has_custom()
         )
 
     def max_start_sigma(self) -> float:
@@ -369,4 +381,6 @@ class RestraintSpec:
             vals.append(float(np.max(self.group_angle.start_sigma)))
         if self.has_group_dihedral() and self.group_dihedral is not None:
             vals.append(float(np.max(self.group_dihedral.start_sigma)))
+        for c in self.custom:
+            vals.append(float(c.start_sigma))
         return max(vals) if vals else -1.0

@@ -25,10 +25,15 @@ restraints_config:
   dihedral_restraints_config: [ ... ]   # list  (group-centroid dihedral)
   conformer_restraints_config: { ... }  # single dict (ligand geometry)
   rmsd_restraints_config:     [ ... ]   # list
+  custom_restraints_config:   [ ... ]   # list  (define your OWN restraint — see below)
 ```
 
 A restraint type is active only if its block is present (and, for conformer terms, the term's
 `weight > 0`).
+
+The five blocks above (distance / angle / dihedral / conformer / rmsd) are the **built-ins**.
+`custom_restraints_config` lets you define an **original** restraint as a math formula — see the
+last section.
 
 ## Top-level keys
 
@@ -178,3 +183,72 @@ and measured ("calc") atom sets are chosen independently:
 Use the shorthand for the common case (fit = calc); use the four `_fit`/`_calc` keys to e.g.
 superpose on the backbone but measure over a pocket. Under `pairing: align`, restrict the fit to
 `name CA` or `backbone` so a substituted homolog's side chain is not pinned.
+
+## `custom_restraints_config` (list)
+
+Define your **own** restraint — not one of the five built-ins — as a differentiable energy. Two
+ways, same vocabulary, both run on every backend (torch / jax):
+
+* **config only (expression DSL)**: write the energy as a math **formula** string over named atom
+  selections. No Python.
+* **code (ctx function)**: write `energy(ctx) -> scalar` in Python and either register it
+  (`@custom_restraint("name")`, then reference it here with `use:`) or pass the callable directly
+  (`CombinedRestraints.add_custom(fn=...)`, or a `fn:` entry for the Python-dict tools).
+
+Each entry's energy (× `weight`) is added to the CG objective, gated by the usual
+`start_sigma` / `stop_sigma` window.
+
+| key | type | default | meaning |
+|---|---|---|---|
+| `energy` | str | — | the formula (DSL). Exactly one of `energy` / `use` / `fn` is required |
+| `use` | str | — | name of a function registered with `@custom_restraint` |
+| `fn` | callable | — | a Python `energy(ctx) -> scalar` (Python-dict input only) |
+| `selections` | dict | `{}` | `name -> selection string` for the names used in an `energy` formula |
+| `weight` | float | `1.0` | scales the whole energy |
+| `name` | str | `"custom"` | label shown in the `finalize` per-term log |
+| `start_sigma` / `stop_sigma` | float | `+inf` / `-1` | sigma gating (as everywhere) |
+
+**Vocabulary** (the only names a formula / `ctx` may call):
+
+| group | names | notes |
+|---|---|---|
+| geometry | `distance(A,B)` `angle(A,B,C)` `dihedral(A,B,C,D)` `centroid(A)` `rg(A)` `norm(v)` `dot(u,v)` | over selection centroids; angles in **radians** |
+| penalty | `harmonic(x,t)` `flat_bottom(x,lo,hi)` `lower(x,lo)` `upper(x,hi)` | convenience squared penalties |
+| math | `sqrt exp log abs sin cos clip(x,lo,hi) minimum maximum where(cond,a,b) sum` | elementwise |
+| operators | `+ - * / ** %`, unary `-`, comparisons (`<` `<=` ...), `&` `|` | use `where(cond, a, b)` for branching — **no `if`** (keeps it jax-traceable) |
+
+A selection name in a formula (`A`) is resolved from the entry's `selections` map; a string literal
+(`"chain A"`) is a raw selection. The formula is parsed safely (no `eval`, no attribute/`import`/
+subscript/lambda) and fails loudly on anything outside the vocabulary.
+
+```yaml
+custom_restraints_config:
+  # symmetry: keep two inter-domain distances equal
+  - name: symmetric
+    energy: "(distance(A, B) - distance(C, D))**2"
+    selections:
+      A: "chain A and resid 10"
+      B: "chain B and resid 10"
+      C: "chain A and resid 90"
+      D: "chain B and resid 90"
+    weight: 1.0
+  # pull a domain's radius of gyration toward a target compactness
+  - name: compact
+    energy: "harmonic(rg(dom), 12.0)"            # (rg - 12)**2
+    selections: {dom: "chain A and resid 1 to 80"}
+```
+
+Code (reusable via `use:`, or passed directly with `add_custom`):
+
+```python
+from rgi_utils import custom_restraint, CombinedRestraints
+
+@custom_restraint("symmetric")                 # reusable: config can {use: "symmetric"}
+def energy(ctx):
+    return (ctx.distance("chain A and resid 10", "chain B and resid 10")
+          - ctx.distance("chain A and resid 90", "chain B and resid 90"))**2
+
+restr = CombinedRestraints()
+restr.add_custom(fn=energy, weight=1.0)          # throwaway: no registration
+restr.setup(adapter, config=restraints_config)   # call add_custom BEFORE setup
+```
