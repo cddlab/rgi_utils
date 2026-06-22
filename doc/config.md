@@ -208,7 +208,7 @@ analogue of the distance restraint, distinct from the per-ligand-atom conformer 
 CG-solved; `weight: 1.0` drives any group size, as for the angle.
 
 The measured quantity is the dihedral angle $\phi$ of the four centroids $c_1, c_2, c_3, c_4$ about
-the $c_2$–$c_3$ axis (the periodicity-safe `atan2` convention), penalised by
+the axis through $c_2$ and $c_3$ (the periodicity-safe `atan2` convention), penalised by
 $E = \sum w\,\delta^2(\phi)$ (see Penalty shapes). The `harmonic` shape is **periodicity-safe**: the
 deviation $\phi - t$ is wrapped to $[-180^\circ, 180^\circ]$ before squaring, so e.g. $+179^\circ$
 and $-179^\circ$ count as a $2^\circ$ difference. The `flat-bottomed` shapes use the raw angle and
@@ -358,8 +358,8 @@ $\lVert\cdot\rVert$ is the Euclidean norm:
 | `centroid(A)` | vector | $c_A$ = mean of $A$'s atoms |
 | `distance(A,B)` | scalar | $\lVert c_A - c_B \rVert$ |
 | `angle(A,B,C)` | scalar (rad) | $\arccos\!\big( (c_A - c_B)\cdot(c_C - c_B) / (\lVert c_A - c_B \rVert\,\lVert c_C - c_B \rVert) \big)$, vertex $B$ |
-| `dihedral(A,B,C,D)` | scalar (rad) | torsion about the $B$–$C$ centroid axis, range $\pm\pi$ |
-| `rg(A)` | scalar | $\sqrt{\operatorname{mean}_i \lVert x_i - c_A \rVert^2}$ — radius of gyration |
+| `dihedral(A,B,C,D)` | scalar (rad) | torsion about the B–C centroid axis, range $\pm\pi$ |
+| `rg(A)` | scalar | $\sqrt{\frac{1}{\lvert A\rvert}\sum_i \lVert x_i - c_A \rVert^2}$ — radius of gyration |
 | `norm(v)` | scalar | $\lVert v \rVert$ |
 | `dot(u,v)` | scalar | $u \cdot v$ |
 
