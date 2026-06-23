@@ -98,6 +98,7 @@ def test_jax_minimizer_step_window_traced_under_jit():
             target2=np.array([0.0]),
             dist_type=np.array([0], dtype=np.int64),
             move_mode=np.array([0], dtype=np.int64),
+            weight=np.array([1.0]),
             mask=np.array([1.0]),
             start_sigma=np.array([float("inf")]),
             stop_sigma=np.array([-1.0]),

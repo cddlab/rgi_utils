@@ -95,6 +95,7 @@ def _make_spec(
         target2=np.array([6.0, 5.0]),
         dist_type=np.array([0, 1], dtype=np.int64),  # harmonic + flat-bottomed
         move_mode=np.array([0, 0], dtype=np.int64),  # both groups move (default)
+        weight=np.array([1.0, 0.5]),  # exercise the weighted energy multiply in parity
         mask=np.array([1.0, 1.0]),
         start_sigma=np.array([100.0, 5.0]),  # different per-distance start_sigma
         stop_sigma=np.array([-1.0, -1.0]),  # -1 = never released (off)
@@ -650,6 +651,128 @@ def test_distance_closed_form_coupled_move_modes():
     assert np.allclose(a_np, a_j, atol=1e-5)
 
 
+def _shift_3backends(active, d):
+    """Apply the closed-form distance shift on numpy/torch/jax, assert they agree, return
+    the numpy result. ``d`` is a hand-built prepared dict (no batch dim)."""
+    torch = pytest.importorskip("torch")
+    jnp = pytest.importorskip("jax.numpy")
+    from rgi_utils.optim import distance_shift as ds
+
+    a_np = ds.apply_distance_shift_numpy(active, d, 0.0)
+    a_t = ds.apply_distance_shift_torch(
+        torch.as_tensor(active), {k: torch.as_tensor(v) for k, v in d.items()}, 0.0
+    ).numpy()
+    a_j = np.asarray(
+        ds.apply_distance_shift_jax(
+            jnp.asarray(active), {k: jnp.asarray(v) for k, v in d.items()}, 0.0
+        )
+    )
+    assert np.allclose(a_np, a_t, atol=1e-6)
+    assert np.allclose(a_np, a_j, atol=1e-5)
+    return a_np
+
+
+def test_distance_single_weight_reaches_target():
+    """A SINGLE distance restraint reaches its exact target REGARDLESS of weight (weight
+    is a no-op for a lone / disjoint restraint — it cancels in the per-atom normaliser).
+    Same invariant as angle/dihedral, where a single restraint hits its target at any
+    weight."""
+    active = np.zeros((4, 3))
+    active[2:, 0] = 20.0  # centroid1 at x=0, centroid2 at x=20 -> gap 20, target 5
+    for w in (0.1, 1.0, 5.0):
+        d = dict(
+            grp1_idx=np.array([[0, 1]]),
+            grp2_idx=np.array([[2, 3]]),
+            grp1_mask=np.array([[1.0, 1.0]]),
+            grp2_mask=np.array([[1.0, 1.0]]),
+            target1=np.array([5.0]),
+            target2=np.array([0.0]),
+            dist_type=np.array([0]),
+            move_mode=np.array([0]),
+            weight=np.array([w]),
+            mask=np.array([1.0]),
+            start_sigma=np.array([1e30]),
+            stop_sigma=np.array([-1.0]),
+        )
+        a = _shift_3backends(active, d)
+        gap = np.linalg.norm(a[2:].mean(0) - a[:2].mean(0))
+        assert abs(gap - 5.0) < 1e-6, w
+
+
+def test_distance_weighted_balance():
+    """OVER-CONSTRAINED coupling — the only regime where weight changes the fixed point.
+    Atom B is the SOLE mover of two CONFLICTING restraints (r1 pins A and moves B; r2 pins
+    C and moves B): r1 wants |B-A|=5 (B->5), r2 wants |B-C|=5 (B->15). B settles at the
+    WEIGHTED balance B = (5*w1 + 15*w2)/(w1+w2); A and C stay EXACTLY pinned. numpy/torch/
+    jax agree."""
+    # A=0 (pinned), B=10 (sole mover), C=20 (pinned)
+    active = np.zeros((3, 3))
+    active[1, 0] = 10.0
+    active[2, 0] = 20.0
+
+    def run(w1, w2):
+        d = dict(
+            grp1_idx=np.array([[0], [1]]),  # r1: A-B ; r2: B-C
+            grp2_idx=np.array([[1], [2]]),
+            grp1_mask=np.array([[1.0], [1.0]]),
+            grp2_mask=np.array([[1.0], [1.0]]),
+            target1=np.array([5.0, 5.0]),
+            target2=np.array([0.0, 0.0]),
+            dist_type=np.array([0, 0]),
+            move_mode=np.array(
+                [2, 1]
+            ),  # r1 moves grp2(B), pins A; r2 moves grp1(B), pins C
+            weight=np.array([w1, w2]),
+            mask=np.array([1.0, 1.0]),
+            start_sigma=np.array([1e30, 1e30]),
+            stop_sigma=np.array([-1.0, -1.0]),
+        )
+        return _shift_3backends(active, d)
+
+    for w1, w2 in ((1.0, 1.0), (2.0, 1.0), (1.0, 2.0)):
+        a = run(w1, w2)
+        expect = (5.0 * w1 + 15.0 * w2) / (w1 + w2)
+        assert abs(a[1, 0] - expect) < 1e-4, (w1, w2, a[1, 0])
+        assert np.allclose(a[0], active[0], atol=1e-9)  # A pinned exactly
+        assert np.allclose(a[2], active[2], atol=1e-9)  # C pinned exactly
+
+
+def test_distance_weighted_mixed_pin_move():
+    """Regression guard for the normaliser denominator: it must weight by the move
+    INDICATOR [c>0], NOT by plain w_d. r1=(A,B) move=1 (moves A, PINS B); r2=(B,C) move=1
+    (moves B, pins C). B is moved by r2 ALONE, so it must reach its target regardless of
+    r1's weight. With a plain-w denominator wnorm[B]=w1+w2, so a lopsided w1=50:w2=1 would
+    stall B at ~73% residual after 16 passes (target missed); the [c>0] denominator gives
+    wnorm[B]=w2, so B moves fully. A then chases B to |A-B|=5."""
+    # A=0, B=10, C=20 ; targets A-B=5, B-C=5  ->  B->15, A->10, C fixed
+    active = np.zeros((3, 3))
+    active[1, 0] = 10.0
+    active[2, 0] = 20.0
+    d = dict(
+        grp1_idx=np.array([[0], [1]]),  # r1: A-B ; r2: B-C
+        grp2_idx=np.array([[1], [2]]),
+        grp1_mask=np.array([[1.0], [1.0]]),
+        grp2_mask=np.array([[1.0], [1.0]]),
+        target1=np.array([5.0, 5.0]),
+        target2=np.array([0.0, 0.0]),
+        dist_type=np.array([0, 0]),
+        move_mode=np.array([1, 1]),  # r1 moves grp1(A) pins B; r2 moves grp1(B) pins C
+        weight=np.array(
+            [50.0, 1.0]
+        ),  # lopsided: plain-w would dilute B's only mover (r2)
+        mask=np.array([1.0, 1.0]),
+        start_sigma=np.array([1e30, 1e30]),
+        stop_sigma=np.array([-1.0, -1.0]),
+    )
+    a = _shift_3backends(active, d)
+    assert (
+        abs(np.linalg.norm(a[2] - a[1]) - 5.0) < 1e-3
+    )  # B-C gap reached (B moved fully)
+    assert abs(np.linalg.norm(a[1] - a[0]) - 5.0) < 1e-3  # A chased B
+    assert abs(a[1, 0] - 15.0) < 1e-3  # B at 15, not stalled near 10
+    assert np.allclose(a[2], active[2], atol=1e-9)  # C pinned exactly
+
+
 def _rmsd_case(seed=3, n=6):
     """One RMSD restraint over n atoms: reference + a rotated/translated/noised target."""
     rng = np.random.default_rng(seed)
@@ -992,6 +1115,7 @@ def test_conformer_distance_stop_sigma_window():
             target2=np.array([0.0]),
             dist_type=np.array([0], dtype=np.int64),
             move_mode=np.array([0], dtype=np.int64),
+            weight=np.array([1.0]),
             mask=np.array([1.0]),
             start_sigma=np.array([10.0]),
             stop_sigma=np.array([2.0]),
@@ -1056,6 +1180,7 @@ def test_step_window_gating_parity():
             target2=np.array([0.0]),
             dist_type=np.array([0], dtype=np.int64),
             move_mode=np.array([0], dtype=np.int64),
+            weight=np.array([1.0]),
             mask=np.array([1.0]),
             # sigma window always-on (the unused axis); the step window [5, 10] gates.
             start_sigma=np.array([float("inf")]),

@@ -120,9 +120,13 @@ def distance_energy(
     target1,
     target2,
     dist_type,
+    weight,
     mask,
 ):
-    """Centroid distance energy. dist_type: 0=harmonic, 1=flat-bottomed, 2=lower, 3=upper."""
+    """Centroid distance energy. dist_type: 0=harmonic, 1=flat-bottomed, 2=lower, 3=upper.
+
+    ``weight`` scales the reported ``weight*delta**2`` (finalize-reporting only; the optimiser
+    applies distance closed-form with ``include_distance=False``, so no double-count)."""
     grp1_pos = positions[..., grp1_idx, :]  # (..., n_dist, max_grp, 3)
     grp2_pos = positions[..., grp2_idx, :]
     m1 = grp1_mask[..., None]
@@ -153,7 +157,7 @@ def distance_energy(
             torch.where(dist_type == 2, delta_lower, delta_upper),
         ),
     )
-    return torch.sum(delta**2 * mask)
+    return torch.sum(weight * delta**2 * mask)
 
 
 def _group_centroid(positions, grp_idx, grp_mask):

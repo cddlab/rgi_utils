@@ -312,6 +312,23 @@ def _vdw_radius(z: int) -> float:
     return float(Chem.GetPeriodicTable().GetRvdw(int(z)))
 
 
+def _conf_weight(conformer_config: dict | None, key: str) -> float:
+    """Weight of a conformer sub-term (bond/angle/chiral/cistrans/vdw/improper).
+
+    Uniform "default 1.0, off if not configured" rule, shared with every other
+    restraint type (distance/rmsd/angle/dihedral/custom all default weight 1.0): a
+    sub-block PRESENT in ``conformer_restraints_config`` defaults its weight to 1.0
+    (override with an explicit ``weight``); an ABSENT sub-block is OFF (weight 0). An
+    explicit ``weight: 0`` / null also disables the term. (A bare ``key:`` with no
+    body — None in YAML — counts as present, so it activates the term at 1.0.)
+    """
+    cfg = conformer_config or {}
+    if key not in cfg:
+        return 0.0
+    w = (cfg.get(key) or {}).get("weight", 1.0)
+    return float(w) if w is not None else 0.0
+
+
 def _build_vdw_config(
     ligand_confs: list[LigandConf],
     conformer_config: dict,
@@ -328,7 +345,7 @@ def _build_vdw_config(
     unavailable.
     """
     vcfg = (conformer_config or {}).get("vdw", {}) or {}
-    weight = float(vcfg.get("weight", 0.0) or 0.0)
+    weight = _conf_weight(conformer_config, "vdw")
     if weight <= 0.0 or not ligand_confs or elements is None:
         return None
 
@@ -389,7 +406,7 @@ def _build_intramolecular_vdw(
     DEFAULT); ``'ligand_protein'`` leaves it off.
     """
     vcfg = (conformer_config or {}).get("vdw", {}) or {}
-    weight = float(vcfg.get("weight", 0.0) or 0.0)
+    weight = _conf_weight(conformer_config, "vdw")
     if weight <= 0.0 or not ligand_confs:
         return None
     from rdkit.Chem import rdmolops
@@ -491,28 +508,30 @@ def build_spec(
     custom_restraints = [
         c for c in (custom_restraints or []) if getattr(c, "run_restr", False)
     ]
-    bw = cfg.get("bond", {}).get("weight", 0.05)
-    bsl = cfg.get("bond", {}).get("slack", 0.0)
-    aw = cfg.get("angle", {}).get("weight", 0.05)
-    asl = cfg.get("angle", {}).get("slack", 0.0)
-    cw = cfg.get("chiral", {}).get("weight", 0.1)
-    csl = cfg.get("chiral", {}).get("slack", 0.05)
-    # Cis/trans (E/Z) is ON by default like bond/angle/chiral; set weight<=0
-    # to disable. slack is in radians (0 = pure harmonic toward the reference).
-    dw = float((cfg.get("cistrans", {}) or {}).get("weight", 0.1) or 0.0)
-    dsl = float((cfg.get("cistrans", {}) or {}).get("slack", 0.0) or 0.0)
-    vdw_weight = float((cfg.get("vdw", {}) or {}).get("weight", 0.0) or 0.0)
-    # improper (sp2 planarity) is OFF by default (weight 0) like vdw — opt-in so it
-    # never perturbs existing conformer runs; set weight>0 to activate. slack is in
-    # signed-volume units (mirrors chiral's 0.05 flat-bottom around the planar ~0).
-    iw = float((cfg.get("improper", {}) or {}).get("weight", 0.0) or 0.0)
-    isl = float((cfg.get("improper", {}) or {}).get("slack", 0.05) or 0.0)
+    # Every conformer sub-term follows the uniform "default 1.0, off if not configured"
+    # rule (see _conf_weight): a sub-block PRESENT in the conformer config is active at
+    # weight 1.0 (override with an explicit weight); an ABSENT sub-block is OFF. So a
+    # ligand that opts in but lists e.g. only `bond:` gets ONLY bond — angle/chiral/
+    # cistrans/vdw/improper stay off until their own sub-block is added. slack defaults
+    # stay per-term (chiral/improper flat-bottom ~0.05 signed-volume; bond/angle/cistrans
+    # 0.0 = pure harmonic toward the reference; cistrans slack is in radians).
+    bw = _conf_weight(cfg, "bond")
+    bsl = (cfg.get("bond") or {}).get("slack", 0.0)
+    aw = _conf_weight(cfg, "angle")
+    asl = (cfg.get("angle") or {}).get("slack", 0.0)
+    cw = _conf_weight(cfg, "chiral")
+    csl = (cfg.get("chiral") or {}).get("slack", 0.05)
+    dw = _conf_weight(cfg, "cistrans")
+    dsl = float((cfg.get("cistrans") or {}).get("slack", 0.0) or 0.0)
+    vdw_weight = _conf_weight(cfg, "vdw")
+    iw = _conf_weight(cfg, "improper")
+    isl = float((cfg.get("improper") or {}).get("slack", 0.05) or 0.0)
 
     bonds, angles, chirals, cistrans, impropers = _extract_conformer(ligand_confs)
     # weight<=0 means "disable": drop the term BEFORE the active_sites union so its
     # atoms do not become optimisable and it is never iterated — uniform across all
-    # conformer terms (bond/angle/chiral/cistrans). Defaults are >0, so this only
-    # fires when a weight is explicitly set to 0.
+    # conformer terms. weight<=0 now also covers an ABSENT sub-block (_conf_weight -> 0),
+    # so an unlisted term is simply dropped here.
     if bw <= 0:
         bonds = []
     if aw <= 0:
@@ -666,6 +685,7 @@ def build_spec(
         target2 = np.zeros(n)
         dist_type = np.zeros(n, dtype=np.int64)
         move_mode = np.zeros(n, dtype=np.int64)  # 0=both / 1=grp1 only / 2=grp2 only
+        dist_weight = np.ones(n)  # relative strength (no-op unless over-constrained)
         dist_start_sigma = np.full(n, -1.0)
         dist_stop_sigma = np.full(n, -1.0)  # -1 = never released (off)
         dist_start_step = np.full(n, float("-inf"))  # step-window; -inf/+inf = always
@@ -680,6 +700,7 @@ def build_spec(
             code, t1, t2 = _dist_params(dr)
             dist_type[di] = code
             move_mode[di] = int(getattr(dr, "move_mode", 0))
+            dist_weight[di] = float(getattr(dr, "weight", 1.0))
             target1[di] = t1
             target2[di] = t2
             ss = getattr(dr, "start_sigma", None)
@@ -696,6 +717,7 @@ def build_spec(
             target2=target2,
             dist_type=dist_type,
             move_mode=move_mode,
+            weight=dist_weight,
             mask=np.ones(n),
             start_sigma=dist_start_sigma,
             stop_sigma=dist_stop_sigma,

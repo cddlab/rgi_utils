@@ -118,10 +118,13 @@ def distance_energy(
     target1,
     target2,
     dist_type,
+    weight,
     mask,
 ):
     """Centroid distance energy between two atom groups. dist_type: 0=harmonic,
-    1=flat-bottomed, 2=lower-bound, 3=upper-bound."""
+    1=flat-bottomed, 2=lower-bound, 3=upper-bound. ``weight`` scales the reported
+    ``weight*delta**2`` (finalize-reporting only; optimiser applies distance closed-form
+    with ``include_distance=False``, so no double-count)."""
     grp1_pos = positions[..., grp1_idx, :]  # (..., n_dist, max_grp, 3)
     grp2_pos = positions[..., grp2_idx, :]
     m1 = grp1_mask[..., None]
@@ -149,7 +152,7 @@ def distance_energy(
             jnp.where(dist_type == 2, delta_lower, delta_upper),
         ),
     )
-    return jnp.sum(delta**2 * mask)
+    return jnp.sum(weight * delta**2 * mask)
 
 
 def _group_centroid(positions, grp_idx, grp_mask):

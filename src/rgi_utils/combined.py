@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 
 from rgi_utils.config import RestraintsConfig
-from rgi_utils.featurizer import build_spec
+from rgi_utils.featurizer import _conf_weight, build_spec
 
 logger = logging.getLogger(__name__)
 
@@ -169,16 +169,13 @@ class CombinedRestraints:
             try:
                 elements = adapter.get_elements()
             except Exception as exc:
-                # Elements feed ONLY the VdW conformer term (weight defaults to 0 = off).
-                # If VdW was actually requested, a get_elements failure is a real problem
-                # -> re-raise loudly rather than silently drop the term and quietly run
-                # without the contact penalty. Otherwise (the common case) tolerate it:
+                # Elements feed ONLY the VdW conformer term (off unless a `vdw:` block is
+                # present). If VdW was actually requested, a get_elements failure is a real
+                # problem -> re-raise loudly rather than silently drop the term and quietly
+                # run without the contact penalty. Otherwise (the common case) tolerate it:
                 # no other restraint needs elements. This keeps a broken adapter from
                 # hiding behind "VdW disabled" exactly when VdW matters.
-                vdw_w = float(
-                    (cfg.conformer_config.get("vdw") or {}).get("weight", 0) or 0
-                )
-                if vdw_w > 0:
+                if _conf_weight(cfg.conformer_config, "vdw") > 0:
                     raise
                 logger.warning("get_elements failed, VdW disabled: %s", exc)
 

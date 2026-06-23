@@ -95,6 +95,9 @@ restraints_config:
       # start_sigma:  optional; omitted -> active at every step (set e.g. 1.0 for late-only)
       # move:  optional; both (default, split) | 1 (only atom_selection1) | 2 (only
       #        atom_selection2). 1/2 pin the OTHER group (e.g. move only a ligand to a pocket).
+      # weight: optional (default 1.0). NO-OP for a single / disjoint restraint (always hits
+      #        its target); only balances OVER-CONSTRAINED coupled restraints whose shared atom
+      #        is their sole mover (settles w1:w2 between the targets). Not a soft-pull knob.
       harmonic: {target_distance: 25.0}
       # alternatives: flat-bottomed {target_distance1, target_distance2},
       #               flat-bottomed1 {target_distance1}, flat-bottomed2 {target_distance2}

@@ -13,6 +13,7 @@ _KNOWN_DISTANCE_KEYS = {
     "atom_selection1",
     "atom_selection2",
     "calc_method",
+    "weight",
     "start_sigma",
     "stop_sigma",
     "start_step",
@@ -43,6 +44,11 @@ class DistanceData:
     start_step: float  # step-window lower bound (-inf = always); XOR the sigma window
     stop_step: float  # step-window upper bound (+inf = always)
     move_mode: int  # 0=both / 1=grp1 only / 2=grp2 only (the 'move' config key)
+    # per-restraint relative strength for the closed-form weighted-average Jacobi. A NO-OP
+    # for a single restraint / restraints with disjoint groups (each reaches its exact
+    # target regardless); only changes the outcome for OVER-CONSTRAINED coupled restraints
+    # whose shared atom is their sole mover, where it balances the competition (2:1 etc).
+    weight: float
 
     def __init__(self):
         self.atom_selection1 = None
@@ -67,6 +73,7 @@ class DistanceData:
         self.start_step = float("-inf")
         self.stop_step = float("inf")
         self.move_mode = 0  # which group moves: 0=both (default) / 1=grp1 / 2=grp2
+        self.weight = 1.0  # relative strength (no-op unless over-constrained coupling)
 
     def set_config(self, config: dict):
         warn_unknown_keys(
@@ -75,6 +82,11 @@ class DistanceData:
         self.atom_selection1 = config.get("atom_selection1", None)
         self.atom_selection2 = config.get("atom_selection2", None)
         self.calc_method = config.get("calc_method", "unfixed-absolute")
+        # per-restraint weight (OPTIONAL; default 1.0). Mirrors group_geom _parse_common:
+        # only meaningful for over-constrained coupled restraints (see the field comment).
+        _w = config.get("weight")
+        if _w is not None:
+            self.weight = float(_w)
         # sigma-window XOR step-window (mutually exclusive gates); shared check + message.
         check_window_exclusive(config, "distance_restraints_config entry")
         # per-distance start_sigma (OPTIONAL; from_dict defaults None -> +inf = every

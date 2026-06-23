@@ -136,15 +136,19 @@ key differs: `target_distance` / `target_angle` / `target_dihedral` / `target_rm
 `…2` for the flat-bottomed bounds). The **conformer** terms use the flat-bottomed shape with a symmetric `slack`:
 $\delta = 0$ within $\pm$`slack` of the RDKit-ideal value, quadratic outside (`slack = 0` $\Rightarrow$ pure harmonic).
 
-`distance` is the one restraint with **no `weight`**: a centroid distance is 1-DOF, so it is solved
-closed-form (the `harmonic` minimum `d = target` is reached exactly in a single shift) instead of
-being added to the optimiser objective. Every other restraint is CG-minimised and scales with
-`weight`.
+`distance` is special: a centroid distance is 1-DOF, so it is solved **closed-form** (the `harmonic`
+minimum `d = target` is reached exactly in a single shift) instead of being added to the optimiser
+objective. Its `weight` is therefore a **no-op for a single restraint or restraints with disjoint
+groups** — each reaches its exact target regardless. `weight` only changes the outcome for
+**over-constrained coupled** restraints whose shared atom is their sole mover, where it balances the
+competition (see the `distance` section). Every other restraint is CG-minimised and scales with
+`weight` in the usual way.
 
 ## `distance_restraints_config` (list)
 
 Pulls the **centroid distance** between two atom groups toward a target. Applied closed-form (1-DOF),
-so it has **no `weight`**.
+so it reaches the target exactly. `weight` is a **no-op for a single / disjoint restraint**; it only
+re-balances atoms shared by **over-constrained coupled** restraints (see `weight` below).
 
 The measured quantity is the distance between the two groups' centroids,
 
@@ -163,6 +167,7 @@ Being closed-form, `harmonic` reaches the target distance ($d = t$) exactly.
 | `stop_sigma` | float | `-1` | release lower bound |
 | `start_step` / `stop_step` | int | `-inf` / `+inf` | step gating — the alternative to the sigma window (mutually exclusive; see Step gating) |
 | `move` | `"both"`/`1`/`2` | `"both"` | which group the correction moves: `both` = minimal-displacement split; `1` / `2` move only that group and **pin** the other (e.g. move a ligand toward a fixed pocket) |
+| `weight` | float | `1.0` | relative strength. **No-op for a single restraint or disjoint groups** (each reaches its exact target regardless). Only bites when an atom is the **sole mover** of two **over-constrained coupled** restraints (each pinning its other group), where the shared atom settles `w₁:w₂` between the two targets (e.g. `2` vs `1` → 2:1). Not a soft "strength" knob in the common case |
 | one restraint-type block | dict | — (required) | the penalty (below) |
 
 Restraint-type block (exactly one):
@@ -237,16 +242,20 @@ by ligand chain id (e.g. `{B: true}`).
 Top-level (shared by all terms): `start_sigma` (`+inf`), `stop_sigma` (`-1`) — or the step-window
 alternative `start_step` (`-inf`) / `stop_step` (`+inf`) (mutually exclusive with the sigma window).
 
-Each term is a sub-dict; a term with `weight <= 0` is disabled (and not built).
+Each term is a sub-dict and is **off unless its sub-block is present**: a listed term
+defaults to `weight` 1.0 (override it, or set `weight <= 0` to disable a listed term); an
+absent term is not built. So a ligand that opts in but lists only `bond:` gets ONLY the
+bond term — add each other sub-block to activate it. This is the same "default 1.0, off if
+not configured" rule the other restraint types follow.
 
 | term | keys (default) | meaning |
 |---|---|---|
-| `bond` | `weight` (0.05), `slack` (0.0 Å) | bond lengths toward ideal; flat-bottomed by `slack` |
-| `angle` | `weight` (0.05), `slack` (0.0 rad) | bond angles toward ideal |
-| `chiral` | `weight` (0.1), `slack` (0.05) | chiral volume (stereochemistry) — holds each stereocentre's handedness |
-| `improper` | `weight` (**0.0**, off), `slack` (0.05) | **planarity** of sp2 double-bond centres — signed volume toward ~0 (same maths as `chiral`). Fires on acyclic, non-aromatic double-bond endpoints with exactly 3 heavy neighbours (carbonyl / amide / ester / carboxyl / trisubstituted alkene); aromatic + in-ring excluded (parity-safe). Off by default — set `weight > 0` to activate |
-| `cistrans` | `weight` (0.1), `slack` (0.0 rad) | **cis/trans (E/Z)** of acyclic, non-aromatic double bonds (needs real bond orders; detects 0 for ligands with none, e.g. ATP/NAD/GLN) |
-| `vdw` | `weight` (**0.0**, off), `mode` (`"both"`), `scale` (0.75), `dmax` (5.0 Å) | non-bonded clash avoidance |
+| `bond` | `weight` (1.0), `slack` (0.0 Å) | bond lengths toward ideal; flat-bottomed by `slack` |
+| `angle` | `weight` (1.0), `slack` (0.0 rad) | bond angles toward ideal |
+| `chiral` | `weight` (1.0), `slack` (0.05) | chiral volume (stereochemistry) — holds each stereocentre's handedness |
+| `improper` | `weight` (1.0), `slack` (0.05) | **planarity** of sp2 double-bond centres — signed volume toward ~0 (same maths as `chiral`). Fires on acyclic, non-aromatic double-bond endpoints with exactly 3 heavy neighbours (carbonyl / amide / ester / carboxyl / trisubstituted alkene); aromatic + in-ring excluded (parity-safe). Add an `improper:` block to activate |
+| `cistrans` | `weight` (1.0), `slack` (0.0 rad) | **cis/trans (E/Z)** of acyclic, non-aromatic double bonds (needs real bond orders; detects 0 for ligands with none, e.g. ATP/NAD/GLN) |
+| `vdw` | `weight` (1.0), `mode` (`"both"`), `scale` (0.75), `dmax` (5.0 Å) | non-bonded clash avoidance |
 
 **Energy.** Each term applies the shared flat-bottomed squared penalty ($\delta = 0$ within
 $\pm$`slack` of the RDKit-ideal value, quadratic outside — see Penalty shapes) to a per-tuple
@@ -271,8 +280,9 @@ are their VdW radii.
 
 `vdw.mode`: `"intramolecular"` (static ligand-internal pairs, all backends), `"ligand_protein"`
 (dynamic ligand-vs-fixed-protein, torch/jax), or `"both"` (default). `scale` = fraction of the
-summed VdW radii used as the contact threshold; `dmax` = pairs farther than this are ignored. Note
-`vdw.weight` defaults to **0** — set it `> 0` to activate.
+summed VdW radii used as the contact threshold; `dmax` = pairs farther than this are ignored. Like
+every conformer term, `vdw` is built only when a `vdw:` block is present (then `weight` defaults to
+1.0); omit the block to leave it off.
 
 ## `rmsd_restraints_config` (list)
 

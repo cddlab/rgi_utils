@@ -57,7 +57,8 @@ def test_empty_config_is_vanilla():
 
 # --- per-entry unknown-key warnings (F1) ------------------------------------------
 def test_unknown_distance_entry_key_warns(caplog):
-    """A key distance does not read (e.g. 'weight') is warned, not silently dropped."""
+    """A key distance does not read (e.g. a typo'd 'weihgt') is warned, not silently
+    dropped. ('weight' is now a real distance key, so a misspelling is the live footgun.)"""
     with caplog.at_level(logging.WARNING):
         RestraintsConfig.from_dict(
             {
@@ -66,13 +67,13 @@ def test_unknown_distance_entry_key_warns(caplog):
                         "atom_selection1": "chain A",
                         "atom_selection2": "chain B",
                         "harmonic": {"target_distance": 5.0},
-                        "weight": 2.0,  # distance is closed-form / unweighted -> warn
+                        "weihgt": 2.0,  # typo of 'weight' -> never applies -> warn
                     }
                 ]
             }
         )
     assert any(
-        "unknown config key(s) ['weight']" in r.getMessage() for r in caplog.records
+        "unknown config key(s) ['weihgt']" in r.getMessage() for r in caplog.records
     )
 
 

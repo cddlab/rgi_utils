@@ -67,6 +67,7 @@ restraints_config:
       start_sigma: 99999999
       stop_sigma: -1
       move: both
+      weight: 1.0            # no-op for a lone restraint; balances over-constrained coupling only
       harmonic:
         target_distance: 25.0
   angle_restraints_config:

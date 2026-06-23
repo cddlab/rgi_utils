@@ -169,9 +169,10 @@ cistrans/vdw). It has two flavours:
 builds `spec.vdw` AND `spec.vdw_config` from the one `vdw` block (shared weight/scale/
 dmax); they sit in separate spec fields scored independently, so they compose. An
 unknown mode raises. Both halves run on torch and jax (so AF3 gets the full VdW — it no
-longer force-downgrades to intramolecular). VdW `weight` defaults to **0** (off) — set
-it > 0 to activate. The static `vdw_energy` (idx pairs) lives in the energy layer for
-parity across backends.
+longer force-downgrades to intramolecular). VdW is **off unless a `vdw:` block is
+present** (then `weight` defaults to 1.0, like every conformer term — see
+`featurizer._conf_weight`); omit the block to leave it off. The static `vdw_energy` (idx
+pairs) lives in the energy layer for parity across backends.
 
 ### Custom restraints (the extension point — `rgi_utils/custom/`)
 
@@ -251,7 +252,16 @@ safety). Full config surface: `doc/config.md`.
   (centroid-distance is move-agnostic). All modes change the centroid separation by the same `delta`,
   so for a single restraint (or disjoint groups) convergence is identical — only the
   distribution differs (coupled restraints moving a SHARED atom can reach a different fixed
-  point under `1`/`2` vs `both`).
+  point under `1`/`2` vs `both`). Each entry also takes a per-entry `weight` (default 1.0):
+  the closed-form Jacobi is a per-atom WEIGHTED AVERAGE of every active restraint's desired
+  shift, normalized by the move INDICATOR `[c>0]` (NOT plain `weight`, NOT `weight*c` — those
+  miss the target or overshoot; see `optim/distance_shift.py`). So `weight` is a **NO-OP for a
+  single / disjoint restraint** (it cancels in the normaliser → exact target regardless), and
+  only re-balances an atom that is the **sole mover of two over-constrained coupled restraints**
+  (each pinning its other group), where it settles `B = (t1*w1 + t2*w2)/(w1+w2)` — the
+  closed-form analogue of angle/dihedral `weight` (which is likewise a no-op at full CG
+  convergence for a lone restraint). `weight` also scales the finalize-reported `distance_energy`
+  (`include_distance=False` keeps it out of the CG objective, so no double-count).
 - Group angle/dihedral restraints (`angle_restraints_config` 3 groups / vertex=group2;
   `dihedral_restraints_config` 4 groups / axis=group2-3): restrain the angle/dihedral of
   the groups' centroids. The config surface MIRRORS the distance restraint — the four types

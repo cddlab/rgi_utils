@@ -124,9 +124,16 @@ def distance_energy(
     target1,
     target2,
     dist_type,
+    weight,
     mask,
 ):
-    """Centroid distance energy. dist_type: 0=harmonic, 1=flat-bottomed, 2=lower, 3=upper."""
+    """Centroid distance energy. dist_type: 0=harmonic, 1=flat-bottomed, 2=lower, 3=upper.
+
+    ``weight`` scales the reported energy ``weight*delta**2`` (parity with rmsd/group terms).
+    This is FINALIZE-REPORTING only: the optimiser applies distance closed-form
+    (``optim/distance_shift.py``, ``include_distance=False``), so weighting here never
+    double-counts. For a satisfied restraint ``delta -> 0`` so weight is invisible anyway.
+    """
     grp1_pos = positions[..., grp1_idx, :]  # (..., n_dist, max_grp, 3)
     grp2_pos = positions[..., grp2_idx, :]
     m1 = grp1_mask[..., None]
@@ -154,7 +161,7 @@ def distance_energy(
             np.where(dist_type == 2, delta_lower, delta_upper),
         ),
     )
-    return np.sum(delta**2 * mask)
+    return np.sum(weight * delta**2 * mask)
 
 
 def _group_centroid(positions, grp_idx, grp_mask):

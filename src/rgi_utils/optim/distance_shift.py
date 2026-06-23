@@ -30,11 +30,16 @@ ops-facade split as ``energy/_terms.py`` and ``custom/backends.py`` -- the arith
 identical across array libraries via operator overloading, so only sqrt/where/zeros_like/
 index/cast/scatter need a backend). ``prepared`` is the ``distance`` dict that
 ``energy.*_energy.prepare_spec`` already builds (grp1_idx/grp2_idx local indices,
-grp1_mask/grp2_mask, target1/target2, dist_type, move_mode, mask, start_sigma, stop_sigma,
-start_step, stop_step). The gate is the active sigma window AND the active step window (a
-restraint uses one or the other; the unused axis is always-on). ``move_mode`` / the
-``*_step`` keys may be absent in a hand-built dict -> ``move_mode`` treated as 0 (both),
-step window treated as always-on.
+grp1_mask/grp2_mask, target1/target2, dist_type, move_mode, weight, mask, start_sigma,
+stop_sigma, start_step, stop_step). The gate is the active sigma window AND the active step
+window (a restraint uses one or the other; the unused axis is always-on). ``move_mode`` /
+``weight`` / the ``*_step`` keys may be absent in a hand-built dict -> ``move_mode`` treated
+as 0 (both), ``weight`` as 1.0, step window treated as always-on.
+
+``weight`` (per restraint, default 1.0) makes each Jacobi pass a WEIGHTED AVERAGE of the
+shifts every active restraint wants for an atom (see ``_apply_distance_shift``): a NO-OP for
+a single / disjoint restraint (weight cancels -> exact target), it only re-balances an atom
+that two over-constrained coupled restraints both move (settling it w1:w2 between them).
 """
 
 from __future__ import annotations
@@ -89,6 +94,21 @@ def _apply_distance_shift(active, d, sigma, step, ops):
         gate = gate * ops.cast(st >= d["start_step"], m1)
         gate = gate * ops.cast(st <= d["stop_step"], m1)
     fidx1, fidx2 = idx1.reshape(-1), idx2.reshape(-1)
+    # Per-restraint weight (default 1.0; absent in hand-built dicts -> ones). Folded into
+    # BOTH the per-atom shift (numerator) and the per-atom normaliser (denominator), making
+    # each pass a WEIGHTED-AVERAGE of the shifts every active restraint wants to apply to an
+    # atom: shift[a] = sum_d (w_d*gate_d*s_{d,a}) / sum_d (w_d*gate_d*[c_{d,a}>0]). For a
+    # single / disjoint restraint the atom is touched once, so w cancels (w*s / w = s) and
+    # the exact target is reached regardless of weight; weight only re-balances an atom that
+    # TWO coupled restraints both move (over-constrained), settling it w1:w2 between them.
+    # The denominator weights by the move INDICATOR [c>0], NOT c's magnitude: a group this
+    # restraint PINS (c=0) is excluded so it cannot dilute the restraint that actually moves
+    # the shared atom, while a move=both atom (c1,c2>0) blends both. (w*c in the denominator
+    # would cancel the move-split and make move=both overshoot.)
+    w = d.get("weight")
+    w = (ops.zeros_like(t1) + 1.0) if w is None else w
+    ind1 = ops.cast(c1 > 0, m1)  # (n_dist,) 1 where this restraint moves group1
+    ind2 = ops.cast(c2 > 0, m1)
     passes = 1 if idx1.shape[0] <= 1 else _COUPLED_PASSES
     for _ in range(passes):
         g1 = active[..., idx1, :]
@@ -99,12 +119,23 @@ def _apply_distance_shift(active, d, sigma, step, ops):
         dist = ops.sqrt((diff * diff).sum(-1) + _EPS)
         u = diff / (dist[..., None] + _EPS)
         delta = _delta(dist, t1, t2, dt, ops.where, ops.zeros_like) * gate
-        centroid1_shift = (-delta * c1)[..., None] * u
-        centroid2_shift = (delta * c2)[..., None] * u
+        # numerator: weighted per-atom shift (w folded in alongside the move-split c)
+        centroid1_shift = (-delta * c1 * w)[..., None] * u
+        centroid2_shift = (delta * c2 * w)[..., None] * u
         pa1 = _per_atom_shift(centroid1_shift, m1)
         pa2 = _per_atom_shift(centroid2_shift, m2)
-        active = ops.scatter_add(active, fidx1, pa1)
-        active = ops.scatter_add(active, fidx2, pa2)
+        # denominator: w*gate*[c>0] per restraint, broadcast over the 3 coord columns
+        wn1 = (w * gate * ind1)[..., None] + ops.zeros_like(u)
+        wn2 = (w * gate * ind2)[..., None] + ops.zeros_like(u)
+        wnp1 = _per_atom_shift(wn1, m1)
+        wnp2 = _per_atom_shift(wn2, m2)
+        shift_acc = ops.scatter_add(ops.zeros_like(active), fidx1, pa1)
+        shift_acc = ops.scatter_add(shift_acc, fidx2, pa2)
+        wnorm = ops.scatter_add(ops.zeros_like(active), fidx1, wnp1)
+        wnorm = ops.scatter_add(wnorm, fidx2, wnp2)
+        # per-atom weighted average; untouched atoms (wnorm==0) get 0/1 = 0 (unchanged)
+        safe = wnorm + ops.cast(wnorm <= 0, active)
+        active = active + shift_acc / safe
     return active
 
 

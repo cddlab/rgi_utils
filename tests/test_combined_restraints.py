@@ -611,6 +611,28 @@ def test_distance_move_mode_parsing():
         mode(3)
 
 
+def test_distance_weight_parsing():
+    """The distance `weight` key parses to DistanceData.weight (float), defaulting to 1.0
+    when omitted. It is accepted alongside move (no `warn_unknown_keys` warning)."""
+    from rgi_utils.distance_restr_data import DistanceData
+
+    def weight(w):
+        dd = DistanceData()
+        cfg = {
+            "atom_selection1": "chain A and resid 1",
+            "atom_selection2": "chain A and resid 2",
+            "harmonic": {"target_distance": 5.0},
+        }
+        if w is not None:
+            cfg["weight"] = w
+        dd.set_config(cfg)
+        return dd.weight
+
+    assert weight(None) == 1.0  # omitted -> default 1.0
+    assert weight(2.5) == 2.5
+    assert weight(3) == 3.0  # int coerced to float
+
+
 def test_distance_stop_sigma_releases_below():
     """A DISTANCE restraint with stop_sigma is RELEASED below it (the closed-form centroid
     shift is gated off): minimize at sigma < stop leaves the centroid separation untouched,

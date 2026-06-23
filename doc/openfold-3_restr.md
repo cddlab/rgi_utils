@@ -73,6 +73,7 @@ the MSA from the ColabFold server.
             "start_sigma": 99999999,
             "stop_sigma": -1,
             "move": "both",
+            "weight": 1.0,
             "harmonic": { "target_distance": 25.0 }
           }
         ],

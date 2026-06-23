@@ -170,6 +170,9 @@ class DistanceArrays:
     target2: np.ndarray  # (n_dist,) upper target
     dist_type: np.ndarray  # (n_dist,) int code (see DIST_* above)
     move_mode: np.ndarray  # (n_dist,) int 0=both / 1=grp1 only / 2=grp2 only (MOVE_*)
+    # (n_dist,) relative strength: a no-op for a single / disjoint restraint, only
+    # re-balances over-constrained coupled restraints (see optim/distance_shift.py)
+    weight: np.ndarray
     mask: np.ndarray  # (n_dist,)
     start_sigma: np.ndarray  # (n_dist,) per-restraint; active when sigma<=start_sigma
     stop_sigma: np.ndarray  # (n_dist,) released when sigma<stop_sigma (-1=never)
