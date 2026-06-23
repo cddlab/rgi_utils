@@ -42,7 +42,7 @@ distance/RMSD/group entry and once for all conformer terms.
 
 Save this as `restr_example.yaml`. It folds QBP (glutamine-binding protein) with its natural ligand
 GLN and the full RGI restraint set — centroid distance, group angle, group dihedral, GLN conformer,
-and whole-structure RMSD — with every variable spelled out. The run command passes
+whole-structure RMSD, and a custom (formula) restraint — with every variable spelled out. The run command passes
 `--use_msa_server`, so boltz fetches the MSA from the ColabFold server.
 
 ```yaml
@@ -110,6 +110,20 @@ restraints_config:
       atom_selection_target_fit: "chain A and (resid 5 to 220)"
       atom_selection_ref_calc: "chain A and (resid 90 to 180)"
       atom_selection_target_calc: "chain A and (resid 90 to 180)"
+  custom_restraints_config:
+    # Define your OWN restraint as a formula (no Python). This one keeps both
+    # lobe-halves (L1, L2) equidistant from the central domain (H) — a difference of
+    # two distances, which no single built-in restraint can express. See config.md
+    # for the full vocabulary (distance/angle/dihedral/rg/...) and the code path.
+    - name: equidistant
+      energy: "(distance(L1, H) - distance(L2, H))**2"
+      selections:
+        L1: "chain A and (resid 5 to 84)"
+        L2: "chain A and (resid 186 to 224)"
+        H: "chain A and (resid 90 to 180)"
+      start_sigma: 99999999
+      stop_sigma: -1
+      weight: 1.0
 ```
 
 ## How to run

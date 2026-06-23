@@ -88,6 +88,12 @@ restraints_config = {
         "improper": {"weight": 1.0},         # sp2 double-bond planarity (off by default)
         "vdw": {"weight": 1.0},              # mode defaults to "both"
     },
+    "custom_restraints_config": [            # define your OWN restraint as a formula (DSL)
+        {"name": "symmetric",               # keep two inter-domain distances equal
+         "energy": "(distance(A, B) - distance(C, D))**2",
+         "selections": {"A": "chain A and resid 10", "B": "chain B and resid 10",
+                        "C": "chain A and resid 90", "D": "chain B and resid 90"}},
+    ],
     # "rmsd_restraints_config": [{"ref_pdb": "ref.pdb", "harmonic": {"target_rmsd": 0.0}}],
     # "dihedral_restraints_config": [...],   # group-centroid dihedral: 4 groups, axis = 2-3
 }
@@ -187,8 +193,8 @@ def energy(ctx): ...
 ```
 
 `ctx` / the formula expose one **vocabulary**: geometry (`distance` `angle` `dihedral` `centroid`
-`rg` `norm` `dot`), penalty (`harmonic` `flat_bottom` `lower` `upper`), and math (`sqrt` `exp` `log`
-`abs` `sin` `cos` `clip` `minimum` `maximum` `where` `sum` + arithmetic). Use `where(cond, a, b)`,
+`rg` `norm` `dot`), penalty (`harmonic` `flat_bottomed` `flat_bottomed1` `flat_bottomed2`), and math
+(`sqrt` `exp` `log` `abs` `sin` `cos` `clip` `minimum` `maximum` `where` `sum` + arithmetic). Use `where(cond, a, b)`,
 not `if` (keeps it jax-traceable). The energy (× `weight`) is added to the CG objective with the
 usual `start_sigma` / `stop_sigma` gating. Formulas are parsed safely (no `eval`). Full reference:
 [`doc/config.md`](doc/config.md) (the `custom_restraints_config` section).

@@ -37,8 +37,11 @@ dihedral / conformer / RMSD, plus config-only `custom`); see [`config.md`](confi
 ## Full config (input file)
 
 Save this as `restr_example.json`. Folds QBP + GLN with a centroid distance, group angle, group
-dihedral, GLN conformer, and whole-structure RMSD restraint, every variable spelled out. The run
-command passes `--use-msa-server true`, so OpenFold fetches the MSA from the ColabFold server.
+dihedral, GLN conformer, whole-structure RMSD, and a custom (formula) restraint, every variable
+spelled out. The custom entry keeps both lobe-halves equidistant from the central domain — a
+difference of two distances, which no single built-in can express (JSON has no comments, so the
+rationale lives here in prose). The run command passes `--use-msa-server true`, so OpenFold fetches
+the MSA from the ColabFold server.
 
 ```json
 {
@@ -120,6 +123,20 @@ command passes `--use-msa-server true`, so OpenFold fetches the MSA from the Col
             "atom_selection_target_fit": "chain A and (resid 5 to 220)",
             "atom_selection_ref_calc": "chain A and (resid 90 to 180)",
             "atom_selection_target_calc": "chain A and (resid 90 to 180)"
+          }
+        ],
+        "custom_restraints_config": [
+          {
+            "name": "equidistant",
+            "energy": "(distance(L1, H) - distance(L2, H))**2",
+            "selections": {
+              "L1": "chain A and (resid 5 to 84)",
+              "L2": "chain A and (resid 186 to 224)",
+              "H": "chain A and (resid 90 to 180)"
+            },
+            "start_sigma": 99999999,
+            "stop_sigma": -1,
+            "weight": 1.0
           }
         ]
       }

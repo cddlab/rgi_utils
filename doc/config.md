@@ -356,24 +356,32 @@ energy), and **math** (elementwise / reduction helpers) — plus operators.
 built-in `angle` / `dihedral` configs take *degrees*, but a custom formula is in radians).
 $\lVert\cdot\rVert$ is the Euclidean norm:
 
-| call | result | definition |
-|---|---|---|
-| `centroid(A)` | vector | $c_A$ = mean of $A$'s atoms |
-| `distance(A,B)` | scalar | $\lVert c_A - c_B \rVert$ |
-| `angle(A,B,C)` | scalar (rad) | $\arccos\big( (c_A - c_B)\cdot(c_C - c_B) / (\lVert c_A - c_B \rVert\,\lVert c_C - c_B \rVert) \big)$, vertex $B$ |
-| `dihedral(A,B,C,D)` | scalar (rad) | torsion about the B–C centroid axis, range $\pm\pi$ |
-| `rg(A)` | scalar | $\sqrt{\frac{1}{\lvert A\rvert}\sum_i \lVert x_i - c_A \rVert^2}$ — radius of gyration |
-| `norm(v)` | scalar | $\lVert v \rVert$ |
-| `dot(u,v)` | scalar | $u \cdot v$ |
+| call | result | definition | use it for |
+|---|---|---|---|
+| `centroid(A)` | vector | $c_A$ = mean of $A$'s atoms | a building block — subtract two, or feed one to `norm` / `dot` |
+| `distance(A,B)` | scalar | $\lVert c_A - c_B \rVert$ | a separation between two groups; a **difference of two distances** encodes symmetry / equidistance |
+| `angle(A,B,C)` | scalar (rad) | $\arccos\big( (c_A - c_B)\cdot(c_C - c_B) / (\lVert c_A - c_B \rVert\,\lVert c_C - c_B \rVert) \big)$, vertex $B$ | the bend of three groups about the vertex $B$ |
+| `dihedral(A,B,C,D)` | scalar (rad) | torsion about the B–C centroid axis, range $\pm\pi$ | the twist / handedness across four groups |
+| `rg(A)` | scalar | $\sqrt{\frac{1}{\lvert A\rvert}\sum_i \lVert x_i - c_A \rVert^2}$ — radius of gyration | the compactness of one group (collapse vs extension) |
+| `norm(v)` | scalar | $\lVert v \rVert$ | the length of a vector you built, e.g. `centroid(A) - centroid(B)` |
+| `dot(u,v)` | scalar | $u \cdot v$ | projections and cosine-like terms |
 
-**Penalty** — convenience squared penalties (you may also write the algebra directly):
+**Degenerate geometry.** `angle` and `dihedral` are ill-defined when the centroids collapse —
+coincident centroids, a collinear A–B–C for `angle`, or a `dihedral` whose central axis runs parallel
+to an arm. The value stays finite but its gradient is near-zero, so the term cannot push the
+structure; choose groups whose centroids are distinct and non-collinear. (`distance` / `rg` have no
+such caveat.)
 
-| call | definition | effect |
+**Penalty** — convenience squared penalties (you may also write the algebra directly). Use
+`harmonic` to drive a quantity **to** a value, and the `flat_bottomed` family to **bound** it — leave
+it free inside a window, above a floor, or below a ceiling:
+
+| call | definition | effect — use when |
 |---|---|---|
-| `harmonic(x, t)` | $(x - t)^2$ | quadratic toward $t$ |
-| `flat_bottomed(x, lo, hi)` | $\min(0,\, x - \text{lo})^2 + \max(0,\, x - \text{hi})^2$ | zero inside $[\text{lo}, \text{hi}]$ |
-| `flat_bottomed1(x, lo)` | $\min(0,\, x - \text{lo})^2$ | lower bound — penalise only $x \lt \text{lo}$ |
-| `flat_bottomed2(x, hi)` | $\max(0,\, x - \text{hi})^2$ | upper bound — penalise only $x \gt \text{hi}$ |
+| `harmonic(x, t)` | $(x - t)^2$ | quadratic toward $t$ — pin $x$ at a target |
+| `flat_bottomed(x, lo, hi)` | $\min(0,\, x - \text{lo})^2 + \max(0,\, x - \text{hi})^2$ | zero inside $[\text{lo}, \text{hi}]$ — keep $x$ within a band |
+| `flat_bottomed1(x, lo)` | $\min(0,\, x - \text{lo})^2$ | lower bound — enforce $x \ge \text{lo}$ only |
+| `flat_bottomed2(x, hi)` | $\max(0,\, x - \text{hi})^2$ | upper bound — enforce $x \le \text{hi}$ only |
 
 `flat_bottomed` / `flat_bottomed1` / `flat_bottomed2` are the same maths (and names) as the built-in
 `flat-bottomed` / `flat-bottomed1` / `flat-bottomed2` blocks.

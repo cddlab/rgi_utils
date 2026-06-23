@@ -64,7 +64,9 @@ ordinal** (qualify protein groups with `chain A and (...)`). There is **no top-l
 ## Full config (Python script)
 
 Save this as `restr_example.py`. Folds QBP + its GLN ligand with a centroid distance, group angle,
-group dihedral, GLN conformer, and whole-structure RMSD restraint, every variable spelled out.
+group dihedral, GLN conformer, whole-structure RMSD, and a custom (formula) restraint, every
+variable spelled out. Because ESMFold2's API is already Python, the custom **code path**
+(`CombinedRestraints.add_custom(fn=...)`) is equally available — see config.md.
 
 ```python
 """ESMFold2 RGI (restraint-guided inference) example via rgi_utils."""
@@ -149,6 +151,24 @@ RESTRAINTS_CONFIG = {
             "atom_selection_target_fit": "chain A and (resid 5 to 220)",
             "atom_selection_ref_calc": "chain A and (resid 90 to 180)",
             "atom_selection_target_calc": "chain A and (resid 90 to 180)",
+        }
+    ],
+    # Define your OWN restraint as a formula (no Python beyond this dict). This one keeps
+    # both lobe-halves (L1, L2) equidistant from the central domain (H) — a difference of
+    # two distances, which no single built-in restraint can express. See config.md for the
+    # full vocabulary and the code (ctx-function) path.
+    "custom_restraints_config": [
+        {
+            "name": "equidistant",
+            "energy": "(distance(L1, H) - distance(L2, H))**2",
+            "selections": {
+                "L1": "chain A and (resid 5 to 84)",
+                "L2": "chain A and (resid 186 to 224)",
+                "H": "chain A and (resid 90 to 180)",
+            },
+            "start_sigma": 99999999,
+            "stop_sigma": -1,
+            "weight": 1.0,
         }
     ],
 }
