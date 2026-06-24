@@ -40,13 +40,29 @@ just disables that feature (e.g. no `iter_ligand_confs` → distance-only tool).
 
 ## Where the adapter lives
 
-- **PyTorch tool**: the adapter can live in `rgi_utils/<tool>/adapter.py`,
-  because it receives a plain dict/array and imports no framework code (keeps
-  the dependency direction rgi_utils → nothing). boltz and protenix do this.
-- **JAX tool**: put the adapter *in the tool* (e.g.
-  `src/<tool>/.../restraints/adapter.py`). JAX tools usually need
-  framework-specific machinery (CCD lookup, atom-name decode) that would invert
-  the dependency if placed in rgi_utils. AF3 does this.
+When integrating a **new** tool, ASK THE USER to choose the placement (SKILL.md Step 2
+spells out the trade-off and tells you to use `AskUserQuestion`): in rgi_utils (the
+convention below) or in the tool's own codebase (rgi_utils left unedited, the tool owns the
+adapter and may import its framework freely — at the cost of having to track protocol
+drift). Both work — the protocol is duck-typed (no base class, no registration). The
+existing six all chose rgi_utils:
+
+**All six adapters live in `rgi_utils/<tool>/adapter.py`** — the project keeps them
+together so a cross-tool invariant (the `resid` convention, a protocol tweak) is
+reviewed in one place. They receive plain dict/array data and import no framework
+code, EXCEPT boltz, whose feats arrive as native torch tensors so its adapter imports
+torch (read at batch 0).
+
+- **PyTorch tool**: drop the adapter straight into `rgi_utils/<tool>/adapter.py`.
+- **JAX tool (AF3)**: the framework-free adapter ALSO lives in rgi_utils
+  (`rgi_utils/alphafold3/adapter.py`). Only the irreducibly framework-coupled step —
+  resolving each ligand's CCD/SMILES RDKit mol and reading `fold_input` — stays in a
+  thin **in-tool shim** (`alphafold3_restr/.../restraints/adapter.py`
+  `build_af3_adapter`), which hands the rgi_utils adapter plain data (the batch dict, a
+  chain→asym map, the resolved mols). Everything else (flat-index / per-chain-resid
+  mapping, atom-name decode, leaving-atom subset, `iter_atoms` / `iter_ligand_confs`)
+  is the framework-free rgi_utils adapter. The split keeps the dependency direction
+  clean (rgi_utils imports no alphafold3) while still centralizing the adapter logic.
 
 ## Worked example 1 — boltz (reads a feats dict, batch 0)
 
@@ -93,7 +109,7 @@ class ProtenixAdapter:
             yield LigandConf(mol, coords[idxs], idxs)
 ```
 
-## Worked example 3 — AF3 (CCD-based batch, JAX; adapter in the tool)
+## Worked example 3 — AF3 (CCD-based batch, JAX; framework-free adapter in rgi_utils, thin shim in the tool)
 
 AF3 coordinates are `(num_tokens, max_atoms_per_token, 3)`, so
 `flat_idx = token_idx * max_atoms_per_token + within_token_idx`
@@ -111,16 +127,19 @@ class AF3RestraintAdapter:
                                  token_idx * self.max_atoms_per_token + within)
     def iter_ligand_confs(self):
         for chain in ligand_chains:
-            mol = ccd_or_smiles_mol(chain)          # CCD-by-name or SMILES
+            mol = self.ligand_mols[chain]           # resolved by the in-tool shim (CCD/SMILES)
             flat, kept = self._flat_indices(chain)  # decode ref_atom_name_chars
             if 0 < len(kept) < mol.GetNumAtoms():
                 mol = subset_mol(mol, kept)          # drop CCD-only atoms (leaving)
             yield LigandConf(mol, ref_pos.reshape(-1,3)[flat], flat)
 ```
-AF3-specific machinery that *must* stay in this adapter: CCD-by-name mol lookup,
-the `ref_atom_name_chars` decode, the leaving-atom subset (see pitfalls), the
-flat-index formula, and the per-chain resid counter. Everything downstream
-(spec, energy, optim) is rgi_utils.
+Responsibility split: the **in-tool shim** (`build_af3_adapter`) does ONLY the
+alphafold3-coupled step — CCD-by-name / SMILES mol resolution and reading
+`fold_input` — then feeds the rgi_utils adapter plain data (batch dict, chain→asym
+map, resolved mols). The **framework-free rgi_utils adapter** does the
+`ref_atom_name_chars` decode, the leaving-atom subset (see pitfalls), the flat-index
+formula, and the per-chain resid counter. Everything downstream (spec, energy, optim)
+is rgi_utils.
 
 ## Full source
 
@@ -130,7 +149,7 @@ The six complete adapters are the ground truth:
 - `rgi_utils/src/rgi_utils/chai/adapter.py` — reference conformer; prefers the source SMILES (`_mol_from_smiles`, real bond orders), falling back to `build_ligand_mol(perceive_bonds=True)` when none is supplied
 - `rgi_utils/src/rgi_utils/openfold3/adapter.py` — AtomArray with zeroed coords → geometry from `ref_pos`; ligand by `molecule_type_id`
 - `rgi_utils/src/rgi_utils/esmfold2/adapter.py` — one token/atom; intra-ligand bonds + orders from `token_bonds` / `ligand_bond_orders` (CCD or SMILES)
-- `<af3>/src/alphafold3/model/restraints/adapter.py` — CCD-by-name, JAX, in-tool
+- `rgi_utils/src/rgi_utils/alphafold3/adapter.py` — framework-free (JAX), fed by the in-tool shim `<af3>/src/alphafold3/model/restraints/adapter.py` (`build_af3_adapter` = CCD/SMILES mol resolution + `fold_input` read)
 
 The chai and openfold3 adapters are worth reading specifically for the "tool exposes
 an incomplete ligand picture" cases (pitfalls 10–12).

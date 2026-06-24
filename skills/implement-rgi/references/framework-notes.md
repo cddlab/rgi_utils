@@ -10,7 +10,8 @@
   backward works. You don't write this — but know it's why passing an
   inference-mode coordinate tensor to `minimize` is fine.
 - **adapter placement**: `rgi_utils/<tool>/adapter.py` (receives a plain
-  dict/array, imports no framework code).
+  dict/array, imports no framework code — EXCEPT boltz, whose feats are native torch
+  tensors, so its adapter imports torch, read at batch 0).
 - **VdW flavours**: the conformer `vdw` term has two flavours — static
   intramolecular (ligand-internal pairs) and dynamic ligand-protein (a per-step
   radius search). `mode` defaults to **`both`** (run them together); both now run
@@ -18,6 +19,11 @@
 
 ## JAX (JIT / `lax.scan`) — AlphaFold3
 
+- **adapter placement**: the framework-free adapter lives in rgi_utils
+  (`rgi_utils/alphafold3/adapter.py`), like the torch tools; only a thin in-tool shim
+  (`alphafold3_restr/.../restraints/adapter.py` `build_af3_adapter`) does the one
+  alphafold3-coupled step — CCD/SMILES mol resolution + `fold_input` read — and feeds
+  the rgi_utils adapter plain data.
 - **no Python callbacks in the scan**: build the spec outside the scan (numpy, at
   build time) and inject `get_minimizer()`'s pure closure inside. Never call the
   Python `minimize` per step in a compiled loop.

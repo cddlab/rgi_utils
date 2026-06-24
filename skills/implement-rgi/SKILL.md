@@ -82,6 +82,21 @@ tests, so `backend: numpy` raises.
 
 ### Step 2 — Write an adapter
 
+**First, ask the user where the adapter should live** (use `AskUserQuestion`) — it is a
+deliberate placement choice, and both options work identically at runtime because the
+rgi_utils adapter protocol is duck-typed (no base class, no registration):
+
+- **In rgi_utils** (`rgi_utils/<tool>/adapter.py`) — the convention all six existing tools
+  follow; centralizes parity-critical code in one repo (one place to review the `resid`
+  convention / a protocol tweak). Needs the adapter to be framework-free (plain dict/array
+  in), so any irreducibly framework-coupled step (CCD/SMILES mol resolution, atom-name
+  decode) goes in a thin in-tool shim that feeds it plain data — the AF3 pattern.
+- **In the tool's own codebase** — keeps rgi_utils unedited; the tool fully owns its adapter
+  and may import its framework freely. Cost: the adapter can drift silently if the rgi_utils
+  protocol changes (you take on keeping it in sync).
+
+Present both with this trade-off and let the user pick before writing any adapter code.
+
 The adapter is the *only* place the tool's internal data structures meet
 rgi_utils. Implement up to four methods (distance-only needs just `iter_atoms`;
 add the rest for conformer/VdW). They yield rgi_utils' framework-agnostic
@@ -149,17 +164,21 @@ reference for "how small this should be."
 
 ## Framework selection
 
-- **PyTorch (eager loop)** — boltz, protenix, chai-lab, openfold-3, esmfold2. Adapter can
-  live in `rgi_utils/<tool>/adapter.py` (it receives a plain dict/array and never
-  imports the framework). Call `minimize` each step. Watch the
-  autograd-under-inference_mode gotcha. **What the tool exposes for the ligand
-  varies, and is the main integration risk**: real bonds but zeroed coords
+- **PyTorch (eager loop)** — boltz, protenix, chai-lab, openfold-3, esmfold2. The
+  adapter lives in `rgi_utils/<tool>/adapter.py` (it receives a plain dict/array and
+  imports no framework code — **except boltz**, whose feats arrive as native torch
+  tensors so its adapter imports torch, read at batch 0). Call `minimize` each step.
+  Watch the autograd-under-inference_mode gotcha. **What the tool exposes for the
+  ligand varies, and is the main integration risk**: real bonds but zeroed coords
   (openfold-3 → take geometry from the reference-conformer feature), or real coords
   but no bonds (chai → perceive connectivity), or an over-broad ligand flag (use the
   entity type, not biotite `hetero`). See pitfalls 10–12.
-- **JAX (JIT / lax.scan)** — alphafold3. Adapter lives *in the tool* (it usually
-  needs framework-specific CCD/atom-name machinery). Build the spec outside the scan;
-  inject the pure `get_minimizer()` closure inside.
+- **JAX (JIT / lax.scan)** — alphafold3. The framework-free adapter ALSO lives in
+  rgi_utils (`rgi_utils/alphafold3/adapter.py`), like the torch tools; only a thin
+  **in-tool shim** (`alphafold3_restr/.../restraints/adapter.py` `build_af3_adapter`)
+  does the one alphafold3-coupled step — resolve each ligand's CCD/SMILES RDKit mol +
+  read `fold_input` — then constructs the rgi_utils adapter from plain data. Build the
+  spec outside the scan; inject the pure `get_minimizer()` closure inside.
 
 Details, code, and the non-obvious traps (torch `inference_mode`, jax line
 search collapsing atoms, coordinate reshape) are in
