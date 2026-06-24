@@ -323,6 +323,51 @@ def test_torch_group_angle_default_move_converges():
     assert torch.allclose(coords[0, [2, 3], :], pinned_before, atol=1e-9)
 
 
+def test_group_angle_step_gated_off_is_noop_torch_jax():
+    """A group-angle SOLVER term with a STEP window no-ops OUTSIDE its window and converges
+    INSIDE it — exercised end-to-end through the CG on both backends (distance has its own
+    step-window e2e test, but it is closed-form; this is the gradient-solver path). Unlike
+    the custom closure path (a gated-off custom term is DROPPED -> a constant objective ->
+    the value_grad guard), an array term's gate is a multiplicative 0 inside total_energy,
+    so the graph stays connected (grad 0) and the CG no-ops without needing the guard. Both
+    backends must agree the gated-off step leaves the coords untouched."""
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.optim.jax_optim import make_minimizer
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+
+    ad = AngleRestraintData()
+    ad.target_sites1, ad.target_sites2, ad.target_sites3 = [0, 1], [2, 3], [4, 5]
+    ad.geom_type, ad.target1, ad.target2 = "harmonic", math.radians(120.0), 0.0
+    ad.move_free, ad.weight, ad.run_restr = (True, True, True), 1.0, True
+    ad.start_sigma, ad.stop_sigma = (
+        1e30,
+        -1.0,
+    )  # sigma always-on (gate is the step window)
+    ad.start_step, ad.stop_step = 5.0, 10.0  # active only for step in [5, 10]
+    spec = build_spec(angle_restraints=[ad], conf_start_sigma=1e30)
+
+    init = _group_angle_coords()  # 90 deg
+
+    # torch: step OUTSIDE the window -> gated off -> coords UNCHANGED (and no crash)
+    c_off = torch.tensor(init, dtype=torch.float64)
+    TorchRestraintOptimizer(spec, max_iter=200).minimize(c_off, sigma=5.0, step=0)
+    assert torch.allclose(c_off, torch.tensor(init), atol=1e-9)
+
+    # torch: step INSIDE the window -> the term IS wired, just gated -> reaches 120 deg
+    c_on = torch.tensor(init, dtype=torch.float64)
+    TorchRestraintOptimizer(spec, max_iter=500).minimize(c_on, sigma=5.0, step=7)
+    a1, a2, a3 = _coms(c_on.numpy()[0])
+    assert abs(_angle_deg(a1, a2, a3) - 120.0) < 1.0
+
+    # jax: the same gate-off is already a no-op (jnp.where -> 0 grad); parity check
+    out = np.asarray(make_minimizer(spec, max_iter=200)(jnp.asarray(init), 5.0, 0))
+    assert np.allclose(out, init, atol=1e-9)
+
+
 def test_group_move_grad_parity_torch_jax():
     """For move!=both the pinned groups are stop-gradient'd, so the gradient diverges
     from a numpy finite-difference (which moves every atom) — but torch and jax must

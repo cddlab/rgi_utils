@@ -435,7 +435,9 @@ class TorchRestraintOptimizer:
                     def closure():
                         opt.zero_grad()
                         e = energy_fn()
-                        e.backward()
+                        # all terms gated off -> no-op (see _minimize_cg's value_grad)
+                        if e.requires_grad:
+                            e.backward()
                         return e
 
                     opt.step(closure)
@@ -494,6 +496,19 @@ class TorchRestraintOptimizer:
             if active.grad is not None:
                 active.grad = None
             e = energy_fn()
+            if not e.requires_grad:
+                # The objective is a constant w.r.t. `active` (nothing to optimise): return
+                # a zero gradient so the CG converges on the first iteration, leaving the
+                # coords untouched. Mirrors the jax backend, whose `jnp.where` gate yields a
+                # 0 gradient rather than crashing `backward()` with "does not require grad".
+                # This arises only via the CUSTOM closure path: a gated-off custom term is
+                # DROPPED (`_custom_energy` returns None), unlike the array terms whose gate
+                # is a multiplicative 0 inside `total_energy` (graph stays connected, grad
+                # 0). So it needs a custom-only spec (or custom + closed-form distance, which
+                # never feeds the CG) whose step window is currently closed — the sigma
+                # whole-step skip does not fire there (a step-windowed term keeps
+                # start_sigma=+inf). Regression: tests/test_custom.py::test_custom_gate_*.
+                return e.detach(), torch.zeros_like(active)
             e.backward()
             return e.detach(), active.grad.detach().clone()
 

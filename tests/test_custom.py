@@ -254,6 +254,107 @@ def test_add_custom_direct_callable():
 
 
 # --------------------------------------------------------------------------------------
+# gate regression: the sigma/step window actually gates the custom energy in the optimizer
+# (the gate lives independently in torch_optim._custom_energy and jax_optim._descend, so a
+# single-backend test would miss a divergence). A windowed `(distance-5)**2`: INSIDE the
+# window it converges to 5 A, OUTSIDE the gate zeroes the term and the coords stay put.
+# --------------------------------------------------------------------------------------
+def _dist_spec_win(extra):
+    return _spec_from_entries(
+        [
+            {
+                "energy": "(distance(A,B) - 5.0)**2",
+                "selections": {"A": "resid 1", "B": "resid 2"},
+                **extra,
+            }
+        ],
+        n=2,
+    )
+
+
+def _two_atoms_torch(torch):
+    c = torch.zeros((1, 2, 3), dtype=torch.float64)
+    c[0, 1, 0] = 1.0  # 1 A apart; target 5 A
+    return c
+
+
+def test_custom_gate_sigma_window():
+    """A custom restraint with start_sigma=2 is active for sigma<=2 (converges) and OFF
+    for sigma>2 (coords unchanged) — on BOTH torch and jax."""
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.optim.jax_optim import make_minimizer
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+
+    spec = _dist_spec_win({"start_sigma": 2.0})
+
+    # torch: inside the window -> reaches 5 A; outside -> stays at 1 A
+    c_in = _two_atoms_torch(torch)
+    TorchRestraintOptimizer(spec, max_iter=200).minimize(c_in, sigma=1.0, step=0)
+    assert abs(float(torch.linalg.norm(c_in[0, 0] - c_in[0, 1])) - 5.0) < 0.1
+    c_out = _two_atoms_torch(torch)
+    TorchRestraintOptimizer(spec, max_iter=200).minimize(c_out, sigma=3.0, step=0)
+    assert abs(float(torch.linalg.norm(c_out[0, 0] - c_out[0, 1])) - 1.0) < 0.1
+
+    # jax: same gate, independent implementation
+    base = np.zeros((1, 2, 3))
+    base[0, 1, 0] = 1.0
+    mz = make_minimizer(spec, max_iter=200)
+    o_in = np.asarray(mz(jnp.asarray(base), 1.0))
+    assert abs(np.linalg.norm(o_in[0, 0] - o_in[0, 1]) - 5.0) < 0.1
+    o_out = np.asarray(mz(jnp.asarray(base), 3.0))
+    assert abs(np.linalg.norm(o_out[0, 0] - o_out[0, 1]) - 1.0) < 0.1
+
+
+def test_custom_gate_step_window():
+    """A custom restraint with start_step=5/stop_step=10 (no sigma window) is active for
+    step in [5,10] (converges) and OFF outside (coords unchanged) — on torch and jax."""
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.optim.jax_optim import make_minimizer
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+
+    spec = _dist_spec_win({"start_step": 5, "stop_step": 10})
+
+    # torch: step inside the window -> reaches 5 A; step outside -> stays at 1 A
+    c_in = _two_atoms_torch(torch)
+    TorchRestraintOptimizer(spec, max_iter=200).minimize(c_in, sigma=1.0, step=7)
+    assert abs(float(torch.linalg.norm(c_in[0, 0] - c_in[0, 1])) - 5.0) < 0.1
+    c_out = _two_atoms_torch(torch)
+    TorchRestraintOptimizer(spec, max_iter=200).minimize(c_out, sigma=1.0, step=0)
+    assert abs(float(torch.linalg.norm(c_out[0, 0] - c_out[0, 1])) - 1.0) < 0.1
+
+    # jax: same gate, independent implementation (the minimizer threads `step`)
+    base = np.zeros((1, 2, 3))
+    base[0, 1, 0] = 1.0
+    mz = make_minimizer(spec, max_iter=200)
+    o_in = np.asarray(mz(jnp.asarray(base), 1.0, 7))
+    assert abs(np.linalg.norm(o_in[0, 0] - o_in[0, 1]) - 5.0) < 0.1
+    o_out = np.asarray(mz(jnp.asarray(base), 1.0, 0))
+    assert abs(np.linalg.norm(o_out[0, 0] - o_out[0, 1]) - 1.0) < 0.1
+
+
+def test_custom_weight_scaling():
+    """``weight`` is folded into the closure (closure.py): halving the weight halves the
+    energy at the same coords (an explicit 0 would zero it — a no-op restraint)."""
+    pos = np.random.default_rng(3).standard_normal((2, 3))
+    e_full = float(
+        build_terms(_dist_spec_win({"weight": 1.0}).custom, "numpy")[0][-1](pos)
+    )
+    e_half = float(
+        build_terms(_dist_spec_win({"weight": 0.5}).custom, "numpy")[0][-1](pos)
+    )
+    assert e_full > 0.0
+    assert abs(e_half - 0.5 * e_full) < 1e-9
+
+
+# --------------------------------------------------------------------------------------
 # DSL safety + config whitelist
 # --------------------------------------------------------------------------------------
 def test_dsl_rejects_unsafe():

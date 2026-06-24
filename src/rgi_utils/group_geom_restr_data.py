@@ -39,7 +39,7 @@ import logging
 import math
 
 from rgi_utils._config_util import (
-    check_window_exclusive,
+    apply_window_params,
     parse_geom_type,
     warn_unknown_keys,
 )
@@ -144,25 +144,10 @@ def _parse_common(
     """Shared parse of weight / start_sigma / stop_sigma / move / type for both classes
     (``self`` is the AngleRestraintData / DihedralRestraintData being filled).
     ``default_free`` is the per-group free mask used when ``move`` is omitted."""
-    _w = config.get("weight")
-    if _w is not None:
-        self.weight = float(_w)
-    # sigma-window XOR step-window (mutually exclusive gates); shared check + message.
-    check_window_exclusive(config, "angle/dihedral_restraints_config entry")
-    _ss = config.get("start_sigma")
-    if _ss is not None:
-        self.start_sigma = float(_ss)
-    _stop = config.get("stop_sigma")
-    if _stop is not None:
-        self.stop_sigma = float(_stop)
-    # step-window: active for start_step <= step <= stop_step (omitted -> -inf/+inf =
-    # always; gate ANDs with the sigma window, which stays at its always-on default here).
-    _sa = config.get("start_step")
-    if _sa is not None:
-        self.start_step = float(_sa)
-    _so = config.get("stop_step")
-    if _so is not None:
-        self.stop_step = float(_so)
+    # weight + the sigma/step gate windows: one shared parse (so the null/zero handling
+    # can't drift across distance/rmsd/angle/dihedral). The windows default to always-on
+    # (set in __init__); start_sigma None -> +inf is filled by config.from_dict.
+    apply_window_params(self, config, "angle/dihedral_restraints_config entry")
     self.move_free = _parse_move(config, n_groups, default_free)
     # angle/dihedral targets are DEGREES by default; `unit: radians` makes conv the
     # identity. The flat-bottomed `t1 < t2` check inside parse_geom_type runs on the raw

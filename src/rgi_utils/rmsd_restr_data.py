@@ -80,7 +80,7 @@ import numpy as np
 
 from rgi_utils._align import pair_residues
 from rgi_utils._config_util import (
-    check_window_exclusive,
+    apply_window_params,
     coerce_bool,
     parse_geom_type,
     warn_unknown_keys,
@@ -188,28 +188,12 @@ class RmsdData:
         self.rmsd_type, self.target1, self.target2 = parse_geom_type(
             config, "target_rmsd", float
         )
-        # None -> default 1.0; an explicit 0 stays 0 (a zero-weight, no-op restraint),
-        # so `or 1.0` truthiness must NOT be used here.
-        _w = config.get("weight")
-        self.weight = 1.0 if _w is None else float(_w)
-        # sigma-window XOR step-window (mutually exclusive gates); shared check + message.
-        check_window_exclusive(config, "rmsd_restraints_config entry")
-        _ss = config.get("start_sigma")
-        if _ss is not None:
-            self.start_sigma = float(_ss)
-        # release the restraint below this noise level so the model re-idealises the
-        # boundary geometry in its final steps (-1, the default, or any value <= 0 ->
-        # never released).
-        _stop = config.get("stop_sigma")
-        self.stop_sigma = -1.0 if _stop is None else float(_stop)
-        # step-window alternative (omitted -> -inf/+inf = always): active for
-        # start_step <= step <= stop_step. ANDed with the (always-on) sigma window.
-        _sa = config.get("start_step")
-        if _sa is not None:
-            self.start_step = float(_sa)
-        _so = config.get("stop_step")
-        if _so is not None:
-            self.stop_step = float(_so)
+        # weight + the sigma/step gate windows: one shared parse (so the null/zero handling
+        # can't drift across distance/rmsd/angle/dihedral). weight None -> 1.0 (an explicit
+        # 0 stays a zero-weight no-op); stop_sigma default -1 = never released (releasing
+        # late lets the model re-idealise the boundary geometry); start_sigma None -> +inf
+        # is filled by from_dict; the step window defaults always-on.
+        apply_window_params(self, config, "rmsd_restraints_config entry")
         # explicit _fit / _calc override the shared ref/target shorthand. A selection
         # left None means "the whole structure on that side" (resolved best-effort).
         ref = config.get("atom_selection_ref")

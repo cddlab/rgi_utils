@@ -17,7 +17,7 @@ from typing import Any
 
 import numpy as np
 
-from rgi_utils._config_util import check_window_exclusive, warn_unknown_keys
+from rgi_utils._config_util import apply_window_params, warn_unknown_keys
 from rgi_utils.custom.context import ResolveContext
 from rgi_utils.custom.dsl import eval_formula, parse_formula
 from rgi_utils.custom.registry import get_custom_fn
@@ -84,22 +84,10 @@ class CustomData:
         )
         self.name = str(config.get("name", "custom"))
         self.selections = dict(config.get("selections", {}) or {})
-        _w = config.get("weight")
-        if _w is not None:
-            self.weight = float(_w)
-        # sigma-window XOR step-window (mutually exclusive gates); shared check + message.
-        check_window_exclusive(config, "custom_restraints_config entry")
-        _ss = config.get("start_sigma")
-        self.start_sigma = float(_ss) if _ss is not None else None
-        _stop = config.get("stop_sigma")
-        self.stop_sigma = float(_stop) if _stop is not None else -1.0
-        # step-window alternative (omitted -> -inf/+inf = always).
-        _sa = config.get("start_step")
-        if _sa is not None:
-            self.start_step = float(_sa)
-        _so = config.get("stop_step")
-        if _so is not None:
-            self.stop_step = float(_so)
+        # weight + the sigma/step gate windows: one shared parse (so the null/zero handling
+        # can't drift across distance/rmsd/angle/dihedral/custom). The windows default to
+        # always-on (set in __init__); start_sigma None -> +inf is filled by from_dict.
+        apply_window_params(self, config, "custom_restraints_config entry")
 
         sources = [k for k in ("energy", "use", "fn") if config.get(k) is not None]
         if len(sources) != 1:

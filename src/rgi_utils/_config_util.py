@@ -76,6 +76,36 @@ def check_window_exclusive(config: dict, label: str = "restraint entry") -> None
         )
 
 
+def apply_window_params(obj, config: dict, label: str) -> None:
+    """Parse the shared ``weight`` + gate-window keys from a restraint entry onto ``obj``.
+
+    The distance / rmsd / angle / dihedral entry classes all parse the identical block of
+    ``weight`` plus the two mutually-exclusive gate windows (``start_sigma``/``stop_sigma``
+    vs ``start_step``/``stop_step``). Centralising it here keeps the (subtle) null/zero
+    handling from drifting between them — the bug class this guards is exactly the kind of
+    per-type divergence that made rmsd's ``stop_sigma`` default differ in wording.
+
+    Contract:
+      * ``check_window_exclusive`` runs first (``label`` keys its error message to the
+        calling restraint type, so the message stays specific).
+      * ``weight`` is normalised: omitted / ``None`` -> 1.0; an explicit ``0`` stays 0.0 (a
+        zero-weight no-op restraint), so truthiness (``or 1.0``) must NOT be used. (The
+        three classes pre-init weight 1.0 EXCEPT rmsd, whose field default is ``None`` —
+        this normalisation is what unifies them.)
+      * the four window keys are OVERRIDDEN only when present (a ``null`` is treated as
+        omitted, not a crash); ``obj`` MUST pre-initialise each window default itself
+        (``start_sigma`` None, ``stop_sigma`` -1, ``start_step`` -inf, ``stop_step`` +inf)
+        — the helper unifies only the parse, not the default storage.
+    """
+    check_window_exclusive(config, label)
+    _w = config.get("weight")
+    obj.weight = 1.0 if _w is None else float(_w)
+    for key in _SIGMA_WINDOW_KEYS + _STEP_WINDOW_KEYS:
+        value = config.get(key)
+        if value is not None:
+            setattr(obj, key, float(value))
+
+
 def parse_geom_type(config: dict, base: str, conv):
     """Parse the distance-style restraint-type block shared by angle/dihedral and RMSD.
 

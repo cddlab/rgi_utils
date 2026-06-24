@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from rgi_utils._config_util import check_window_exclusive, warn_unknown_keys
+from rgi_utils._config_util import apply_window_params, warn_unknown_keys
 from rgi_utils.atom_context import FrameworkAdapter
 from rgi_utils.selection import AtomSelector
 
@@ -82,35 +82,11 @@ class DistanceData:
         self.atom_selection1 = config.get("atom_selection1", None)
         self.atom_selection2 = config.get("atom_selection2", None)
         self.calc_method = config.get("calc_method", "unfixed-absolute")
-        # per-restraint weight (OPTIONAL; default 1.0). Mirrors group_geom _parse_common:
-        # only meaningful for over-constrained coupled restraints (see the field comment).
-        _w = config.get("weight")
-        if _w is not None:
-            self.weight = float(_w)
-        # sigma-window XOR step-window (mutually exclusive gates); shared check + message.
-        check_window_exclusive(config, "distance_restraints_config entry")
-        # per-distance start_sigma (OPTIONAL; from_dict defaults None -> +inf = every
-        # step). Guard float() against an explicit null so a `start_sigma:` /
-        # `"start_sigma": null` entry is treated as omitted (-> the default) not a crash.
-        _ss = config.get("start_sigma")
-        if _ss is not None:
-            self.start_sigma = float(_ss)
-        # per-distance stop_sigma (OPTIONAL; default -1 = never released). Releasing a
-        # distance restraint late lets the model relax the centroid-driven pull in its final
-        # steps; off by default like rmsd/conformer.
-        _stop = config.get("stop_sigma")
-        if _stop is not None:
-            self.stop_sigma = float(_stop)
-        # per-distance step-window (OPTIONAL; omitted -> -inf/+inf = always). The
-        # alternative gate axis to the sigma window: active for start_step <= step <=
-        # stop_step (diffusion step index). Note step counts differ per tool, so a
-        # step window is NOT portable across tools the way a sigma window is.
-        _sa = config.get("start_step")
-        if _sa is not None:
-            self.start_step = float(_sa)
-        _so = config.get("stop_step")
-        if _so is not None:
-            self.stop_step = float(_so)
+        # weight + the sigma/step gate windows: one shared parse (so the null/zero handling
+        # can't drift across distance/rmsd/angle/dihedral). weight default 1.0 is a no-op
+        # unless over-constrained coupling (see the field comment); the windows default to
+        # always-on (set in __init__), and start_sigma None -> +inf is filled by from_dict.
+        apply_window_params(self, config, "distance_restraints_config entry")
         # per-distance move mode (OPTIONAL; default "both"): which group(s) the closed-
         # form centroid shift moves. both/omitted -> 0 (split, both move); 1 -> only
         # atom_selection1's group; 2 -> only atom_selection2's group. Accepts int or str
