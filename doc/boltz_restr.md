@@ -3,6 +3,8 @@
 Boltz-1/2 + [`rgi_utils`](https://github.com/cddlab/rgi_utils) restraint-guided inference. Full
 `restraints_config` schema & atom-selection DSL: [`config.md`](config.md).
 
+> **Or generate it automatically:** the `generate-rgi-config` skill in Claude Code (`/generate-rgi-config`) interviews you about the goal and writes a validated `restraints_config` placed where this tool expects it — handy when hand-writing the config below is more than you need.
+
 ## Install
 
 The RGI code lives in the `cddlab/boltz_restr` fork (branch `rgi-integration`) — install **that

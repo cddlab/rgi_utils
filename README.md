@@ -19,6 +19,13 @@ Restraint-Guided Inference (RGI) utilities for diffusion-based structure predict
 See each tool's guide in [`doc/`](doc/) for install / run details, and
 [`doc/config.md`](doc/config.md) for the full `restraints_config` schema.
 
+> **Stuck writing a config?** Run the `generate-rgi-config` skill in Claude Code
+> (`/generate-rgi-config`): it interviews you about the goal, picks the right restraint
+> type / atom selection / target / sigma window, validates the result, and writes the
+> `restraints_config` to the correct place for your tool. Use it instead of hand-writing
+> from this README when you're unsure. (For adding RGI support to a *new* tool's code, the
+> separate `implement-rgi` skill is the one you want.)
+
 Five **built-in** restraint types, all minimized during the denoising loop to guide coordinate optimization:
 
 - **conformer** — ligand bond / angle / chiral-volume / cistrans (E/Z) / improper

@@ -9,6 +9,11 @@ The parser reads keys with `.get(key, default)`, so **omitted keys fall back to 
 against this page). Source of truth: `rgi_utils/src/rgi_utils/{config,distance_restr_data,
 group_geom_restr_data,featurizer,rmsd_restr_data,selection}.py`.
 
+> **Don't want to hand-write this?** Run the `generate-rgi-config` skill in Claude Code
+> (`/generate-rgi-config`): it turns a plain-language goal into a validated `restraints_config`
+> (correct restraint type, atom-selection DSL, target, sigma window) and places it where your tool
+> expects it. Reach for it whenever the schema below is more than you need.
+
 ## Shape
 
 ```yaml
