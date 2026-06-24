@@ -104,6 +104,7 @@ rationale lives here in prose). The run command passes `--use_msa true`, so prot
         "bond": { "weight": 1.0, "slack": 0.0 },
         "angle": { "weight": 1.0, "slack": 0.0 },
         "chiral": { "weight": 1.0, "slack": 0.05 },
+        "improper": { "weight": 1.0, "slack": 0.05 },
         "cistrans": { "weight": 1.0, "slack": 0.0 },
         "vdw": { "weight": 1.0 }
       },
@@ -161,8 +162,8 @@ protenix pred -i restr_example.json -o out_restr_example \
 
 ## Verify
 
-With `verbose: true`, `setup` logs `built spec: n_active=.. bonds=.. angles=.. distances=.. rmsd=..
-group_angle=.. group_dihedral=..` — confirm the counts are non-zero for what you requested.
+With `verbose: true`, `setup` logs `built spec: n_active=.. bonds=.. angles=.. chirals=.. impropers=..
+cistrans=.. distances=.. rmsd=.. group_angle=.. group_dihedral=..` — confirm the counts are non-zero for what you requested.
 Cross-check the result with the workspace helpers (any gemmi/rdkit venv): `../check_dist.py
 <pred.cif>` (centroid distance vs 25 Å) and `../check_conf.py <pred.cif> GLN` (ligand geometry). If
 the output is all-NaN, you almost certainly ran on Blackwell — re-run on an sm_89 GPU.

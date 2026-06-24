@@ -129,6 +129,7 @@ minimizer (`lax.scan`) like every other restraint.
       "bond": { "weight": 1.0, "slack": 0.0 },
       "angle": { "weight": 1.0, "slack": 0.0 },
       "chiral": { "weight": 1.0, "slack": 0.05 },
+      "improper": { "weight": 1.0, "slack": 0.05 },
       "cistrans": { "weight": 1.0, "slack": 0.0 },
       "vdw": { "weight": 1.0 }
     },

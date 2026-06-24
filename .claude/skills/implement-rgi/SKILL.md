@@ -210,8 +210,8 @@ the setup spec counts (13); undeclared deps / CPU torch builds (14).
     `finalize` energy of `0.00000`, so near-zero energy alone does NOT prove a
     restraint is working (pitfall 13);
   - distance: the predicted structure's centroid distance reaches the target;
-  - conformer: spec counts non-zero AND `finalize` bond/angle/chiral energies are
-    small, or the ligand RMSD differs between restraint-on and restraint-off runs;
+  - conformer: spec counts non-zero AND `finalize` bond/angle/chiral/improper/cistrans
+    energies are small, or the ligand RMSD differs between restraint-on and restraint-off runs;
   - batch: put two structures with *different* configs in one run and confirm
     each uses its own (the decisive test that there is no cross-contamination).
 

@@ -51,12 +51,12 @@ ESMFold2's API is **Pythonic**: `restraints_config` is a plain **Python dict** p
 schema is identical to the other tools.
 
 Conformer restraints are **per-ligand opt-in**: set `conformer_restraints=True` on a `LigandInput`
-to enable its bond/angle/chiral/cistrans/VdW restraints. A ligand left at the default (`False`) is
+to enable its bond/angle/chiral/improper/cistrans/VdW restraints. A ligand left at the default (`False`) is
 unrestrained even when a `conformer_restraints_config` block is present.
 
 A ligand = one token/atom, so `token_bonds` carries intra-ligand connectivity and bond ORDERS ride
 on `ChainInfo.ligand_bond_orders` (CCD via `get_ligand_ccd_bonds`, SMILES via Kekulized 3-tuples) —
-so the conformer cistrans term works for both CCD and SMILES ligands.
+so the conformer cistrans and improper terms (same bond-order path) work for both CCD and SMILES ligands.
 
 The `RESTRAINTS_CONFIG` dict below writes **every usable variable** with a concrete value (distance
 / angle / dihedral / conformer / RMSD, plus config-only `custom`); see [`config.md`](config.md) for the
@@ -138,6 +138,7 @@ RESTRAINTS_CONFIG = {
         "bond": {"weight": 1.0, "slack": 0.0},
         "angle": {"weight": 1.0, "slack": 0.0},
         "chiral": {"weight": 1.0, "slack": 0.05},
+        "improper": {"weight": 1.0, "slack": 0.05},  # sp2 planarity (opt-in); GLN -> impropers=2
         "cistrans": {"weight": 1.0, "slack": 0.0},
         "vdw": {"weight": 1.0},
     },

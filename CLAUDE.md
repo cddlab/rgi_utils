@@ -152,7 +152,7 @@ Supporting modules:
 
 VdW is **not a sixth restraint type** — it is the non-bonded term of the **conformer**
 restraint, configured under `conformer_restraints_config.vdw` (one of bond/angle/chiral/
-cistrans/vdw). It has two flavours:
+improper/cistrans/vdw). It has two flavours:
 
 - **Intramolecular** (`mode: intramolecular`): static non-bonded ligand-internal pairs
   (topo distance > 2, within `dmax`), built in `featurizer.py` and carried in `spec.vdw`

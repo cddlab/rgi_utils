@@ -26,7 +26,7 @@ OpenFold reads RGI from a **`restraints_config` field per query** in the input J
 (`queries.<name>.restraints_config`). Two things turn conformer restraints on:
 
 1. **Per ligand** — add `"conformer_restraints": true` to the ligand chain to enable its
-   bond/angle/chiral/cistrans/VdW conformer restraints. Without it that ligand is left
+   bond/angle/chiral/improper/cistrans/VdW conformer restraints. Without it that ligand is left
    unrestrained even when a `conformer_restraints_config` block is present.
 2. **The `restraints_config` block** — the distance / angle / dihedral / conformer / RMSD
    restraints (below). Ligands are identified by `molecule_type_id == LIGAND` and accept `ccd_codes`.
@@ -110,6 +110,7 @@ the MSA from the ColabFold server.
           "bond": { "weight": 1.0, "slack": 0.0 },
           "angle": { "weight": 1.0, "slack": 0.0 },
           "chiral": { "weight": 1.0, "slack": 0.05 },
+          "improper": { "weight": 1.0, "slack": 0.05 },
           "cistrans": { "weight": 1.0, "slack": 0.0 },
           "vdw": { "weight": 1.0 }
         },
