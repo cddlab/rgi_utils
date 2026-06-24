@@ -11,9 +11,11 @@ runs never cross-contaminate:
 instance is safe too. Two calls ``set_config(dict)`` then ``setup(adapter)`` are
 equivalent to passing ``config=`` to ``setup``.
 
-The backend (numpy/torch/jax) is chosen from the config; torch/jax optimizers are
-imported lazily so importing this module needs neither. JAX tools that run inside
-``jax.lax.scan`` should grab the pure minimizer via ``get_minimizer()``.
+The backend (torch/jax) is INFERRED from how the engine is invoked, not configured:
+``get_minimizer()`` (used only by JAX tools inside ``jax.lax.scan``) selects jax;
+``minimize(coords)`` infers from the coords type (a jax array -> jax, a torch tensor
+or numpy array -> torch). The matching optimizer is built lazily on first use, and
+torch/jax are imported lazily so importing this module needs neither.
 
 ``get_instance()`` / ``reset()`` are a back-compat singleton shim (kept only because
 ``tests/test_combined_restraints.py`` still uses it -- no production tool does); new
@@ -193,7 +195,10 @@ class CombinedRestraints:
             dihedral_restraints=cfg.dihedral_data,
             custom_restraints=cfg.custom_data,
         )
-        self._backend = cfg.resolve_backend()
+        # backend is inferred lazily (get_minimizer() -> jax; minimize(coords) -> from
+        # the coords type) and the matching optimizer built on first use; reset here so a
+        # reused instance re-infers rather than keeping the previous structure's backend.
+        self._backend = None
         self._optimizer = None
         self._minimize_fn = None
 
@@ -204,7 +209,6 @@ class CombinedRestraints:
                 print("[rgi_utils] setup: NO ACTIVE RESTRAINTS", flush=True)
             return
         self._warn_never_active()
-        self._build_optimizer()
         if cfg.verbose:
             d = self.spec.distance
             n_dist = 0 if d is None else int(d.mask.sum())
@@ -232,7 +236,7 @@ class CombinedRestraints:
                     else f"{float(ss.min()):g}..{float(ss.max()):g}"
                 )
             msg = (
-                f"[rgi_utils] setup: backend={self._backend} "
+                f"[rgi_utils] setup: "
                 f"n_active={self.spec.n_active} "
                 f"conformer={self.spec.has_conformer()} n_distance={n_dist} "
                 f"n_rmsd={n_rmsd} n_group_angle={n_grp_angle} "
@@ -370,25 +374,42 @@ class CombinedRestraints:
         if errors:
             raise ValueError("; ".join(errors))
 
-    def _build_optimizer(self) -> None:
-        b = self._backend
-        # Dynamic ligand-protein VdW (vdw_config) runs on BOTH supported backends:
-        # the torch optimizer and the jax optimizer (jax_optim._vdw_pair_energy ports
-        # the torch term, so AF3 gets the full VdW too). Only an UNKNOWN backend would
-        # drop it — warn loudly then rather than silently. (numpy is rejected upstream
-        # in from_dict, so torch/jax are the only real backends.)
-        vc = self.spec.vdw_config
-        if (
-            vc is not None
-            and getattr(vc, "weight", 0) > 0
-            and b not in ("torch", "jax")
-        ):
-            logger.warning(
-                "VdW restraint requested but backend=%s ignores it "
-                "(dynamic ligand-protein VdW is implemented for the torch and jax "
-                "backends only); no VdW term will be applied.",
-                b,
+    @staticmethod
+    def _infer_backend(coords) -> str:
+        """Infer the optimizer backend from the coords object, import-free (keeps the
+        ``import rgi_utils`` numpy-only invariant). A jax array/tracer lives under the
+        ``jax``/``jaxlib`` top-level package; everything else (torch.Tensor, numpy
+        array, list, None) routes to the torch optimizer (which handles torch tensors
+        AND numpy arrays). Walk the MRO so both the concrete ``jaxlib._jax.ArrayImpl``
+        and the public ``jax.Array`` base are caught."""
+        for klass in type(coords).__mro__:
+            root = (klass.__module__ or "").split(".", 1)[0]
+            if root in ("jax", "jaxlib"):
+                return "jax"
+        return "torch"
+
+    def _ensure_backend(self, backend: str) -> None:
+        """Lazily fix the backend on first use and build its optimizer/minimizer. A
+        single structure must use ONE backend; calling with a different backend than
+        already in use is a programming error (raise, do not silently rebuild)."""
+        if self._backend is None:
+            self._backend = backend
+            self._build_optimizer()
+            return
+        if self._backend != backend:
+            raise ValueError(
+                f"restraint backend conflict: this CombinedRestraints instance is "
+                f"already in use as {self._backend!r} but was now invoked as "
+                f"{backend!r}. A single structure must use one backend "
+                f"(get_minimizer() => jax for AF3; minimize(coords) where a jax array "
+                f"=> jax and a torch/numpy array => torch). Construct a fresh "
+                f"CombinedRestraints per structure."
             )
+
+    def _build_optimizer(self) -> None:
+        # Dynamic ligand-protein VdW (vdw_config) runs on BOTH backends (the torch
+        # optimizer and jax_optim, which ports the torch term), so AF3 gets it too.
+        b = self._backend
         if b == "torch":
             from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
 
@@ -404,15 +425,22 @@ class CombinedRestraints:
                 method=self.config.method,
             )
         else:
+            # Unreachable via _ensure_backend (only torch/jax pass); kept as a defensive
+            # invariant for any future caller that bypasses it.
             raise ValueError(f"unknown backend: {b}")
 
     def is_active(self) -> bool:
         return self.spec is not None and self.spec.is_active()
 
     def get_minimizer(self):
-        """Return the pure ``(coords, sigma, step) -> coords`` jax minimizer (jax
-        backend). ``step`` is the diffusion step index (for the step-window gate); a JAX
-        tool that does not thread a step counter can pass a constant (e.g. 0)."""
+        """Return the pure ``(coords, sigma, step) -> coords`` jax minimizer. Calling
+        this selects the jax backend (AF3 runs it inside ``jax.lax.scan``) and builds
+        the minimizer lazily. ``step`` is the diffusion step index (for the step-window
+        gate); a JAX tool that does not thread a step counter can pass a constant (e.g.
+        0). Returns ``None`` for an inactive spec (no restraints)."""
+        if not self.is_active():
+            return self._minimize_fn
+        self._ensure_backend("jax")
         return self._minimize_fn
 
     def minimize(self, coords, istep: int = 0, sigma=None):
@@ -422,19 +450,19 @@ class CombinedRestraints:
         (alongside ``sigma`` for the sigma-window gate)."""
         if not self.is_active():
             return coords
-        b = self._backend
+        # Infer the backend from the coords type and build the optimizer lazily on the
+        # first call (jax array -> jax; torch tensor / numpy array -> torch).
+        self._ensure_backend(self._infer_backend(coords))
         # Per-restraint gating lives in the energy (active sigma window AND active step
         # window per term); each optimizer additionally skips the whole step when sigma
         # exceeds every restraint's start_sigma (spec.max_start_sigma()).
-        if b == "jax":
+        if self._backend == "jax":
             # sigma=None means "no sigma gating, all restraints active" (matching the
             # torch branch). The gate is `sigma <= start_sigma`, so the None sentinel must
             # be LOW (-inf) to pass every gate; 1e30 would skip everything.
             s = sigma if sigma is not None else float("-inf")
             return self._minimize_fn(coords, s, istep)
-        if b == "torch":
-            return self._minimize_torch(coords, sigma, istep)
-        return coords
+        return self._minimize_torch(coords, sigma, istep)
 
     def _minimize_torch(self, coords, sigma=None, step=None):
         """Run the torch optimizer (the only CPU/GPU restraint optimizer — the
@@ -504,7 +532,7 @@ class CombinedRestraints:
             # would mix the float64 static breakdown with the float32 optimizer energy
             # and leave the static terms' rounding error in the result (even negative).
             if (
-                self._backend == "torch"
+                (self._backend or self._infer_backend(coords)) == "torch"
                 and getattr(self.spec, "vdw_config", None) is not None
                 and self._optimizer is not None
             ):
@@ -561,7 +589,9 @@ class CombinedRestraints:
 
         spec = self.spec
         active_idx = spec.active_sites
-        b = self._backend
+        # finalize can run before any minimize/get_minimizer (backend still unset), so
+        # fall back to inferring it from the coords type for the diagnostic readout.
+        b = self._backend or self._infer_backend(coords)
         if b == "jax":
             import jax.numpy as jnp
 

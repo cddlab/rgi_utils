@@ -52,8 +52,10 @@ you integrate a JAX tool, use `get_minimizer()`; do not reach for scipy or
 
 ## Backend selection recap
 
-`config.backend: jax` → jax (set this for a JAX tool); otherwise **torch** (the
-default). `config.gpu` selects the *device*, not the backend: `gpu: false` runs
-the torch optimizer on CPU. There is **no numpy optimizer** — numpy remains only
-as the energy reference for `tests/test_backend_parity.py` (torch and jax compute
-identical energies/gradients), so an explicit `backend: numpy` raises.
+The backend is **inferred from invocation, not a config key**: a JAX tool grabs the
+pure minimizer via `get_minimizer()` → jax; a PyTorch tool calls `minimize(coords)`,
+where a torch/numpy array → torch (resolved lazily on the first call). `config.gpu`
+selects the *device*, not the backend: `gpu: false` runs the torch optimizer on CPU.
+There is **no numpy optimizer** — numpy remains only as the energy reference for
+`tests/test_backend_parity.py` (torch and jax compute identical energies/gradients).
+A leftover `backend:` config key raises with a migration hint.

@@ -65,7 +65,6 @@ the MSA from the ColabFold server.
       "restraints_config": {
         "verbose": true,
         "gpu": true,
-        "backend": "torch",
         "method": "CG",
         "max_iter": 1000,
         "distance_restraints_config": [

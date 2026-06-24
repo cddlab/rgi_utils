@@ -59,7 +59,6 @@ rationale lives here in prose). The run command passes `--use_msa true`, so prot
     "restraints_config": {
       "verbose": true,
       "gpu": true,
-      "backend": "torch",
       "method": "CG",
       "max_iter": 1000,
       "distance_restraints_config": [

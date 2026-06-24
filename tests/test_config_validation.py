@@ -36,7 +36,6 @@ def test_known_top_level_keys_ok():
         {
             "verbose": False,
             "gpu": False,
-            "backend": "torch",
             "method": "CG",
             "max_iter": 50,
             "distance_restraints_config": [],
@@ -46,7 +45,14 @@ def test_known_top_level_keys_ok():
             "conformer_restraints_config": {},
         }
     )
-    assert cfg.backend == "torch"
+    assert cfg.method == "CG" and cfg.max_iter == 50
+
+
+def test_backend_key_rejected_with_hint():
+    """`backend` was removed as a config key (it is inferred from invocation); a leftover
+    key raises a migration hint, not a silent drop or a wrong-backend run."""
+    with pytest.raises(ValueError, match="inferred"):
+        RestraintsConfig.from_dict({"backend": "torch"})
 
 
 def test_empty_config_is_vanilla():

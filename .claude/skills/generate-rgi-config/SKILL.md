@@ -145,7 +145,7 @@ boltz_restr/.venv/bin/python .claude/skills/generate-rgi-config/scripts/validate
 checkout's `.claude/skills/`. The validator finds rgi_utils on its own.)
 
 It runs the real `RestraintsConfig.from_dict` (catching unknown/misspelled section names,
-a top-level `start_sigma`, mixed sigma+step windows, empty windows, `backend: numpy`, …),
+a top-level `start_sigma`, a leftover `backend` key, mixed sigma+step windows, empty windows, …),
 syntax-checks every selection string, and warns when a conformer block has no opt-in.
 
 ### 8. Hand off with the run command AND the validation ceiling

@@ -124,15 +124,18 @@ def distance_energy(
     target1,
     target2,
     dist_type,
+    move_mode,
     weight,
     mask,
 ):
     """Centroid distance energy. dist_type: 0=harmonic, 1=flat-bottomed, 2=lower, 3=upper.
 
-    ``weight`` scales the reported energy ``weight*delta**2`` (parity with rmsd/group terms).
-    This is FINALIZE-REPORTING only: the optimiser applies distance closed-form
-    (``optim/distance_shift.py``, ``include_distance=False``), so weighting here never
-    double-counts. For a satisfied restraint ``delta -> 0`` so weight is invisible anyway.
+    numpy is the VALUE reference (no autodiff): plain centroids, ``move_mode`` ignored (it
+    only shapes the torch/jax gradient via ``_move_centroid``'s scale/pin). The value equals
+    the torch/jax ``distance_energy`` (whose ``centroid_eff`` is value-identical), so energy
+    parity holds; distance grad parity is torch-vs-jax (the rescaled gradient does not match
+    a numpy finite-difference). For a satisfied restraint ``delta -> 0`` so weight/move are
+    invisible anyway.
     """
     grp1_pos = positions[..., grp1_idx, :]  # (..., n_dist, max_grp, 3)
     grp2_pos = positions[..., grp2_idx, :]
@@ -390,20 +393,17 @@ def _gates(prepared, sigma, step=None):
     return cg, sigma_gate
 
 
-def total_energy(positions, prepared, sigma=None, step=None, include_distance=True):
+def total_energy(positions, prepared, sigma=None, step=None):
     """Sum all restraint energies. ``prepared`` is the dict from ``prepare_spec``.
 
     ``sigma`` (noise level) and ``step`` (diffusion step index) gate each restraint: it
     contributes only inside its active sigma window AND step window (a 0/1 gate folded
-    into its mask). Conformer terms share the conf window; distance/RMSD/group have their
-    own. RMSD is summed regardless of ``include_distance`` (the CG solver calls with
-    ``include_distance=False``). ``sigma=None``/``step=None`` disable that axis's gating.
+    into its mask). Conformer terms share the conf window; distance/RMSD/group each have
+    their own per-restraint window. ``sigma=None``/``step=None`` disable that axis's gating.
     """
     cg, sigma_gate = _gates(prepared, sigma, step)
     ene = 0.0
-    for v in term_energies(
-        _LEAF_FNS, prepared, positions, cg, sigma_gate, include_distance
-    ).values():
+    for v in term_energies(_LEAF_FNS, prepared, positions, cg, sigma_gate).values():
         ene = ene + v
     return ene
 
@@ -414,9 +414,7 @@ def energy_breakdown(positions, prepared, sigma=None, step=None):
     that report each term's contribution (e.g. ``finalize`` logging)."""
     cg, sigma_gate = _gates(prepared, sigma, step)
     out = dict.fromkeys(BREAKDOWN_KEYS, 0.0)
-    for k, v in term_energies(
-        _LEAF_FNS, prepared, positions, cg, sigma_gate, include_distance=True
-    ).items():
+    for k, v in term_energies(_LEAF_FNS, prepared, positions, cg, sigma_gate).items():
         out[k] = float(v)
     return out
 

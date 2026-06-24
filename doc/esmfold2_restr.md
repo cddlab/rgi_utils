@@ -93,7 +93,6 @@ QBP = (
 RESTRAINTS_CONFIG = {
     "verbose": True,
     "gpu": True,
-    "backend": "torch",
     "method": "CG",
     "max_iter": 1000,
     "distance_restraints_config": [

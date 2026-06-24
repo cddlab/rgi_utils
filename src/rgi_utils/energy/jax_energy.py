@@ -118,23 +118,26 @@ def distance_energy(
     target1,
     target2,
     dist_type,
+    move_mode,
     weight,
     mask,
 ):
     """Centroid distance energy between two atom groups. dist_type: 0=harmonic,
-    1=flat-bottomed, 2=lower-bound, 3=upper-bound. ``weight`` scales the reported
-    ``weight*delta**2`` (finalize-reporting only; optimiser applies distance closed-form
-    with ``include_distance=False``, so no double-count)."""
-    grp1_pos = positions[..., grp1_idx, :]  # (..., n_dist, max_grp, 3)
-    grp2_pos = positions[..., grp2_idx, :]
-    m1 = grp1_mask[..., None]
-    m2 = grp2_mask[..., None]
-    centroid1 = jnp.sum(grp1_pos * m1, axis=-2) / (
-        jnp.sum(grp1_mask, axis=-1)[..., None] + _EPS
-    )
-    centroid2 = jnp.sum(grp2_pos * m2, axis=-2) / (
-        jnp.sum(grp2_mask, axis=-1)[..., None] + _EPS
-    )
+    1=flat-bottomed, 2=lower-bound, 3=upper-bound. Mirrors ``torch_energy.distance_energy``:
+    an autodiff CG term whose two centroids go through ``_move_centroid`` with the REDUCED-MASS
+    scale ``mu = N1*N2/(N1+N2)`` (minimal-displacement split N2:N1 + O(1) separation step);
+    ``move_mode`` (0=both / 1=group1 only / 2=group2 only) pins the other group via ``free=0``.
+    Value == numpy's plain-centroid distance_energy (parity); grad is rescaled (torch-vs-jax)."""
+    n1 = jnp.sum(grp1_mask, axis=-1)  # (..., n_dist) group sizes
+    n2 = jnp.sum(grp2_mask, axis=-1)
+    mu = n1 * n2 / (n1 + n2 + _EPS)  # reduced mass: minimal-displacement + O(1) step
+    both = move_mode == 0
+    scale1 = jnp.where(both, mu, n1)  # both -> mu; else the moving group uses its own N
+    scale2 = jnp.where(both, mu, n2)
+    free1 = (move_mode != 2).astype(grp1_mask.dtype)  # group1 free unless move_mode==2
+    free2 = (move_mode != 1).astype(grp2_mask.dtype)  # group2 free unless move_mode==1
+    centroid1 = _move_centroid(positions, grp1_idx, grp1_mask, free1, scale1)
+    centroid2 = _move_centroid(positions, grp2_idx, grp2_mask, free2, scale2)
     diff = centroid2 - centroid1
     dist = jnp.sqrt(jnp.sum(diff**2, axis=-1) + _EPS)
     delta_harmonic = dist - target1
@@ -163,16 +166,20 @@ def _group_centroid(positions, grp_idx, grp_mask):
     return jnp.sum(pos * m, axis=-2) / (jnp.sum(grp_mask, axis=-1)[..., None] + _EPS)
 
 
-def _move_centroid(positions, grp_idx, grp_mask, free):
+def _move_centroid(positions, grp_idx, grp_mask, free, scale=None):
     """Centroid of a group for the restraint gradient (mirrors ``torch_energy._move_centroid``):
-    ``centroid_eff = centroid_d + N*(centroid - centroid_d)`` un-suppresses the 1/N centroid gradient so the group
-    translates rigidly by the full step (weight=1 drives ANY group size — "move the
-    selection as a whole", like distance); ``free``=0 PINS a group (stop-gradient, the move
-    knob). Value == centroid, so energy value parity holds; group grad parity is torch-vs-jax."""
+    ``centroid_eff = centroid_d + scale*(centroid - centroid_d)`` rescales the per-atom gradient to
+    ``scale/N`` x the centroid gradient. ``scale=None`` -> ``scale=N`` (group-restraint default:
+    cancels 1/N so the group translates rigidly by the full step, weight=1 drives ANY size). The
+    distance restraint passes the REDUCED MASS ``N1*N2/(N1+N2)`` to BOTH groups (ratio N2:N1
+    minimal-displacement split + O(1), N-independent separation step). ``free``=0 PINS a group
+    (stop-gradient, the move knob). Value == centroid, so energy value parity holds; distance/group
+    grad parity is torch-vs-jax."""
     centroid = _group_centroid(positions, grp_idx, grp_mask)
     centroid_d = jax.lax.stop_gradient(centroid)
-    n = jnp.sum(grp_mask, axis=-1, keepdims=True)  # group size (..., n_restr, 1)
-    centroid_eff = centroid_d + n * (
+    if scale is None:
+        scale = jnp.sum(grp_mask, axis=-1)  # group size N (..., n_restr) (rigid step)
+    centroid_eff = centroid_d + scale[..., None] * (
         centroid - centroid_d
     )  # un-suppress the 1/N centroid gradient (rigid step)
     return jnp.where((free > 0.5)[..., None], centroid_eff, centroid_d)
@@ -372,17 +379,15 @@ def _gates(prepared, positions, sigma, step=None):
     return cg, sigma_gate
 
 
-def total_energy(positions, prepared, sigma=None, step=None, include_distance=True):
+def total_energy(positions, prepared, sigma=None, step=None):
     """Sum all restraint energies. ``sigma`` (noise level) and ``step`` (diffusion step
     index) gate each restraint via its active sigma window AND step window folded into the
-    mask (conformer terms share the conf window; distance/RMSD/group have their own). RMSD
-    is summed regardless of ``include_distance``. ``sigma=None``/``step=None`` disable that
-    axis's gating. Pure jnp so it stays JIT/vmap-able."""
+    mask (conformer terms share the conf window; distance/RMSD/group each have their own
+    per-restraint window). ``sigma=None``/``step=None`` disable that axis's gating. Pure jnp
+    so it stays JIT/vmap-able."""
     cg, sigma_gate = _gates(prepared, positions, sigma, step)
     ene = jnp.asarray(0.0, dtype=positions.dtype)
-    for v in term_energies(
-        _LEAF_FNS, prepared, positions, cg, sigma_gate, include_distance
-    ).values():
+    for v in term_energies(_LEAF_FNS, prepared, positions, cg, sigma_gate).values():
         ene = ene + v
     return ene
 
@@ -393,9 +398,7 @@ def energy_breakdown(positions, prepared, sigma=None, step=None):
     for use inside JIT (the floats force a device->host sync); for diagnostics."""
     cg, sigma_gate = _gates(prepared, positions, sigma, step)
     out = dict.fromkeys(BREAKDOWN_KEYS, 0.0)
-    for k, v in term_energies(
-        _LEAF_FNS, prepared, positions, cg, sigma_gate, include_distance=True
-    ).items():
+    for k, v in term_energies(_LEAF_FNS, prepared, positions, cg, sigma_gate).items():
         out[k] = float(v)
     return out
 

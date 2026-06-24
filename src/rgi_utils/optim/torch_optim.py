@@ -34,7 +34,6 @@ from rgi_utils.optim._cg_config import (
     GTOL,
     MAX_LS,
 )
-from rgi_utils.optim.distance_shift import apply_distance_shift_torch
 
 logger = logging.getLogger(__name__)
 
@@ -95,9 +94,7 @@ class TorchRestraintOptimizer:
         closures = [c for *_meta, c in self._custom_terms]
 
         def energy(a, prepared, gates):
-            e = torch_energy.total_energy(
-                a, prepared, sigma=None, include_distance=False
-            )
+            e = torch_energy.total_energy(a, prepared, sigma=None)
             for i in range(len(closures)):
                 e = e + gates[i] * closures[i](a)
             return e
@@ -179,7 +176,7 @@ class TorchRestraintOptimizer:
     def _gated_prepared(self, sigma, step=None):
         """Stable pre-gated ``prepared`` for the compiled GPU CG, cached by the discrete
         GATE STATE — the conformer gate plus the per-restraint gate of every per-entry
-        term (rmsd, group_angle, group_dihedral — ``PER_ENTRY_KEYS``). Each gate is the
+        term (distance, rmsd, group_angle, group_dihedral — ``PER_ENTRY_KEYS``). Each gate is the
         active sigma window (``stop_sigma <= sigma <= start_sigma``) AND the active step
         window (``start_step <= step <= stop_step``) — a restraint uses one or the other
         (mutually exclusive at config), the unused axis always-on so the AND is correct.
@@ -189,9 +186,10 @@ class TorchRestraintOptimizer:
         recompile per distinct value. Stable object identity per gate state lets
         ``torch.compile`` reuse its artifact; sigma decreases / step increases
         monotonically so each gate flips at most once -> a few states -> a few compiles,
-        then reuse. distance is excluded (closed-form). The conformer-gated key set
-        (``CONF_KEYS``) and the per-entry-gated set (``PER_ENTRY_KEYS``) both come from
-        ``_TERMS``, so adding a term can't silently leave it ungated on the compiled path."""
+        then reuse. distance is now a per-entry term (in ``PER_ENTRY_KEYS``), so it is gated
+        and folded here like rmsd/group. The conformer-gated key set (``CONF_KEYS``) and the
+        per-entry-gated set (``PER_ENTRY_KEYS``) both come from ``_TERMS``, so adding a term
+        can't silently leave it ungated on the compiled path."""
         p = self._prepared
         # conformer gate: active sigma window (conf_stop <= sigma <= conf_start) AND
         # active step window (conf_start_step <= step <= conf_stop_step).
@@ -355,20 +353,12 @@ class TorchRestraintOptimizer:
             )
             active.copy_(coords[..., self._active_idx, :])  # casts bf16/fp16 -> fp32
 
-            # 1) Distance restraints: closed-form rigid centroid translation (no solver, no
-            #    autograd) -- a centroid-distance restraint is a 1-DOF problem, so iterating
-            #    a per-atom CG over it is wasteful. Gated per-restraint inside the shift.
-            if has_dist:
-                with torch.no_grad():
-                    active = apply_distance_shift_torch(
-                        active, prepared["distance"], sigma, step
-                    )
-
-            # 2) Conformer (bond/angle/chiral/cistrans/vdw) + RMSD + group-centroid
-            #    angle/dihedral restraints: gradient solver on the non-distance energy
-            #    (distance already applied above; total_energy(include_distance=False)
-            #    covers conformer, RMSD AND the group terms). Skipped for distance-only.
-            if has_conf or has_rmsd or has_group or has_custom:
+            # Distance + conformer (bond/angle/chiral/cistrans/vdw) + RMSD + group-centroid
+            # angle/dihedral restraints all minimise ONE objective in the gradient solver
+            # (total_energy sums every active term). Distance is an autodiff CG term too: its
+            # energy rescales the centroid gradient (reduced-mass scale) so each group
+            # translates rigidly with the minimal-displacement split — no closed-form shift.
+            if has_dist or has_conf or has_rmsd or has_group or has_custom:
                 active = active.detach().clone()
                 active.requires_grad_(True)
                 prot_pos = None
@@ -381,9 +371,7 @@ class TorchRestraintOptimizer:
                     prot_pos.copy_(coords[..., self._vdw["prot_global"], :])
 
                 def energy_fn():
-                    e = torch_energy.total_energy(
-                        active, prepared, sigma, step, include_distance=False
-                    )
+                    e = torch_energy.total_energy(active, prepared, sigma, step)
                     if prot_pos is not None:
                         e = e + self._vdw_energy(active, prot_pos)
                     ce = self._custom_energy(active, sigma, step)

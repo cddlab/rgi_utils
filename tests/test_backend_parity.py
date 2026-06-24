@@ -28,7 +28,9 @@ N_ACTIVE = 12
 
 
 def _make_spec(
-    include_groups: bool = True, include_improper: bool = True
+    include_groups: bool = True,
+    include_improper: bool = True,
+    include_distance: bool = True,
 ) -> RestraintSpec:
     """A small spec exercising every restraint type with non-zero energy.
 
@@ -174,7 +176,7 @@ def _make_spec(
         improper=improper,
         cistrans=cistrans,
         vdw=vdw,
-        distance=distance,
+        distance=distance if include_distance else None,
         group_angle=group_angle,
         group_dihedral=group_dihedral,
         conf_start_sigma=10.0,  # conformer terms active when sigma <= 10
@@ -237,10 +239,12 @@ def test_grad_parity():
 
     from rgi_utils.energy import jax_energy, torch_energy
 
-    # group terms excluded: their centroid gradient is intentionally N x-rescaled (centroid_eff, so
-    # the group moves rigidly at weight=1), so it does NOT match a numpy finite-difference
-    # of the true energy. Group grad parity is checked torch-vs-jax in test_optim.
-    spec = _make_spec(include_groups=False)
+    # group AND distance terms excluded: both have an intentionally N x-rescaled centroid
+    # gradient (centroid_eff, so the group/centroid moves rigidly at weight=1) — distance now
+    # uses the reduced-mass scale mu=N1*N2/(N1+N2) — so neither matches a numpy finite-
+    # difference of the true energy. Group grad parity is checked torch-vs-jax in test_optim;
+    # distance grad parity torch-vs-jax is test_distance_grad_parity_torch_jax below.
+    spec = _make_spec(include_groups=False, include_distance=False)
     pos = _positions()
 
     # numpy finite-difference gradient (ground truth for autodiff)
@@ -369,408 +373,67 @@ def test_cistrans_degenerate_gradient_parity():
         )
 
 
-def test_distance_closed_form_backend_parity():
-    """The closed-form centroid-distance shift agrees across numpy/torch/jax and lands the
-    centroid separation exactly on target in one step (this replaced the per-atom CG)."""
+def test_distance_grad_parity_torch_jax():
+    """Distance is now CG-minimised with the reduced-mass ``centroid_eff`` rescale
+    (``scale = N1*N2/(N1+N2)``), so its autodiff gradient is intentionally N×-rescaled and
+    does NOT match a numpy finite-difference of the true energy — the same carve-out as
+    rmsd/group. The contract that survives: the energy VALUE agrees across numpy/torch/jax
+    (centroid_eff leaves the value unchanged), and the autodiff GRADIENT agrees
+    torch-vs-jax (what the CG optimizers rely on). N1=3 != N2=1 so the rescale is genuinely
+    active (mu = 3/4 != 1, unlike the N1=N2=2 case where mu collapses to 1)."""
     torch = pytest.importorskip("torch")
-    jnp = pytest.importorskip("jax.numpy")
-    from rgi_utils.optim import distance_shift as ds
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
 
-    d_np = dict(
-        grp1_idx=np.array([[0, 1]]),
-        grp2_idx=np.array([[2, 3]]),
-        grp1_mask=np.array([[1.0, 1.0]]),
-        grp2_mask=np.array([[1.0, 1.0]]),
-        target1=np.array([5.0]),
-        target2=np.array([0.0]),
-        dist_type=np.array([0]),
-        mask=np.array([1.0]),
-        start_sigma=np.array([1e30]),
-        stop_sigma=np.array([-1.0]),
-    )
-    active = np.zeros((4, 3))
-    active[2:, 0] = 20.0  # centroid1 at x=0, centroid2 at x=20 -> dist 20
+    from rgi_utils.energy import jax_energy, torch_energy
 
-    a_np = ds.apply_distance_shift_numpy(active, d_np, 0.0)
-    a_t = ds.apply_distance_shift_torch(
-        torch.as_tensor(active), {k: torch.as_tensor(v) for k, v in d_np.items()}, 0.0
-    ).numpy()
-    a_j = np.asarray(
-        ds.apply_distance_shift_jax(
-            jnp.asarray(active), {k: jnp.asarray(v) for k, v in d_np.items()}, 0.0
-        )
-    )
-
-    def centroid_dist(a):
-        return np.linalg.norm(a[2:].mean(0) - a[:2].mean(0))
-
-    assert abs(centroid_dist(a_np) - 5.0) < 1e-6
-    assert np.allclose(a_np, a_t, atol=1e-6)
-    assert np.allclose(a_np, a_j, atol=1e-5)
-
-
-@pytest.mark.gpu
-def test_distance_closed_form_cuda_matches_cpu():
-    """R1 (the ops-facade distance_shift refactor) on a REAL CUDA device: the torch
-    closed-form shift on cuda must match the numpy reference and land the centroid on
-    target. The GPU counterpart to test_distance_closed_form_backend_parity -- it is what
-    exercises apply_distance_shift_torch's .long()/index_add/as_tensor on cuda (the
-    CPU parity test can't catch a device-only regression)."""
-    torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
-        pytest.skip("no cuda device")
-    from rgi_utils.optim import distance_shift as ds
-
-    d_np = dict(
-        grp1_idx=np.array([[0, 1]]),
-        grp2_idx=np.array([[2, 3]]),
-        grp1_mask=np.array([[1.0, 1.0]]),
-        grp2_mask=np.array([[1.0, 1.0]]),
-        target1=np.array([5.0]),
-        target2=np.array([0.0]),
-        dist_type=np.array([0]),
-        mask=np.array([1.0]),
-        start_sigma=np.array([1e30]),
-        stop_sigma=np.array([-1.0]),
-    )
-    active = np.zeros((4, 3))
-    active[2:, 0] = 20.0  # centroid1 at x=0, centroid2 at x=20 -> dist 20, target 5
-
-    a_np = ds.apply_distance_shift_numpy(active, d_np, 0.0)
-    a_cuda = (
-        ds.apply_distance_shift_torch(
-            torch.as_tensor(active, device="cuda"),
-            {k: torch.as_tensor(v, device="cuda") for k, v in d_np.items()},
-            0.0,
-        )
-        .cpu()
-        .numpy()
-    )
-
-    def centroid_dist(a):
-        return np.linalg.norm(a[2:].mean(0) - a[:2].mean(0))
-
-    assert abs(centroid_dist(a_cuda) - 5.0) < 1e-5
-    assert np.allclose(a_np, a_cuda, atol=1e-5)
-
-
-def test_distance_closed_form_stop_sigma_release():
-    """The closed-form distance shift honours stop_sigma (lower noise bound) across all
-    three backends: below stop the centroid shift is RELEASED (coords untouched), inside the
-    window [stop, start] it lands on target. Covers the PRODUCTION closed-form path
-    (apply_distance_shift_*) with stop ON -- the other closed-form tests use -1."""
-    torch = pytest.importorskip("torch")
-    jnp = pytest.importorskip("jax.numpy")
-    from rgi_utils.optim import distance_shift as ds
-
-    d_np = dict(
-        grp1_idx=np.array([[0, 1]]),
-        grp2_idx=np.array([[2, 3]]),
-        grp1_mask=np.array([[1.0, 1.0]]),
-        grp2_mask=np.array([[1.0, 1.0]]),
-        target1=np.array([5.0]),
-        target2=np.array([0.0]),
-        dist_type=np.array([0]),
-        mask=np.array([1.0]),
-        start_sigma=np.array([10.0]),
-        stop_sigma=np.array([2.0]),  # released below sigma=2
-    )
-    active = np.zeros((4, 3))
-    active[2:, 0] = 20.0  # centroid1 at x=0, centroid2 at x=20 -> gap 20, target 5
-
-    def shift_all(sigma):
-        a_np = ds.apply_distance_shift_numpy(active, d_np, sigma)
-        a_t = ds.apply_distance_shift_torch(
-            torch.as_tensor(active),
-            {k: torch.as_tensor(v) for k, v in d_np.items()},
-            sigma,
-        ).numpy()
-        a_j = np.asarray(
-            ds.apply_distance_shift_jax(
-                jnp.asarray(active),
-                {k: jnp.asarray(v) for k, v in d_np.items()},
-                sigma,
-            )
-        )
-        return a_np, a_t, a_j
-
-    def centroid_dist(a):
-        return np.linalg.norm(a[2:].mean(0) - a[:2].mean(0))
-
-    # below stop_sigma -> released: every backend leaves the coords untouched (gap 20)
-    for name, a in zip(("numpy", "torch", "jax"), shift_all(1.0)):
-        assert np.allclose(a, active, atol=1e-6), name
-        assert abs(centroid_dist(a) - 20.0) < 1e-6, name
-    # inside [stop, start] -> applied: every backend lands the centroid gap on target 5
-    for name, a in zip(("numpy", "torch", "jax"), shift_all(5.0)):
-        assert abs(centroid_dist(a) - 5.0) < 1e-6, name
-
-
-def test_distance_closed_form_coupled_restraints():
-    """Two distance restraints that SHARE an atom converge via the Jacobi iteration
-    (a single pass would satisfy neither); numpy/torch/jax agree."""
-    torch = pytest.importorskip("torch")
-    jnp = pytest.importorskip("jax.numpy")
-    from rgi_utils.optim import distance_shift as ds
-
-    d = dict(
-        grp1_idx=np.array([[0], [1]]),
-        grp2_idx=np.array([[1], [2]]),  # restraints A-B and B-C share atom 1 (B)
-        grp1_mask=np.array([[1.0], [1.0]]),
-        grp2_mask=np.array([[1.0], [1.0]]),
-        target1=np.array([5.0, 5.0]),
-        target2=np.array([0.0, 0.0]),
-        dist_type=np.array([0, 0]),
-        mask=np.array([1.0, 1.0]),
-        start_sigma=np.array([1e30, 1e30]),
-        stop_sigma=np.array([-1.0, -1.0]),
-    )
-    a = np.zeros((3, 3))
-    a[1, 0] = 10.0
-    a[2, 0] = 20.0  # A=0, B=10, C=20 -> both gaps 10, target 5
-
-    a_np = ds.apply_distance_shift_numpy(a, d, 0.0)
-    assert abs(np.linalg.norm(a_np[1] - a_np[0]) - 5.0) < 1e-3
-    assert abs(np.linalg.norm(a_np[2] - a_np[1]) - 5.0) < 1e-3
-    a_t = ds.apply_distance_shift_torch(
-        torch.as_tensor(a), {k: torch.as_tensor(v) for k, v in d.items()}, 0.0
-    ).numpy()
-    a_j = np.asarray(
-        ds.apply_distance_shift_jax(
-            jnp.asarray(a), {k: jnp.asarray(v) for k, v in d.items()}, 0.0
-        )
-    )
-    assert np.allclose(a_np, a_t, atol=1e-6)
-    assert np.allclose(a_np, a_j, atol=1e-5)
-
-
-def test_distance_closed_form_move_modes():
-    """The `move` key picks which group the closed-form shift moves: 0=both (minimal-
-    displacement split), 1=only group1 (atom_selection1), 2=only group2. All three reach
-    the target centroid separation; 1/2 leave the OTHER group's atoms EXACTLY fixed. numpy/
-    torch/jax agree."""
-    torch = pytest.importorskip("torch")
-    jnp = pytest.importorskip("jax.numpy")
-    from rgi_utils.optim import distance_shift as ds
-
-    def base_d(move):
-        return dict(
-            grp1_idx=np.array([[0, 1]]),
-            grp2_idx=np.array([[2, 3]]),
-            grp1_mask=np.array([[1.0, 1.0]]),
-            grp2_mask=np.array([[1.0, 1.0]]),
-            target1=np.array([5.0]),
+    # group1 = 3 atoms, group2 = 1 atom (mu = 3*1/(3+1) = 0.75), harmonic, off target so
+    # energy + gradient are non-zero.
+    spec = RestraintSpec(
+        n_active=8,
+        active_sites=np.arange(8),
+        distance=DistanceArrays(
+            grp1_idx=np.array([[0, 1, 2]], dtype=np.int64),
+            grp2_idx=np.array([[7, 0, 0]], dtype=np.int64),
+            grp1_mask=np.array([[1.0, 1.0, 1.0]]),
+            grp2_mask=np.array([[1.0, 0.0, 0.0]]),  # group2 is a single atom
+            target1=np.array([3.0]),
             target2=np.array([0.0]),
-            dist_type=np.array([0]),
-            move_mode=np.array([move]),
+            dist_type=np.array([0], dtype=np.int64),
+            move_mode=np.array([0], dtype=np.int64),  # both groups free
+            weight=np.array([1.0]),
             mask=np.array([1.0]),
-            start_sigma=np.array([1e30]),
+            start_sigma=np.array([float("inf")]),
             stop_sigma=np.array([-1.0]),
-        )
-
-    active = np.zeros((4, 3))
-    active[2:, 0] = 20.0  # centroid1 at x=0, centroid2 at x=20 -> gap 20, target 5
-
-    def shift_all(move):
-        d = base_d(move)
-        a_np = ds.apply_distance_shift_numpy(active, d, 0.0)
-        a_t = ds.apply_distance_shift_torch(
-            torch.as_tensor(active),
-            {k: torch.as_tensor(v) for k, v in d.items()},
-            0.0,
-        ).numpy()
-        a_j = np.asarray(
-            ds.apply_distance_shift_jax(
-                jnp.asarray(active),
-                {k: jnp.asarray(v) for k, v in d.items()},
-                0.0,
-            )
-        )
-        assert np.allclose(a_np, a_t, atol=1e-6), move
-        assert np.allclose(a_np, a_j, atol=1e-5), move
-        return a_np
-
-    def centroid_dist(a):
-        return np.linalg.norm(a[2:].mean(0) - a[:2].mean(0))
-
-    a_both, a_m1, a_m2 = shift_all(0), shift_all(1), shift_all(2)
-    # every mode lands the centroid gap on the target
-    for a in (a_both, a_m1, a_m2):
-        assert abs(centroid_dist(a) - 5.0) < 1e-6
-    # move=1 -> only group1 (atoms 0,1) moves; group2 (2,3) EXACTLY fixed
-    assert np.allclose(a_m1[2:], active[2:], atol=1e-9)
-    assert not np.allclose(a_m1[:2], active[:2], atol=1e-6)
-    # move=2 -> only group2 moves; group1 EXACTLY fixed
-    assert np.allclose(a_m2[:2], active[:2], atol=1e-9)
-    assert not np.allclose(a_m2[2:], active[2:], atol=1e-6)
-    # both -> neither group stays fixed
-    assert not np.allclose(a_both[:2], active[:2], atol=1e-6)
-    assert not np.allclose(a_both[2:], active[2:], atol=1e-6)
-
-
-def test_distance_closed_form_coupled_move_modes():
-    """Two distance restraints SHARING an atom, each with a move mode, under the Jacobi
-    iteration. move-1/move-2 here make the MOVING atom sets disjoint (r1 moves only A,
-    r2 moves only C, the shared B stays), so it still converges to both targets; numpy/
-    torch/jax agree. (When two restraints move the SAME shared atom the fixed point can
-    differ from 'both' -- that is the intended semantics, not a bug.)"""
-    torch = pytest.importorskip("torch")
-    jnp = pytest.importorskip("jax.numpy")
-    from rgi_utils.optim import distance_shift as ds
-
-    d = dict(
-        grp1_idx=np.array([[0], [1]]),
-        grp2_idx=np.array([[1], [2]]),  # A-B and B-C share atom 1 (B)
-        grp1_mask=np.array([[1.0], [1.0]]),
-        grp2_mask=np.array([[1.0], [1.0]]),
-        target1=np.array([5.0, 5.0]),
-        target2=np.array([0.0, 0.0]),
-        dist_type=np.array([0, 0]),
-        move_mode=np.array([1, 2]),  # r1 moves only A (grp1); r2 moves only C (grp2)
-        mask=np.array([1.0, 1.0]),
-        start_sigma=np.array([1e30, 1e30]),
-        stop_sigma=np.array([-1.0, -1.0]),
+            start_step=np.full(1, float("-inf")),
+            stop_step=np.full(1, float("inf")),
+        ),
+        conf_start_sigma=-1.0,
     )
-    a = np.zeros((3, 3))
-    a[1, 0] = 10.0
-    a[2, 0] = 20.0  # A=0, B=10, C=20 -> both gaps 10, target 5
+    pos = _positions(2)[:8]
+    prep_np = numpy_energy.prepare_spec(spec)
+    prep_t = torch_energy.prepare_spec(spec, dtype=torch.float64)
+    prep_j = jax_energy.prepare_spec(spec)
 
-    a_np = ds.apply_distance_shift_numpy(a, d, 0.0)
-    assert abs(np.linalg.norm(a_np[1] - a_np[0]) - 5.0) < 1e-3  # A-B gap 5
-    assert abs(np.linalg.norm(a_np[2] - a_np[1]) - 5.0) < 1e-3  # B-C gap 5
-    assert np.allclose(a_np[1], a[1], atol=1e-9)  # shared B held fixed
-    a_t = ds.apply_distance_shift_torch(
-        torch.as_tensor(a), {k: torch.as_tensor(v) for k, v in d.items()}, 0.0
-    ).numpy()
-    a_j = np.asarray(
-        ds.apply_distance_shift_jax(
-            jnp.asarray(a), {k: jnp.asarray(v) for k, v in d.items()}, 0.0
-        )
+    # energy value parity across the three backends (centroid_eff is value-preserving)
+    e_np = float(numpy_energy.total_energy(pos, prep_np))
+    e_t = float(
+        torch_energy.total_energy(torch.tensor(pos, dtype=torch.float64), prep_t)
     )
-    assert np.allclose(a_np, a_t, atol=1e-6)
-    assert np.allclose(a_np, a_j, atol=1e-5)
+    e_j = float(jax_energy.total_energy(jnp.asarray(pos), prep_j))
+    assert e_np > 0.0
+    assert abs(e_np - e_t) < 1e-6 and abs(e_np - e_j) < 1e-6
 
-
-def _shift_3backends(active, d):
-    """Apply the closed-form distance shift on numpy/torch/jax, assert they agree, return
-    the numpy result. ``d`` is a hand-built prepared dict (no batch dim)."""
-    torch = pytest.importorskip("torch")
-    jnp = pytest.importorskip("jax.numpy")
-    from rgi_utils.optim import distance_shift as ds
-
-    a_np = ds.apply_distance_shift_numpy(active, d, 0.0)
-    a_t = ds.apply_distance_shift_torch(
-        torch.as_tensor(active), {k: torch.as_tensor(v) for k, v in d.items()}, 0.0
-    ).numpy()
-    a_j = np.asarray(
-        ds.apply_distance_shift_jax(
-            jnp.asarray(active), {k: jnp.asarray(v) for k, v in d.items()}, 0.0
-        )
+    # gradient parity: torch vs jax (both apply the reduced-mass rescale; a numpy-FD of the
+    # true energy would NOT match because the gradient is deliberately N×-rescaled).
+    pt = torch.tensor(pos, dtype=torch.float64, requires_grad=True)
+    torch_energy.total_energy(pt, prep_t).backward()
+    g_t = pt.grad.numpy()
+    g_j = np.asarray(
+        jax.grad(lambda x: jax_energy.total_energy(x, prep_j))(jnp.asarray(pos))
     )
-    assert np.allclose(a_np, a_t, atol=1e-6)
-    assert np.allclose(a_np, a_j, atol=1e-5)
-    return a_np
-
-
-def test_distance_single_weight_reaches_target():
-    """A SINGLE distance restraint reaches its exact target REGARDLESS of weight (weight
-    is a no-op for a lone / disjoint restraint — it cancels in the per-atom normaliser).
-    Same invariant as angle/dihedral, where a single restraint hits its target at any
-    weight."""
-    active = np.zeros((4, 3))
-    active[2:, 0] = 20.0  # centroid1 at x=0, centroid2 at x=20 -> gap 20, target 5
-    for w in (0.1, 1.0, 5.0):
-        d = dict(
-            grp1_idx=np.array([[0, 1]]),
-            grp2_idx=np.array([[2, 3]]),
-            grp1_mask=np.array([[1.0, 1.0]]),
-            grp2_mask=np.array([[1.0, 1.0]]),
-            target1=np.array([5.0]),
-            target2=np.array([0.0]),
-            dist_type=np.array([0]),
-            move_mode=np.array([0]),
-            weight=np.array([w]),
-            mask=np.array([1.0]),
-            start_sigma=np.array([1e30]),
-            stop_sigma=np.array([-1.0]),
-        )
-        a = _shift_3backends(active, d)
-        gap = np.linalg.norm(a[2:].mean(0) - a[:2].mean(0))
-        assert abs(gap - 5.0) < 1e-6, w
-
-
-def test_distance_weighted_balance():
-    """OVER-CONSTRAINED coupling — the only regime where weight changes the fixed point.
-    Atom B is the SOLE mover of two CONFLICTING restraints (r1 pins A and moves B; r2 pins
-    C and moves B): r1 wants |B-A|=5 (B->5), r2 wants |B-C|=5 (B->15). B settles at the
-    WEIGHTED balance B = (5*w1 + 15*w2)/(w1+w2); A and C stay EXACTLY pinned. numpy/torch/
-    jax agree."""
-    # A=0 (pinned), B=10 (sole mover), C=20 (pinned)
-    active = np.zeros((3, 3))
-    active[1, 0] = 10.0
-    active[2, 0] = 20.0
-
-    def run(w1, w2):
-        d = dict(
-            grp1_idx=np.array([[0], [1]]),  # r1: A-B ; r2: B-C
-            grp2_idx=np.array([[1], [2]]),
-            grp1_mask=np.array([[1.0], [1.0]]),
-            grp2_mask=np.array([[1.0], [1.0]]),
-            target1=np.array([5.0, 5.0]),
-            target2=np.array([0.0, 0.0]),
-            dist_type=np.array([0, 0]),
-            move_mode=np.array(
-                [2, 1]
-            ),  # r1 moves grp2(B), pins A; r2 moves grp1(B), pins C
-            weight=np.array([w1, w2]),
-            mask=np.array([1.0, 1.0]),
-            start_sigma=np.array([1e30, 1e30]),
-            stop_sigma=np.array([-1.0, -1.0]),
-        )
-        return _shift_3backends(active, d)
-
-    for w1, w2 in ((1.0, 1.0), (2.0, 1.0), (1.0, 2.0)):
-        a = run(w1, w2)
-        expect = (5.0 * w1 + 15.0 * w2) / (w1 + w2)
-        assert abs(a[1, 0] - expect) < 1e-4, (w1, w2, a[1, 0])
-        assert np.allclose(a[0], active[0], atol=1e-9)  # A pinned exactly
-        assert np.allclose(a[2], active[2], atol=1e-9)  # C pinned exactly
-
-
-def test_distance_weighted_mixed_pin_move():
-    """Regression guard for the normaliser denominator: it must weight by the move
-    INDICATOR [c>0], NOT by plain w_d. r1=(A,B) move=1 (moves A, PINS B); r2=(B,C) move=1
-    (moves B, pins C). B is moved by r2 ALONE, so it must reach its target regardless of
-    r1's weight. With a plain-w denominator wnorm[B]=w1+w2, so a lopsided w1=50:w2=1 would
-    stall B at ~73% residual after 16 passes (target missed); the [c>0] denominator gives
-    wnorm[B]=w2, so B moves fully. A then chases B to |A-B|=5."""
-    # A=0, B=10, C=20 ; targets A-B=5, B-C=5  ->  B->15, A->10, C fixed
-    active = np.zeros((3, 3))
-    active[1, 0] = 10.0
-    active[2, 0] = 20.0
-    d = dict(
-        grp1_idx=np.array([[0], [1]]),  # r1: A-B ; r2: B-C
-        grp2_idx=np.array([[1], [2]]),
-        grp1_mask=np.array([[1.0], [1.0]]),
-        grp2_mask=np.array([[1.0], [1.0]]),
-        target1=np.array([5.0, 5.0]),
-        target2=np.array([0.0, 0.0]),
-        dist_type=np.array([0, 0]),
-        move_mode=np.array([1, 1]),  # r1 moves grp1(A) pins B; r2 moves grp1(B) pins C
-        weight=np.array(
-            [50.0, 1.0]
-        ),  # lopsided: plain-w would dilute B's only mover (r2)
-        mask=np.array([1.0, 1.0]),
-        start_sigma=np.array([1e30, 1e30]),
-        stop_sigma=np.array([-1.0, -1.0]),
-    )
-    a = _shift_3backends(active, d)
-    assert (
-        abs(np.linalg.norm(a[2] - a[1]) - 5.0) < 1e-3
-    )  # B-C gap reached (B moved fully)
-    assert abs(np.linalg.norm(a[1] - a[0]) - 5.0) < 1e-3  # A chased B
-    assert abs(a[1, 0] - 15.0) < 1e-3  # B at 15, not stalled near 10
-    assert np.allclose(a[2], active[2], atol=1e-9)  # C pinned exactly
+    assert np.allclose(g_t, g_j, atol=1e-6), f"max|d|={np.abs(g_t - g_j).max()}"
 
 
 def _rmsd_case(seed=3, n=6):
@@ -970,21 +633,24 @@ def test_jax_torch_cg_same_minimum_at_default_iters():
     from rgi_utils.optim._torch_cg_gpu import _cg_minimize_torch
     from rgi_utils.optim.jax_optim import _cg_minimize
 
-    # conformer + vdw + distance only (no rmsd, no group terms); the CG handles conf
-    # here. Group terms are excluded: their convergence parity is covered in test_optim.
-    # improper is excluded too: it reuses chiral_energy (parity proven elsewhere) but its
-    # stiff near-zero-volume target shifts the fixed-iteration CG minimum past this fuzzy
-    # tolerance.
-    spec = _make_spec(include_groups=False, include_improper=False)
+    # conformer + vdw only (no rmsd, group, improper, OR distance); the CG handles conf
+    # here. This test originally excluded distance via include_distance=False (distance was
+    # closed-form); with that flag gone, distance is dropped from the spec instead — its
+    # reduced-mass centroid_eff rescale shifts the fixed-iteration CG minimum past this fuzzy
+    # tolerance (same reason groups/improper are excluded). Distance CG-convergence parity is
+    # covered directly in test_optim; group convergence parity likewise.
+    spec = _make_spec(
+        include_groups=False, include_improper=False, include_distance=False
+    )
     pos = _positions(0)
     prep_t = torch_energy.prepare_spec(spec, dtype=torch.float64)
     prep_j = jax_energy.prepare_spec(spec)
 
     def et(a):
-        return torch_energy.total_energy(a, prep_t, sigma=None, include_distance=False)
+        return torch_energy.total_energy(a, prep_t, sigma=None)
 
     def ej(a):
-        return jax_energy.total_energy(a, prep_j, sigma=None, include_distance=False)
+        return jax_energy.total_energy(a, prep_j, sigma=None)
 
     xt = _cg_minimize_torch(
         torch.func.grad_and_value(et), torch.tensor(pos, dtype=torch.float64), 100

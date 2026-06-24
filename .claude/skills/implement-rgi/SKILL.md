@@ -38,7 +38,8 @@ satisfy user restraints. Five types:
 
 These are flat-bottomed squared penalties minimized on GPU (or CPU). The energy
 maths is identical across the torch and jax backends (with a numpy energy
-reference); distance is applied closed-form rather than through the solver.
+reference); distance is CG-minimised like the other restraints (a reduced-mass
+`_move_centroid` rescale keeps large groups translating rigidly).
 
 Beyond these five built-ins, a user can define an **original** restraint with no
 hand-wiring — a config-only `custom_restraints_config` math **formula** (the expression
@@ -70,15 +71,16 @@ rgi_utils one instead.
 
 ## Implementation — 3 steps
 
-### Step 1 — Install and let rgi_utils pick the backend
+### Step 1 — Install (the backend is inferred, not configured)
 
 Install editable into the tool's venv: `uv pip install -e <path>/rgi_utils[torch]`
-for a PyTorch tool, `[jax]` for a JAX tool. You do **not** choose the backend in
-code — `rgi_utils.config` reads `gpu` / `backend` from the restraints_config: the
-backend is **torch by default** (or `backend: jax` for a JAX tool), and `gpu`
-selects the *device* (`gpu: false` runs the torch optimizer on CPU). There is **no
-numpy optimizer** — numpy survives only as the energy reference for backend-parity
-tests, so `backend: numpy` raises.
+for a PyTorch tool, `[jax]` for a JAX tool. You do **not** choose the backend — it is
+**inferred from how you invoke the engine**: a JAX tool grabs the pure minimizer via
+`get_minimizer()` → jax; a PyTorch tool calls `minimize(coords)`, where a torch/numpy
+array → torch. `gpu` in the restraints_config still selects the torch *device*
+(`gpu: false` runs the torch optimizer on CPU). There is **no numpy optimizer** —
+numpy survives only as the energy reference for backend-parity tests. (A leftover
+`backend:` config key raises with a migration hint.)
 
 ### Step 2 — Write an adapter
 

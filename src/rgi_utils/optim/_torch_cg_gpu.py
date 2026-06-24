@@ -83,10 +83,11 @@ except Exception:
 
 
 def _energy(a, prepared):
-    """Pure pre-gated restraint energy (conformer + RMSD; distance is closed-form and
-    excluded). ``prepared`` carries the noise gate folded into its masks, so there is no
-    ``sigma`` argument -- which is what lets the compiled graph be reused across steps."""
-    return torch_energy.total_energy(a, prepared, sigma=None, include_distance=False)
+    """Pure pre-gated restraint energy (distance + conformer + RMSD + group; every active
+    term, distance now an autodiff CG term). ``prepared`` carries the noise gate folded into
+    its masks, so there is no ``sigma`` argument -- which is what lets the compiled graph be
+    reused across steps."""
+    return torch_energy.total_energy(a, prepared, sigma=None)
 
 
 def _vdw_pair_energy(active, prot_pos, lig_local, lig_r, prot_r, scale, weight):

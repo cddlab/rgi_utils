@@ -50,13 +50,16 @@ Design = **3 layers + autodiff + static shapes + GPU-complete optimization**:
    (no hand-written grad). `numpy_energy` is the reference;
    `tests/test_backend_parity.py` checks energy+grad agreement across backends.
 
-3. **Optim layer** (`optim/{torch,jax}_optim.py` + `optim/distance_shift.py`,
+3. **Optim layer** (`optim/{torch,jax}_optim.py`,
    GPU-complete): optimize only `active_sites` coords, scatter back. Default
    `method='CG'`: torch = a hand-rolled nonlinear CG (Polak-Ribiere+, backtracking
    Armijo); jax = a pure-jax port of it (`lax.while_loop`, JIT-able inside `lax.scan`).
    `method='l-bfgs'` is opt-in (torch `LBFGS` strong-Wolfe / `jaxopt.LBFGS`, lazily
-   imported). Distance restraints skip the solver — a centroid-distance is 1-DOF and applied
-   closed-form in `distance_shift.py`. No `pure_callback`, no scipy. On CUDA the torch CG
+   imported). Distance is CG-minimised like every other restraint (the old closed-form
+   `distance_shift.py` was removed); to stop the `1/N` centroid-gradient dilution from
+   freezing large groups, its centroid uses the same `_move_centroid` N×-rescale as the
+   group terms, with a reduced-mass scale `N1·N2/(N1+N2)` reproducing the old
+   minimal-displacement split. No `pure_callback`, no scipy. On CUDA the torch CG
    runs through `optim/_torch_cg_gpu.py` — the same early-exit CG but with a `torch.compile`
    (inductor-fused, NOT cudagraph) energy+grad, so conformer/RMSD optimization is GPU-faster
    than eager. RMSD needs the hand-rolled CG on BOTH backends (jaxopt NonlinearCG stalls on
@@ -81,14 +84,18 @@ Supporting modules:
   `setup(adapter, nbatch, config=dict)` (folds in the old `set_config`; clears any
   prior spec/optimizer up front so a reused instance is safe) →
   `minimize(coords, step, sigma)` → `finalize(coords, step)`. `get_instance()` /
-  `reset()` remain only as back-compat shims — do not build new code on them. Picks
-  the backend from config — **default torch**; `gpu` selects the *device* (CPU when
-  `gpu:false`, the accelerator when `gpu:true`), NOT the backend, so `gpu:false` runs
-  the torch optimizer on CPU (moving GPU coords to CPU and back). The numpy/scipy
-  optimizer backend was removed, so `backend` must be torch (default) or jax — an
-  explicit `backend: numpy` raises. torch/jax imported lazily. JAX
-  tools inside `lax.scan` grab the pure minimizer via `get_minimizer()` instead of
-  calling `minimize` per step (AF3 forces `backend: jax`, so for AF3 the `gpu` flag is
+  `reset()` remain only as back-compat shims — do not build new code on them. The
+  backend is **inferred from invocation, NOT a config key**: `get_minimizer()` →
+  jax (only AF3 calls it); `minimize(coords)` → jax if `coords` is a jax array, else
+  torch (numpy/torch coords both take the torch path). Resolution is lazy — `setup`
+  leaves `self._backend = None` and builds the optimizer on the first
+  `minimize`/`get_minimizer` (`_ensure_backend` raises if one instance is invoked under
+  two backends). `gpu` selects the torch *device* (CPU when `gpu:false`, the accelerator
+  when `gpu:true`), NOT the backend, so `gpu:false` runs the torch optimizer on CPU
+  (moving GPU coords to CPU and back). There is no numpy optimizer (numpy is the energy
+  reference only); a leftover `backend:` config key raises with a migration hint.
+  torch/jax imported lazily. JAX tools inside `lax.scan` grab the pure minimizer via
+  `get_minimizer()` instead of calling `minimize` per step (so for AF3 the `gpu` flag is
   inert — to run AF3 restraints on CPU, run the whole process on the JAX CPU platform).
 - **Framework adapters** (`{boltz,protenix,chai,openfold3,esmfold2,alphafold3}/adapter.py` —
   framework-free EXCEPT boltz, whose feats arrive as native torch tensors so its adapter
@@ -228,8 +235,8 @@ safety). Full config surface: `doc/config.md`.
   per-distance / per-rmsd entry, and **once for all conformer terms**
   (`conformer_restraints_config.stop_sigma` -> `RestraintSpec.conf_stop_sigma`). The gate
   lives in the shared `_terms.sigma_gate` (per-restraint distance/rmsd) and the conformer
-  `cg` in each backend's `_gates` (eager), plus `torch_optim._gated_prepared` /
-  `distance_shift` (compiled GPU / closed-form). `stop_sigma > start_sigma` (empty window)
+  `cg` in each backend's `_gates` (eager), plus `torch_optim._gated_prepared`
+  (compiled GPU). `stop_sigma > start_sigma` (empty window)
   is flagged by `_warn_never_active`.
 - **Step window (alternative to sigma):** every windowed entry (distance/rmsd/angle/dihedral/
   custom + the conformer block) also accepts `start_step`/`stop_step` — the same window on the
@@ -244,25 +251,30 @@ safety). Full config surface: `doc/config.md`.
   in both optimizers (hand-maintained — not a `_TERMS` entry), and `torch_optim._gated_prepared`'s
   cache key. AF3 threads `istep` via a `jnp.arange(steps)` added to the diffusion `hk.scan` xs.
 - Distance restraints: `harmonic`, `flat-bottomed`, `flat-bottomed1`,
-  `flat-bottomed2`; only `calc_method=unfixed-absolute` (centroid-based). The per-entry `move`
-  key picks which group the closed-form centroid shift moves: `both` (default = minimal-
-  displacement split, both move) / `1` (only `atom_selection1`'s group) / `2` (only
-  `atom_selection2`'s) — `1`/`2` PIN the other group (e.g. move only a ligand toward a
-  fixed pocket). It is a per-restraint `move_mode` int (0/1/2) parallel to `dist_type`,
-  wired ONLY in `optim/distance_shift.py` (`_split`); the energy layer ignores it
-  (centroid-distance is move-agnostic). All modes change the centroid separation by the same `delta`,
-  so for a single restraint (or disjoint groups) convergence is identical — only the
-  distribution differs (coupled restraints moving a SHARED atom can reach a different fixed
-  point under `1`/`2` vs `both`). Each entry also takes a per-entry `weight` (default 1.0):
-  the closed-form Jacobi is a per-atom WEIGHTED AVERAGE of every active restraint's desired
-  shift, normalized by the move INDICATOR `[c>0]` (NOT plain `weight`, NOT `weight*c` — those
-  miss the target or overshoot; see `optim/distance_shift.py`). So `weight` is a **NO-OP for a
-  single / disjoint restraint** (it cancels in the normaliser → exact target regardless), and
-  only re-balances an atom that is the **sole mover of two over-constrained coupled restraints**
-  (each pinning its other group), where it settles `B = (t1*w1 + t2*w2)/(w1+w2)` — the
-  closed-form analogue of angle/dihedral `weight` (which is likewise a no-op at full CG
-  convergence for a lone restraint). `weight` also scales the finalize-reported `distance_energy`
-  (`include_distance=False` keeps it out of the CG objective, so no double-count).
+  `flat-bottomed2`; only `calc_method=unfixed-absolute` (centroid-based). **CG-minimised** like
+  the group terms (no longer closed-form): `distance_energy` builds each group's centroid via
+  `_move_centroid` with a **reduced-mass scale `N1·N2/(N1+N2)`**, so the per-atom gradient is
+  `O(1)` (no `1/N` dilution → rigid translation) AND the two groups' gradient magnitudes are in
+  ratio `N2:N1` — exactly the old **minimal-displacement** split. The per-entry `move` key picks
+  which group moves: `both` (default = minimal-displacement, both move) / `1` (only
+  `atom_selection1`'s group) / `2` (only `atom_selection2`'s) — `1`/`2` PIN the other group via
+  `_move_centroid(free=0)` (`stop_gradient`, the same mechanism as the group-restraint `move`),
+  e.g. move only a ligand toward a fixed pocket. It is a per-restraint `move_mode` int (0/1/2)
+  threaded into the distance leaf via `_TERMS`. For a single / disjoint restraint every mode
+  reaches the exact target; minimal-displacement is **exactly reproduced only for single /
+  disjoint** restraints (a coupled/shared atom settles at the CG joint minimum, not the closed-form
+  split) **and only for the small per-step moves of real diffusion**: a single LARGE one-shot move
+  can let the moving group cross past the other to the reflected, equal-energy solution (e.g. `move:2`
+  landing the group at `-target` instead of `+target`) — the centroid **gap always reaches target**,
+  but the split *direction* is not guaranteed for big moves. Harmless in the multi-step diffusion loop
+  (each step's move is small, staying in the minimal-displacement basin); the small-move split is
+  verified in `test_optim`. Each entry also takes a per-entry `weight` (default 1.0): now the usual **least-squares
+  weight** (CG jointly minimises `Σ wᵢ·δᵢ²`), replacing the old closed-form Jacobi weighted-average.
+  So `weight` is a **NO-OP for a single / disjoint restraint** (target reached regardless), and only
+  re-balances an atom shared by **over-constrained coupled** restraints, where it settles
+  `B = (t1*w1 + t2*w2)/(w1+w2)` — same as angle/dihedral `weight` (a no-op at full CG convergence
+  for a lone restraint). Distance is a per-entry `_TERMS` gate (like rmsd/group), so it is in the
+  CG objective and the GPU pre-gate; its finalize energy comes from the same `energy_breakdown`.
 - Group angle/dihedral restraints (`angle_restraints_config` 3 groups / vertex=group2;
   `dihedral_restraints_config` 4 groups / axis=group2-3): restrain the angle/dihedral of
   the groups' centroids. The config surface MIRRORS the distance restraint — the four types
@@ -273,8 +285,8 @@ safety). Full config surface: `doc/config.md`.
   radians either way. The spec carries
   `target1/target2/geom_type` (reusing the distance `DIST_TYPE_CODES`) + `move_free` (a
   per-group `(n, n_groups)` {0,1} mask). `weight` defaults 1.0; per-restraint
-  `start_sigma`/`stop_sigma` like distance/rmsd. Unlike distance these are **CG-solved
-  energy terms** (not closed-form): a centroid angle/dihedral is not 1-DOF. The energy depends
+  `start_sigma`/`stop_sigma` like distance/rmsd. Like distance these are **CG-solved
+  energy terms** using the shared `_move_centroid` rescale. The energy depends
   only on the centroids, so every atom in a free group gets the same gradient → the CG translates
   it rigidly (verified in `test_backend_parity`). The dihedral `harmonic` wraps the deviation
   to +-180 (periodicity-safe); flat-bottomed enforces `target1<target2` so a window can't
@@ -299,8 +311,8 @@ safety). Full config surface: `doc/config.md`.
   group would barely move per CG step (needing weight ~ N). `_move_centroid` cancels the `1/N`
   with `centroid_eff = centroid_d + N*(centroid - centroid_d)` (value == centroid, gradient N×), so the whole group
   translates RIGIDLY by the full step and **`weight: 1` (the default) drives ANY group
-  size** — the analogue of the distance restraint's rigid closed-form shift, as the user
-  requested. Cost: the group gradient is intentionally N×-rescaled, so it does NOT match a
+  size** — the same rigid-translation mechanism the distance restraint now uses (with a
+  reduced-mass scale). Cost: the group gradient is intentionally N×-rescaled, so it does NOT match a
   numpy finite-difference of the true energy — group grad parity is therefore torch-vs-jax
   (not numpy-FD), the same carve-out as rmsd's stop-gradient. Verified E2E on boltz: the
   qbp 3-region angle (624/690/314 atoms) reaches 90.0° and the 4-region dihedral ±180° at

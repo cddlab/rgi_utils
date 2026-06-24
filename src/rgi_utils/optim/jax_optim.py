@@ -31,7 +31,6 @@ from rgi_utils.optim._cg_config import (
     GTOL,
     MAX_LS,
 )
-from rgi_utils.optim.distance_shift import apply_distance_shift_jax
 
 logger = logging.getLogger(__name__)
 
@@ -153,7 +152,6 @@ def make_minimizer(
     from rgi_utils.custom.closure import build_terms
 
     custom_terms = build_terms(spec.custom, "jax") if has_custom else []
-    dist_prepared = prepared.get("distance")
     # dynamic ligand-protein VdW (formerly torch-only; now jax too). The protein
     # background is read from the FULL coords at minimize time (it moves per diffusion
     # step), so it is NOT baked into the spec -- only the indices/radii are. Gated on
@@ -175,16 +173,13 @@ def make_minimizer(
 
     def _descend(coords, sigma, step):
         active = coords[..., active_idx, :]
-        # 1) Distance restraints: closed-form rigid centroid translation (pure jnp, no
-        #    solver) -- a centroid-distance restraint is 1-DOF. Gated per-restraint inside.
-        if has_dist:
-            active = apply_distance_shift_jax(active, dist_prepared, sigma, step)
-        # 2) Conformer + RMSD restraints: jaxopt on the non-distance energy (distance is
-        #    applied above; total_energy(include_distance=False) covers conformer AND
-        #    RMSD), plus the ligand-protein VdW term (gated on conf_start_sigma -- the
-        #    `jnp.where` zeroes its weight AND gradient above the gate). Skipped for a
-        #    distance-only spec. has_conf is already True when vdw_config is set.
-        if has_conf or has_rmsd or has_vdw or has_group or has_custom:
+        # Distance + conformer + RMSD + group restraints all minimise ONE objective via the
+        # CG (total_energy sums every active term; distance is now an autodiff CG term whose
+        # reduced-mass-rescaled centroid gradient translates each group rigidly — no
+        # closed-form shift), plus the ligand-protein VdW term (gated on conf_start_sigma —
+        # the `jnp.where` zeroes its weight AND gradient above the gate). has_conf is already
+        # True when vdw_config is set.
+        if has_dist or has_conf or has_rmsd or has_vdw or has_group or has_custom:
             if has_vdw:
                 prot_pos = coords[..., vdw_prot_global, :]
                 # conformer window: active sigma window (conf_stop <= sigma <= conf_start)
@@ -201,9 +196,7 @@ def make_minimizer(
                 vdw_w = jnp.where(in_win, vdw_weight, 0.0)
 
             def energy_fn(a):
-                e = jax_energy.total_energy(
-                    a, prepared, sigma, step, include_distance=False
-                )
+                e = jax_energy.total_energy(a, prepared, sigma, step)
                 if has_vdw:
                     e = e + _vdw_pair_energy(
                         a,

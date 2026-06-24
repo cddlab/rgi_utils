@@ -61,8 +61,8 @@ conformer_restraints_config: { bond: {weight: 1} }
 
 **alphafold3** (`fold_input.json`): a `"restraints_config": { ... }` key beside
 `"sequences"` / `"modelSeeds"`; the ligand object carries `"conformer_restraints": true`.
-AF3 forces the JAX backend, so `gpu` in the config is inert (run the process on the JAX CPU
-platform to use CPU).
+AF3 runs the JAX backend (selected automatically — its glue calls `get_minimizer()`), so `gpu`
+in the config is inert (run the process on the JAX CPU platform to use CPU).
 
 **esmfold2** (Python): build `RESTRAINTS_CONFIG = { ... }` and call
 `ESMFold2InputBuilder().fold(model, spi, ..., restraints_config=RESTRAINTS_CONFIG)`, with

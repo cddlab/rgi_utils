@@ -172,12 +172,14 @@ def pack_spec(spec, to_int, to_float):
 # (prepared_key, leaf_fn_name, [arg_field, ...], gate). Every leaf fn takes
 # ``(positions, *args, mask)`` with mask LAST. gate:
 #   "conf" -> conformer term, masked by the shared conformer gate ``cg``;
-#   "dist" -> distance, per-restraint sigma gate, ONLY when include_distance;
-#   "rmsd" -> RMSD, per-restraint sigma gate, ALWAYS (the CG solver calls
-#             total_energy(include_distance=False) and must still see the RMSD term);
+#   "distance" -> centroid distance, per-restraint sigma/step gate, ALWAYS summed in the
+#                 CG solver (distance is now an autodiff CG term: its energy rescales the
+#                 centroid gradient so the group translates rigidly — see
+#                 ``*_energy.distance_energy`` + ``_move_centroid``);
+#   "rmsd" -> RMSD, per-restraint sigma gate, ALWAYS;
 #   "group" -> group-centroid angle/dihedral, per-restraint sigma gate, ALWAYS (CG-solved
-#              like rmsd). Any gate other than conf/dist gets per-entry gating + is
-#              always summed in the solver; such keys are collected in PER_ENTRY_KEYS.
+#              like rmsd). Any gate other than conf gets per-entry gating + is always
+#              summed in the solver; such keys are collected in PER_ENTRY_KEYS.
 _TERMS = [
     ("bond", "bond_energy", ["idx", "r0", "slack", "weight", "half"], "conf"),
     ("angle", "angle_energy", ["idx", "th0", "slack", "weight"], "conf"),
@@ -198,9 +200,10 @@ _TERMS = [
             "target1",
             "target2",
             "dist_type",
+            "move_mode",
             "weight",
         ],
-        "dist",
+        "distance",
     ),
     (
         "rmsd",
@@ -260,7 +263,7 @@ _TERMS = [
 ]
 
 
-def term_energies(fns, prepared, positions, cg, sigma_gate, include_distance):
+def term_energies(fns, prepared, positions, cg, sigma_gate):
     """Return ``{key: energy}`` for every active restraint term, with the right gate
     folded into each term's mask. Shared by all three backends' total_energy and
     energy_breakdown — only ``fns`` (the backend leaf functions), ``cg`` (the
@@ -276,8 +279,6 @@ def term_energies(fns, prepared, positions, cg, sigma_gate, include_distance):
     out = {}
     for key, fn_name, fields, gate in _TERMS:
         if key not in prepared:
-            continue
-        if gate == "dist" and not include_distance:
             continue
         p = prepared[key]
         # Per-entry terms (distance/rmsd/group) carry both a sigma window (start_sigma,
@@ -320,12 +321,10 @@ BREAKDOWN_KEYS = (
 # leave it ungated on the compiled path.
 CONF_KEYS = frozenset(key for key, _fn, _fields, gate in _TERMS if gate == "conf")
 
-# per-restraint-gated term keys (gate not "conf"/"dist"): each carries its own
-# start_sigma/stop_sigma and is ALWAYS summed in the solver's energy
-# (include_distance=False). The torch GPU pre-gate (torch_optim._gated_prepared) folds
-# each one's gate into its mask and keys its cache on every gate state, so adding a
-# per-entry term to _TERMS can't silently leave it ungated on the compiled GPU path.
-# distance is excluded (closed-form, applied separately); conformer is in CONF_KEYS.
-PER_ENTRY_KEYS = frozenset(
-    key for key, _fn, _fields, gate in _TERMS if gate not in ("conf", "dist")
-)
+# per-restraint-gated term keys (gate != "conf"): each carries its own
+# start_sigma/stop_sigma (and start_step/stop_step) and is ALWAYS summed in the solver's
+# energy. The torch GPU pre-gate (torch_optim._gated_prepared) folds each one's gate into
+# its mask and keys its cache on every gate state, so adding a per-entry term to _TERMS
+# can't silently leave it ungated on the compiled GPU path. distance is now per-entry
+# (autodiff CG term, no longer closed-form); conformer is in CONF_KEYS.
+PER_ENTRY_KEYS = frozenset(key for key, _fn, _fields, gate in _TERMS if gate != "conf")

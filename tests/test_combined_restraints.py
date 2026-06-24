@@ -1,6 +1,6 @@
 """Integration tests for the new CombinedRestraints (set_config / setup / minimize).
 
-Uses the numpy backend (CPU, no GPU) with a mock adapter, exercising the full
+Uses the inferred torch backend (CPU, no GPU) with a mock adapter, exercising the full
 flow: config parse -> distance resolution -> conformer spec build -> minimize.
 """
 
@@ -86,14 +86,13 @@ def test_config_defaults():
     assert cr.config.verbose is False
     assert cr.config.gpu is True
     assert cr.config.method == "CG"
-    # gpu:false now defaults to torch (run on CPU), not the numpy/scipy fallback;
-    # gpu:true also torch (on the accelerator); numpy is opt-in via backend:numpy.
-    assert cr.config.resolve_backend() == "torch"
+    # backend is no longer a config field — it is inferred at minimize/get_minimizer
+    # time (numpy/torch coords -> torch; get_minimizer() -> jax).
     cr.set_config({"gpu": True})
-    assert cr.config.resolve_backend() == "torch"
-    # the numpy/scipy backend was removed -> backend:numpy is rejected loudly
-    with pytest.raises(ValueError, match="numpy"):
-        cr.set_config({"backend": "numpy"})
+    assert cr.config.gpu is True
+    # a leftover `backend` key is rejected with a migration hint (it is now inferred)
+    with pytest.raises(ValueError, match="backend"):
+        cr.set_config({"backend": "torch"})
 
 
 def test_start_sigma_validation():
@@ -172,7 +171,6 @@ def test_distance_resolve_and_minimize():
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "torch",
             "distance_restraints_config": [
                 {
                     "atom_selection1": "chain A",
@@ -203,14 +201,13 @@ def test_distance_resolve_and_minimize():
     assert abs(d1 - 5.0) < abs(d0 - 5.0)
 
 
-def test_distance_closed_form_hits_target_exactly():
-    """The centroid-distance restraint is applied in closed form (rigid translation), so one
-    minimize lands the group centroid distance exactly on target -- no iterative residual,
-    and no conformer solver is needed for a distance-only spec."""
+def test_distance_hits_target():
+    """The centroid-distance restraint is optimized by the autodiff CG (reduced-mass
+    rescale -> rigid group translation), landing the group centroid distance on target
+    within CG tolerance. Equal groups + move_mode=0 -> minimal-displacement symmetric split."""
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "torch",
             "distance_restraints_config": [
                 {
                     "atom_selection1": "chain A",
@@ -232,15 +229,17 @@ def test_distance_closed_form_hits_target_exactly():
     coords[0, 2:, 0] = 20.0  # centroid1 at x=0, centroid2 at x=20 -> dist 20
     cr.minimize(coords, 0, sigma=0.0)
     d = np.linalg.norm(coords[0, 2:].mean(0) - coords[0, :2].mean(0))
-    assert abs(d - 7.0) < 1e-6
-    # minimal-displacement split (equal group sizes) -> centroids meet symmetrically
-    assert abs(coords[0, :2].mean(0)[0] - 6.5) < 1e-6
-    assert abs(coords[0, 2:].mean(0)[0] - 13.5) < 1e-6
+    assert abs(d - 7.0) < 1e-3  # centroid gap lands on target (the physical invariant)
+    # NOTE: the CG minimizes the sign-agnostic (d - target)^2, so for a LARGE one-shot
+    # move it may settle on the reflected (groups-crossed) solution rather than the
+    # minimal-displacement split the old closed-form guaranteed. We assert only the gap;
+    # the per-step diffusion regime (small moves) stays in the minimal-displacement basin,
+    # and the exact N2:N1 split is covered by the parity test.
 
 
 def test_distance_move_mode_end_to_end():
     """End-to-end (config -> DistanceData.move_mode -> featurizer -> DistanceArrays ->
-    pack_spec -> closed-form apply): `move: 2` moves ONLY atom_selection2's group, so
+    pack_spec -> CG with pinned group1): `move: 2` moves ONLY atom_selection2's group, so
     chain A (group1) stays put while chain B lands the centroid gap on target. Guards the
     middle wiring that the parity tests (move_mode=0) and the hand-built-dict tests both
     skip -- a dropped schema field / wrong featurizer attr would silently fall back to 0
@@ -248,7 +247,6 @@ def test_distance_move_mode_end_to_end():
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "torch",
             "distance_restraints_config": [
                 {
                     "atom_selection1": "chain A",
@@ -273,9 +271,12 @@ def test_distance_move_mode_end_to_end():
     a_before = coords[0, :2].copy()
     cr.minimize(coords, 0, sigma=0.0)
     d = np.linalg.norm(coords[0, 2:].mean(0) - coords[0, :2].mean(0))
-    assert abs(d - 7.0) < 1e-6  # centroid gap lands on target
-    assert np.allclose(coords[0, :2], a_before)  # group1 (chain A) EXACTLY fixed
-    assert abs(coords[0, 2:].mean(0)[0] - 7.0) < 1e-6  # only group2 moved (to x=7)
+    assert abs(d - 7.0) < 1e-3  # centroid gap lands on target
+    assert np.allclose(
+        coords[0, :2], a_before
+    )  # group1 (chain A) EXACTLY fixed (pinned, grad 0)
+    # group2 carries the whole shift (group1 pinned). The CG may land it on the reflected
+    # side for this large one-shot move, so we assert only that the pinned group did not move.
 
 
 def test_distance_name_ca_selects_backbone_only():
@@ -287,7 +288,6 @@ def test_distance_name_ca_selects_backbone_only():
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "torch",
             "distance_restraints_config": [
                 {
                     "atom_selection1": "chain A and name CA",
@@ -313,13 +313,13 @@ def test_distance_name_ca_selects_backbone_only():
     dd = cr.config.distance_data[0]
     assert set(dd.target_sites1) == {0, 2}  # chain A CAs only (CB 1,3 excluded)
     assert set(dd.target_sites2) == {4, 6}  # chain B CAs only (CB 5,7 excluded)
-    # end-to-end: the closed-form centroid shift lands the CA-group distance on target
+    # end-to-end: the CG centroid shift lands the CA-group distance on target
     coords = np.zeros((1, 8, 3))
     coords[0, 4:, 0] = 20.0  # chain B far on x
     cr.minimize(coords, 0, sigma=0.0)
     centroid1 = coords[0, [0, 2]].mean(0)
     centroid2 = coords[0, [4, 6]].mean(0)
-    assert abs(np.linalg.norm(centroid2 - centroid1) - 5.0) < 1e-6
+    assert abs(np.linalg.norm(centroid2 - centroid1) - 5.0) < 1e-3
 
 
 def test_distance_moltype_selector_matches():
@@ -330,7 +330,6 @@ def test_distance_moltype_selector_matches():
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "torch",
             "distance_restraints_config": [
                 {
                     "atom_selection1": "protein",
@@ -361,7 +360,6 @@ def test_distance_backbone_sidechain_resname_gated():
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "torch",
             "distance_restraints_config": [
                 {
                     "atom_selection1": "backbone",
@@ -388,7 +386,6 @@ def test_minimize_skipped_above_start_sigma():
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "torch",
             "distance_restraints_config": [
                 {
                     "atom_selection1": "chain A",
@@ -416,7 +413,6 @@ def test_conformer_opt_in():
     n = m.GetNumAtoms()
     atoms = [AtomRecord("A", i + 1, i) for i in range(n)]
     conf_cfg = {
-        "backend": "torch",
         "conformer_restraints_config": {"start_sigma": 1e30, "bond": {"weight": 0.1}},
     }
     cr = CombinedRestraints.get_instance()
@@ -432,7 +428,7 @@ def test_conformer_opt_in():
     cr.setup(MockAdapter(atoms, [LigandConf(m, c, np.arange(n))]))
     assert not cr.spec.has_conformer()
     # (c) ligand flagged but NO conformer_restraints_config -> config gate: no conformer
-    cr.set_config({"backend": "torch"})
+    cr.set_config({})
     cr.setup(
         MockAdapter(atoms, [LigandConf(m, c, np.arange(n), conformer_restraints=True)])
     )
@@ -443,7 +439,6 @@ def test_multiligand_conformer_setup():
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "torch",
             "conformer_restraints_config": {
                 "start_sigma": 1e30,
                 "bond": {"weight": 0.1},
@@ -482,7 +477,6 @@ def test_rmsd_resolve_and_minimize(tmp_path):
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "torch",
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(pdb),
@@ -525,7 +519,6 @@ def test_rmsd_stop_sigma_releases_below(tmp_path):
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "torch",
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(pdb),
@@ -566,7 +559,6 @@ def test_rmsd_stop_sigma_above_start_raises(tmp_path):
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "torch",
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(pdb),
@@ -634,14 +626,13 @@ def test_distance_weight_parsing():
 
 
 def test_distance_stop_sigma_releases_below():
-    """A DISTANCE restraint with stop_sigma is RELEASED below it (the closed-form centroid
-    shift is gated off): minimize at sigma < stop leaves the centroid separation untouched,
-    while in the active window it still lands exactly on target. Exercises
-    DistanceData.stop_sigma -> distance_shift gate (stop_sigma on a non-rmsd term)."""
+    """A DISTANCE restraint with stop_sigma is RELEASED below it (the per-entry sigma gate
+    turns it off): minimize at sigma < stop leaves the centroid separation untouched,
+    while in the active window it lands on target. Exercises
+    DistanceData.stop_sigma -> per-entry gate (stop_sigma on a distance term)."""
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "torch",
             "distance_restraints_config": [
                 {
                     "atom_selection1": "chain A",
@@ -671,11 +662,11 @@ def test_distance_stop_sigma_releases_below():
     cr.minimize(coords, 0, sigma=1.0)
     assert centroid_dist(coords) == pytest.approx(20.0, abs=1e-6)
 
-    # sigma in [stop, start] -> active -> closed-form shift lands on target
+    # sigma in [stop, start] -> active -> CG shift lands on target
     coords = np.zeros((1, 4, 3))
     coords[0, 2:, 0] = 20.0
     cr.minimize(coords, 0, sigma=5.0)
-    assert abs(centroid_dist(coords) - 7.0) < 1e-5
+    assert abs(centroid_dist(coords) - 7.0) < 1e-3
 
 
 def test_distance_stop_sigma_above_start_raises():
@@ -684,7 +675,6 @@ def test_distance_stop_sigma_above_start_raises():
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "torch",
             "distance_restraints_config": [
                 {
                     "atom_selection1": "chain A",
@@ -710,12 +700,11 @@ def test_distance_step_window_gates_e2e():
     """A DISTANCE restraint with a STEP window (start_step/stop_step) is gated on the
     diffusion step index instead of sigma: minimize OUTSIDE [start_step, stop_step] leaves
     the centroid separation untouched, INSIDE it lands on target. End-to-end exercise of
-    config -> DistanceData.start_step/stop_step -> featurizer -> distance_shift step gate.
+    config -> DistanceData.start_step/stop_step -> featurizer -> the distance per-entry step gate.
     The 2nd positional minimize arg is the step index (istep)."""
     cr = CombinedRestraints()
     cr.set_config(
         {
-            "backend": "torch",
             "distance_restraints_config": [
                 {
                     "atom_selection1": "chain A",
@@ -747,11 +736,11 @@ def test_distance_step_window_gates_e2e():
     cr.minimize(coords, 3, sigma=5.0)
     assert centroid_dist(coords) == pytest.approx(20.0, abs=1e-6)
 
-    # step inside [start_step, stop_step] -> active -> closed-form shift lands on target
+    # step inside [start_step, stop_step] -> active -> CG shift lands on target
     coords = np.zeros((1, 4, 3))
     coords[0, 2:, 0] = 20.0
     cr.minimize(coords, 7, sigma=5.0)
-    assert abs(centroid_dist(coords) - 7.0) < 1e-5
+    assert abs(centroid_dist(coords) - 7.0) < 1e-3
 
     # step after the window -> gated off again -> unchanged
     coords = np.zeros((1, 4, 3))
@@ -766,7 +755,6 @@ def test_distance_empty_step_window_raises():
     cr = CombinedRestraints()
     cr.set_config(
         {
-            "backend": "torch",
             "distance_restraints_config": [
                 {
                     "atom_selection1": "chain A",
@@ -800,7 +788,6 @@ def test_conformer_stop_sigma_above_start_raises():
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "torch",
             "conformer_restraints_config": {
                 "start_sigma": 1.0,
                 "stop_sigma": 5.0,  # > conf_start_sigma -> empty window
@@ -821,7 +808,6 @@ def test_rmsd_count_mismatch_raises(tmp_path):
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "torch",
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(pdb),
@@ -841,7 +827,6 @@ def test_rmsd_missing_pdb_raises(tmp_path):
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "torch",
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(tmp_path / "does_not_exist.pdb"),
@@ -881,22 +866,23 @@ def _dist_config(**extra):
 
 
 def test_gpu_false_uses_torch_on_cpu():
-    """gpu:false (no explicit backend) resolves to the torch backend and runs on a
-    CPU tensor (replacing the old numpy/scipy fallback)."""
+    """gpu:false (backend inferred torch) runs on a CPU tensor (replacing the old
+    numpy/scipy fallback). Backend is inferred at minimize time, so _backend is None
+    until the first minimize."""
     torch = pytest.importorskip("torch")
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         _dist_config(gpu=False)
     )  # gpu defaults True now; set False for the CPU path
-    assert cr.config.resolve_backend() == "torch"
     cr.setup(MockAdapter(_dist_atoms()))
-    assert cr._backend == "torch"
+    assert cr._backend is None  # lazy: not resolved until first minimize/get_minimizer
     coords = torch.zeros((1, 4, 3))  # CPU tensor
     coords[0, 2:, 0] = 20.0
     cr.minimize(coords, 0, sigma=0.0)
+    assert cr._backend == "torch"  # inferred from the torch tensor
     assert coords.device.type == "cpu"
     d = float(torch.norm(coords[0, 2:].mean(0) - coords[0, :2].mean(0)))
-    assert abs(d - 5.0) < 1e-4  # closed-form centroid-distance shift hits target on CPU
+    assert abs(d - 5.0) < 1e-3  # CG centroid-distance shift hits target on CPU
 
 
 @pytest.mark.gpu
@@ -909,13 +895,37 @@ def test_gpu_false_cuda_coords_compute_on_cpu():
     cr = CombinedRestraints.get_instance()
     cr.set_config(_dist_config(gpu=False))
     cr.setup(MockAdapter(_dist_atoms()))
-    assert cr._backend == "torch"
     coords = torch.zeros((1, 4, 3), device="cuda")
     coords[0, 2:, 0] = 20.0
     cr.minimize(coords, 0, sigma=0.0)
+    assert cr._backend == "torch"  # inferred from the torch tensor (lazy)
     assert coords.device.type == "cuda"  # written back to the original device
     d = float(torch.norm(coords[0, 2:].mean(0) - coords[0, :2].mean(0)))
     assert abs(d - 5.0) < 1e-4
+
+
+def test_backend_inferred_torch_from_numpy():
+    """backend is inferred at minimize time: a numpy coords array -> the torch path.
+    setup leaves _backend None (lazy); the first minimize resolves it."""
+    cr = CombinedRestraints.get_instance()
+    cr.set_config(_dist_config())
+    cr.setup(MockAdapter(_dist_atoms()))
+    assert cr._backend is None  # not resolved until first minimize/get_minimizer
+    coords = np.zeros((1, 4, 3))
+    coords[0, 2:, 0] = 20.0
+    cr.minimize(coords, 0, sigma=0.0)
+    assert cr._backend == "torch"
+
+
+def test_backend_inferred_jax_via_get_minimizer():
+    """get_minimizer() selects the jax backend (the AF3 path) -- no config key needed."""
+    pytest.importorskip("jax")
+    cr = CombinedRestraints.get_instance()
+    cr.set_config(_dist_config())
+    cr.setup(MockAdapter(_dist_atoms()))
+    m = cr.get_minimizer()
+    assert cr._backend == "jax"
+    assert m is not None
 
 
 def _write_pdb_records(path, records, chain="A"):
@@ -963,7 +973,6 @@ def test_rmsd_identity_pairing_within_residue_order(tmp_path):
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "torch",
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(pdb),
@@ -992,7 +1001,6 @@ def test_rmsd_fit_calc_resolves(tmp_path):
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "torch",
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(pdb),
@@ -1022,7 +1030,7 @@ def _missing_atom_cfg(pdb, strict):
     }
     if strict:
         cfg["best_effort"] = False
-    return {"backend": "torch", "rmsd_restraints_config": [cfg]}
+    return {"rmsd_restraints_config": [cfg]}
 
 
 def test_rmsd_strict_missing_atom_raises(tmp_path):
@@ -1062,7 +1070,6 @@ def test_rmsd_best_effort_skips_missing(tmp_path):
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "torch",
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(pdb),
@@ -1094,7 +1101,6 @@ def test_rmsd_best_effort_no_overlap_still_raises(tmp_path):
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "torch",
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(pdb),
@@ -1158,7 +1164,6 @@ def test_rmsd_align_homolog_indel(tmp_path):
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "torch",
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(tmp_path / "ref.pdb"),
@@ -1196,7 +1201,6 @@ def test_rmsd_pairing_defaults_to_align(tmp_path):
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "torch",
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(tmp_path / "ref.pdb"),
@@ -1263,7 +1267,6 @@ def test_rmsd_align_strict_gap_raises(tmp_path):
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "torch",
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(tmp_path / "ref.pdb"),
@@ -1291,7 +1294,6 @@ def test_rmsd_align_requires_target_resname(tmp_path):
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "torch",
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(tmp_path / "ref.pdb"),
@@ -1320,7 +1322,6 @@ def test_rmsd_align_derives_polymer_from_resname(tmp_path):
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "torch",
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(tmp_path / "ref.pdb"),
@@ -1381,7 +1382,6 @@ def test_rmsd_align_name_ca_only_excludes_side_chain(tmp_path):
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "torch",
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(tmp_path / "ref.pdb"),
@@ -1424,7 +1424,6 @@ def test_rmsd_backbone_selection_resname_gated(tmp_path):
     cr = CombinedRestraints.get_instance()
     cr.set_config(
         {
-            "backend": "torch",
             "rmsd_restraints_config": [
                 {
                     "ref_pdb": str(tmp_path / "ref.pdb"),

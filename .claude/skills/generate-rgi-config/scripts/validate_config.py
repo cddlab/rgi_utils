@@ -6,8 +6,9 @@ What this checks (everything resolvable without a real structure):
   1. **Schema** — runs ``rgi_utils.config.RestraintsConfig.from_dict`` on every
      ``restraints_config`` found in the file. That raises on the silent-no-op traps:
      an unknown / misspelled top-level section (would drop the whole block), a
-     top-level ``start_sigma``, the old conformer ``dihedral`` key, mixing the sigma
-     and step windows, an empty window, ``backend: numpy``, etc.
+     top-level ``start_sigma``, a leftover ``backend`` key (now inferred, not
+     configured), the old conformer ``dihedral`` key, mixing the sigma
+     and step windows, an empty window, etc.
   2. **Selection DSL syntax** — feeds every ``atom_selection*`` string through
      ``AtomSelector`` (which parses eagerly), so a malformed selection (bad keyword,
      unbalanced parens) fails here instead of at run time.

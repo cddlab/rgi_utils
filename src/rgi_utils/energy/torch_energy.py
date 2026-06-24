@@ -120,23 +120,36 @@ def distance_energy(
     target1,
     target2,
     dist_type,
+    move_mode,
     weight,
     mask,
 ):
     """Centroid distance energy. dist_type: 0=harmonic, 1=flat-bottomed, 2=lower, 3=upper.
 
-    ``weight`` scales the reported ``weight*delta**2`` (finalize-reporting only; the optimiser
-    applies distance closed-form with ``include_distance=False``, so no double-count)."""
-    grp1_pos = positions[..., grp1_idx, :]  # (..., n_dist, max_grp, 3)
-    grp2_pos = positions[..., grp2_idx, :]
-    m1 = grp1_mask[..., None]
-    m2 = grp2_mask[..., None]
-    centroid1 = torch.sum(grp1_pos * m1, dim=-2) / (
-        torch.sum(grp1_mask, dim=-1)[..., None] + _EPS
-    )
-    centroid2 = torch.sum(grp2_pos * m2, dim=-2) / (
-        torch.sum(grp2_mask, dim=-1)[..., None] + _EPS
-    )
+    Autodiff CG term (no longer closed-form): both group centroids go through
+    ``_move_centroid`` with the REDUCED-MASS scale ``mu = N1*N2/(N1+N2)`` so the CG step
+    translates each group rigidly with the minimal-displacement split (ratio N2:N1) and an
+    O(1), N-independent change in separation — reproducing the old closed-form ``move=both``.
+    ``move_mode`` (0=both / 1=group1 only / 2=group2 only) pins the other group via ``free=0``
+    (stop-gradient), reproducing the closed-form ``move`` key; the moving group of a pinned
+    pair uses its own N so it still reaches the target in one rigid step. Value == numpy's
+    plain-centroid distance_energy (parity); only the gradient is rescaled (torch-vs-jax)."""
+    n1 = torch.sum(grp1_mask, dim=-1)  # (..., n_dist) group sizes
+    n2 = torch.sum(grp2_mask, dim=-1)
+    mu = n1 * n2 / (n1 + n2 + _EPS)  # reduced mass: minimal-displacement + O(1) step
+    both = move_mode == 0
+    scale1 = torch.where(
+        both, mu, n1
+    )  # both -> mu; else the moving group uses its own N
+    scale2 = torch.where(both, mu, n2)
+    free1 = (move_mode != 2).to(
+        grp1_mask.dtype
+    )  # group1 free unless move_mode==2 (pin g1)
+    free2 = (move_mode != 1).to(
+        grp2_mask.dtype
+    )  # group2 free unless move_mode==1 (pin g2)
+    centroid1 = _move_centroid(positions, grp1_idx, grp1_mask, free1, scale1)
+    centroid2 = _move_centroid(positions, grp2_idx, grp2_mask, free2, scale2)
     diff = centroid2 - centroid1
     dist = torch.sqrt(torch.sum(diff**2, dim=-1) + _EPS)
     zero = torch.zeros_like(dist)
@@ -168,25 +181,28 @@ def _group_centroid(positions, grp_idx, grp_mask):
     return torch.sum(pos * m, dim=-2) / (torch.sum(grp_mask, dim=-1)[..., None] + _EPS)
 
 
-def _move_centroid(positions, grp_idx, grp_mask, free):
+def _move_centroid(positions, grp_idx, grp_mask, free, scale=None):
     """Centroid of a group for the restraint gradient, adjusted so the group moves as a RIGID
     UNIT at any weight (like the closed-form distance shift), independent of group size N:
 
-    (1) ``centroid_eff = centroid_d + N*(centroid - centroid_d)`` (``centroid_d`` = stop-gradient'd centroid). Value ==
-        ``centroid``, but the gradient is N x: dcentroid/datom = 1/N, so this cancels the 1/N and the
-        per-atom gradient becomes the FULL centroid gradient -> the whole group translates
-        rigidly by the full step. Without it a large group barely moves per CG step (needs
-        weight ~ N); with it weight=1 drives ANY group size ("move the selection as a
-        whole", like distance).
+    (1) ``centroid_eff = centroid_d + scale*(centroid - centroid_d)`` (``centroid_d`` = stop-gradient'd
+        centroid). Value == ``centroid``; the gradient is ``scale x``: dcentroid/datom = 1/N, so the
+        per-atom gradient becomes ``scale/N`` x the centroid gradient. ``scale=None`` -> ``scale=N``
+        (the group-restraint default): cancels the 1/N so the whole group translates rigidly by the
+        full step, and weight=1 drives ANY group size. The distance restraint instead passes the
+        REDUCED MASS ``scale = N1*N2/(N1+N2)`` to BOTH groups so per-atom grad = ``N2/(N1+N2)`` (group1)
+        / ``N1/(N1+N2)`` (group2) -> ratio N2:N1 (minimal-displacement split) AND O(1) separation step
+        (N-independent); a pinned group passes its own N (only the moving group's scale matters).
     (2) ``free`` ((..., n) {0,1}) = 0 PINS a group: its centroid is stop-gradient'd (the move
         knob; mirrors rmsd ``_kabsch_R``).
 
     Value is unchanged either way, so the energy (all-backend value parity) is unaffected;
-    only the gradient is rescaled, so group grad parity is torch-vs-jax, not numpy-FD."""
+    only the gradient is rescaled, so distance/group grad parity is torch-vs-jax, not numpy-FD."""
     centroid = _group_centroid(positions, grp_idx, grp_mask)
     centroid_d = centroid.detach()
-    n = torch.sum(grp_mask, dim=-1, keepdim=True)  # group size (..., n_restr, 1)
-    centroid_eff = centroid_d + n * (
+    if scale is None:
+        scale = torch.sum(grp_mask, dim=-1)  # group size N (..., n_restr) (rigid step)
+    centroid_eff = centroid_d + scale[..., None] * (
         centroid - centroid_d
     )  # un-suppress the 1/N centroid gradient (rigid step)
     return torch.where((free > 0.5)[..., None], centroid_eff, centroid_d)
@@ -394,17 +410,15 @@ def _gates(prepared, sigma, step=None):
     return cg, sigma_gate
 
 
-def total_energy(positions, prepared, sigma=None, step=None, include_distance=True):
+def total_energy(positions, prepared, sigma=None, step=None):
     """Sum all restraint energies. ``sigma`` (noise level) and ``step`` (diffusion step
     index) gate each restraint: it contributes only inside its active sigma window AND
     its active step window (folded into the mask). Conformer terms share the conf window;
-    distance/RMSD/group have their own. RMSD is summed regardless of ``include_distance``.
-    ``sigma=None``/``step=None`` disable that axis's gating."""
+    distance/RMSD/group each have their own per-restraint window. ``sigma=None``/``step=None``
+    disable that axis's gating."""
     cg, sigma_gate = _gates(prepared, sigma, step)
     ene = torch.zeros((), dtype=positions.dtype, device=positions.device)
-    for v in term_energies(
-        _LEAF_FNS, prepared, positions, cg, sigma_gate, include_distance
-    ).values():
+    for v in term_energies(_LEAF_FNS, prepared, positions, cg, sigma_gate).values():
         ene = ene + v
     return ene
 
@@ -414,9 +428,7 @@ def energy_breakdown(positions, prepared, sigma=None, step=None):
     ``{bond, angle, chiral, improper, cistrans, vdw, distance, rmsd}`` python-float dict."""
     cg, sigma_gate = _gates(prepared, sigma, step)
     out = dict.fromkeys(BREAKDOWN_KEYS, 0.0)
-    for k, v in term_energies(
-        _LEAF_FNS, prepared, positions, cg, sigma_gate, include_distance=True
-    ).items():
+    for k, v in term_energies(_LEAF_FNS, prepared, positions, cg, sigma_gate).items():
         out[k] = float(v)
     return out
 

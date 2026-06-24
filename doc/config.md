@@ -21,7 +21,6 @@ restraints_config:
   # --- top-level knobs ---
   verbose: ...        # bool
   gpu: ...            # bool
-  backend: ...        # "torch" | "jax" | null
   method: ...         # "CG" | "l-bfgs"
   max_iter: ...       # int
   # --- restraints (each block optional) ---
@@ -46,9 +45,14 @@ last section.
 |---|---|---|---|
 | `verbose` | bool | `false` | Log the built spec (per-restraint counts) at setup and per-term energies at finalize. Strongly recommended — it is how you confirm a restraint was actually built. |
 | `gpu` | bool | `true` | Torch **device**: `true` = accelerator (default), `false` = CPU. It does **not** change the backend. (Inert for AF3, which always runs the JAX minimizer on the model's device.) Accepts `true/false` and the strings `1/0/yes/no/on/off`. |
-| `backend` | str / null | `null` → `torch` | Compute backend: `"torch"` (default) or `"jax"` (the AF3 tool forces `jax`). `"numpy"` is rejected (no numpy optimizer). |
 | `method` | str | `"CG"` | Optimizer: `"CG"` (nonlinear conjugate gradient) or `"l-bfgs"` (opt-in). |
 | `max_iter` | int | `100` | Max optimizer iterations per denoising step. The examples use 1000 (2000 for AF3). |
+
+**There is no `backend` key** — the compute backend (torch / jax) is **inferred from how the
+engine is invoked**, not configured: a JAX tool (AF3) grabs the pure minimizer via
+`get_minimizer()` → jax; every other tool calls `minimize(coords)`, where a torch/numpy array →
+torch. A leftover `backend:` key raises with a migration hint. (`gpu` above still selects the
+torch *device*.) There is no numpy optimizer (numpy is the energy reference only).
 
 **There is no top-level `start_sigma` / `stop_sigma`** — setting one at the top level raises. They
 are per-restraint (see below).
@@ -141,19 +145,25 @@ key differs: `target_distance` / `target_angle` / `target_dihedral` / `target_rm
 `…2` for the flat-bottomed bounds). The **conformer** terms use the flat-bottomed shape with a symmetric `slack`:
 $\delta = 0$ within $\pm$`slack` of the RDKit-ideal value, quadratic outside (`slack = 0` $\Rightarrow$ pure harmonic).
 
-`distance` is special: a centroid distance is 1-DOF, so it is solved **closed-form** (the `harmonic`
-minimum `d = target` is reached exactly in a single shift) instead of being added to the optimiser
-objective. Its `weight` is therefore a **no-op for a single restraint or restraints with disjoint
-groups** — each reaches its exact target regardless. `weight` only changes the outcome for
-**over-constrained coupled** restraints whose shared atom is their sole mover, where it balances the
-competition (see the `distance` section). Every other restraint is CG-minimised and scales with
-`weight` in the usual way.
+`distance` is CG-minimised like every other restraint (it used to be a closed-form shift; it is now
+part of the optimiser objective). To keep large groups moving as a rigid body under CG — a plain
+centroid's per-atom gradient is diluted by `1/N` — its centroid uses the same `_move_centroid`
+N×-rescale as the group angle/dihedral terms, with a reduced-mass scale `N1·N2/(N1+N2)` that
+reproduces the old **minimal-displacement** split (`s1 : s2 = N2 : N1`) for a single / disjoint
+restraint **and the small per-step moves of real diffusion**. (A single large one-shot move can
+cross the moving group past the other to the reflected, equal-energy solution — the centroid **gap
+always reaches the target**, but the split direction is not guaranteed for big moves; harmless in
+the multi-step diffusion loop.) Its `weight` is a **no-op for a single restraint or restraints with disjoint groups** —
+CG reaches the target regardless. For **over-constrained coupled** restraints sharing an atom,
+`weight` is now the usual least-squares weight (CG jointly minimises `Σ wᵢ·δᵢ²`), which replaces the
+old closed-form weighted-average; the single/disjoint behaviour is unchanged.
 
 ## `distance_restraints_config` (list)
 
-Pulls the **centroid distance** between two atom groups toward a target. Applied closed-form (1-DOF),
-so it reaches the target exactly. `weight` is a **no-op for a single / disjoint restraint**; it only
-re-balances atoms shared by **over-constrained coupled** restraints (see `weight` below).
+Pulls the **centroid distance** between two atom groups toward a target. CG-minimised with a
+reduced-mass `_move_centroid` rescale so each group translates as a rigid body and reaches the
+target. `weight` is a **no-op for a single / disjoint restraint**; it only re-balances atoms shared
+by **over-constrained coupled** restraints (see `weight` below).
 
 The measured quantity is the distance between the two groups' centroids,
 
@@ -162,7 +172,7 @@ d = \lVert c_2 - c_1 \rVert, \qquad c_k = \frac{1}{|G_k|}\sum_{a \in G_k} x_a
 ```
 
 (a plain masked-mean centroid), shaped by one of the penalty blocks below (see Penalty shapes).
-Being closed-form, `harmonic` reaches the target distance ($d = t$) exactly.
+`harmonic` drives the target distance ($d = t$) to CG convergence (within `gtol`/`ftol`).
 
 | key | type | default | meaning |
 |---|---|---|---|

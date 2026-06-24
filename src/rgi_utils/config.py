@@ -7,7 +7,6 @@ format and hand it here.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 
 from rgi_utils._config_util import check_window_exclusive, coerce_bool
@@ -16,14 +15,11 @@ from rgi_utils.distance_restr_data import DistanceData
 from rgi_utils.group_geom_restr_data import AngleRestraintData, DihedralRestraintData
 from rgi_utils.rmsd_restr_data import RmsdData
 
-logger = logging.getLogger(__name__)
-
 
 @dataclass
 class RestraintsConfig:
     verbose: bool = False
     gpu: bool = True
-    backend: str | None = None  # "numpy" | "torch" | "jax"; None = auto
     method: str = "CG"
     max_iter: int = 100
     conf_start_sigma: float = -1.0  # one value for all conformer (ligand) restraints
@@ -58,7 +54,6 @@ class RestraintsConfig:
         _KNOWN_TOP_LEVEL = {
             "verbose",
             "gpu",
-            "backend",
             "method",
             "max_iter",
             "conformer_restraints_config",
@@ -70,11 +65,22 @@ class RestraintsConfig:
         }
         _unknown_top = set(config) - _KNOWN_TOP_LEVEL - {"start_sigma"}
         if _unknown_top:
+            # 'backend' was removed as a config key: it is now inferred from how the
+            # engine is invoked (get_minimizer() -> jax; minimize(coords) with a
+            # torch/numpy array -> torch). Give a targeted migration hint instead of
+            # the generic unknown-key error so stale configs get an actionable message.
+            hint = ""
+            if "backend" in _unknown_top:
+                hint = (
+                    " Note: 'backend' is no longer configurable — it is inferred from "
+                    "how the engine is invoked (get_minimizer() => jax; minimize() "
+                    "with a torch/numpy array => torch)."
+                )
             raise ValueError(
                 f"restraints_config: unknown top-level key(s) {sorted(_unknown_top)}. "
                 f"Known keys: {sorted(_KNOWN_TOP_LEVEL)}. A misspelled section name "
                 f"(e.g. 'distance_restraint_config') would silently drop the whole "
-                f"restraint block, so it is rejected here."
+                f"restraint block, so it is rejected here.{hint}"
             )
         # start_sigma is NOT a global key (the old global + per-entry override scheme was
         # confusing): it is set per distance entry and once for all conformer terms. A
@@ -116,26 +122,9 @@ class RestraintsConfig:
         # via the shared helper so a quoted/string value (e.g. "false"/"no"/"off"/"0") --
         # truthy in plain Python -- correctly turns the GPU off for a CPU-intended run.
         gpu = coerce_bool(config.get("gpu", True))
-        # Normalize/validate the explicit backend. The numpy/scipy optimizer backend
-        # was removed (gpu:false now runs torch on CPU), so reject it loudly rather
-        # than silently doing something else.
-        backend = config.get("backend", None)
-        if backend is not None:
-            backend = str(backend).strip().lower()
-            if backend == "numpy":
-                raise ValueError(
-                    "the numpy/scipy restraint backend has been removed; use the "
-                    "default torch backend (gpu:false runs torch on CPU) or "
-                    "backend: jax"
-                )
-            if backend not in ("torch", "jax"):
-                logger.warning(
-                    "unknown restraints backend %r (expected torch/jax)", backend
-                )
         cfg = cls(
             verbose=config.get("verbose", False),
             gpu=gpu,
-            backend=backend,
             method=config.get("method", "CG"),
             max_iter=config.get("max_iter", 100),
             # one start_sigma for all conformer terms (omitted -> +inf = every step)
@@ -180,13 +169,3 @@ class RestraintsConfig:
             cd.set_config(entry)
             cfg.custom_data.append(cd)
         return cfg
-
-    def resolve_backend(self) -> str:
-        """Default to torch; ``gpu`` selects the DEVICE (CPU when false, the
-        accelerator when true), not the backend — so ``gpu:false`` runs the same
-        torch optimizer on CPU. The only other backend is jax (AF3); the numpy/scipy
-        optimizer was removed (an explicit ``backend: numpy`` is rejected in
-        ``from_dict``)."""
-        if self.backend:
-            return self.backend
-        return "torch"

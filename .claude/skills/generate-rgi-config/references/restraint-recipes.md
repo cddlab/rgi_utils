@@ -21,7 +21,8 @@ Recurring decisions, in plain terms:
 ## 1. Distance — "keep these two parts ~X Å apart"
 
 The most common restraint. Pulls the **centroid distance** between two atom groups to a
-target. It is solved in closed form, so harmonic reaches the target exactly.
+target. It is CG-minimised (with a reduced-mass `_move_centroid` rescale so each group
+translates rigidly), reaching the target at convergence.
 
 > "Hold the N-terminal domain and the C-terminal domain about 25 Å apart."
 

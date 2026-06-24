@@ -73,10 +73,10 @@ def test_jax_minimize_reduces_energy():
 def test_jax_minimizer_step_window_traced_under_jit():
     """The jax minimizer (the exact path AF3 drives in its hk.scan) gates a distance
     restraint on its STEP window with ``step`` as a TRACED value under ``jax.jit`` — not a
-    concrete Python int. This covers ``apply_distance_shift_jax``'s step gate + ``_descend``
+    concrete Python int. This covers the distance term's per-entry step gate + ``_descend``
     /``minimize``'s step threading, which the concrete-``step`` energy parity test does NOT
-    exercise (different module). Distance is closed-form: OUTSIDE [start_step, stop_step]
-    the centroid separation is untouched; INSIDE it lands on target."""
+    exercise (different module). OUTSIDE [start_step, stop_step] the distance term is gated
+    off (centroid separation untouched); INSIDE it the CG lands the separation on target."""
     jax = pytest.importorskip("jax")
     jax.config.update("jax_enable_x64", True)
     import jax.numpy as jnp
@@ -124,11 +124,15 @@ def test_jax_minimizer_step_window_traced_under_jit():
 
 
 def test_jax_minimizer_move_mode_end_to_end():
-    """jax E2E (build_spec -> jax_energy.prepare_spec -> pack_spec -> make_minimizer ->
-    apply_distance_shift_jax): move_mode=2 moves ONLY group2; group1 stays fixed while
-    group2 lands the centroid gap on target. Confirms move_mode flows via the featurizer and
-    the SHARED pack_spec into the jax prepared dict, then through the jax minimizer (the
-    AF3 closure path) -- not just the directly-tested apply_distance_shift_jax."""
+    """jax E2E (build_spec -> jax_energy.prepare_spec -> pack_spec -> make_minimizer -> the
+    CG): move_mode=2 pins group1 and moves ONLY group2 to meet the centroid-distance target.
+    Confirms move_mode flows via the featurizer and the SHARED pack_spec into the jax prepared
+    dict, then through the jax minimizer (the AF3 closure path). Distance is now CG-minimised
+    (the old apply_distance_shift_jax closed-form is gone); the move_mode pin is the
+    centroid_eff free=0 stop_gradient, so group1 stays EXACTLY fixed. NOTE: unlike the
+    closed-form (which shifted along the axis to the NEAR side), the CG can land the moving
+    group on EITHER side of the pin (both satisfy |c2-c1|=target), so the side is not
+    asserted -- the contract is pin + target reached."""
     jax = pytest.importorskip("jax")
     jax.config.update("jax_enable_x64", True)
     import jax.numpy as jnp
@@ -160,8 +164,71 @@ def test_jax_minimizer_move_mode_end_to_end():
     a = np.asarray(coords)
     gap = np.linalg.norm(a[0, 2:].mean(0) - a[0, :2].mean(0))
     assert abs(gap - 7.0) < 1e-5  # centroid gap on target
-    assert np.allclose(a[0, :2], g1_before, atol=1e-9)  # group1 EXACTLY fixed
-    assert abs(a[0, 2:].mean(0)[0] - 7.0) < 1e-5  # only group2 moved (to x=7)
+    assert np.allclose(
+        a[0, :2], g1_before, atol=1e-9
+    )  # group1 EXACTLY pinned (move_mode=2)
+    # group2 alone moved to meet the restraint; group1 is fixed at x=0, so |centroid2_x| = 7.
+    # The CG may land it on either side (-7 or +7) -- both give gap 7 -- so check |x|, not sign.
+    assert abs(abs(a[0, 2:].mean(0)[0]) - 7.0) < 1e-5  # only group2 moved, to |x| = 7
+
+
+def test_distance_minimal_displacement_split_torch_jax():
+    """move_mode=0 (both groups move) reproduces the old closed-form's minimal-displacement
+    split via the reduced-mass centroid_eff scale (``mu = N1*N2/(N1+N2)``): the per-group
+    centroid shifts satisfy ``|s1|:|s2| = N2:N1`` (the SMALLER group moves more), the gap
+    reaches target, and torch and jax agree. N1=3 != N2=1 so the split is non-trivial (1:3);
+    the gap 12 -> 4 never crosses 0, so there is no near/far-side ambiguity here."""
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.optim.jax_optim import make_minimizer
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+    from rgi_utils.spec import DistanceArrays, RestraintSpec
+
+    spec = RestraintSpec(
+        n_active=4,
+        active_sites=np.arange(4),
+        distance=DistanceArrays(
+            grp1_idx=np.array([[0, 1, 2]], dtype=np.int64),  # N1 = 3
+            grp2_idx=np.array([[3, 0, 0]], dtype=np.int64),  # N2 = 1
+            grp1_mask=np.array([[1.0, 1.0, 1.0]]),
+            grp2_mask=np.array([[1.0, 0.0, 0.0]]),  # group2 is a single atom
+            target1=np.array([4.0]),
+            target2=np.array([0.0]),
+            dist_type=np.array([0], dtype=np.int64),
+            move_mode=np.array([0], dtype=np.int64),  # both move (minimal-displacement)
+            weight=np.array([1.0]),
+            mask=np.array([1.0]),
+            start_sigma=np.array([1e30]),
+            stop_sigma=np.array([-1.0]),
+            start_step=np.full(1, float("-inf")),
+            stop_step=np.full(1, float("inf")),
+        ),
+    )
+    # group1 centroid at x=0 (3 atoms), group2 (single atom) at x=12 -> gap 12, target 4
+    base = np.array(
+        [[0.0, 1.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 0.0], [12.0, 0.0, 0.0]]
+    )
+    c1_0, c2_0 = base[:3].mean(0), base[3]
+
+    def split(a):
+        c1, c2 = a[:3].mean(0), a[3]
+        return (
+            float(np.linalg.norm(c2 - c1)),  # gap
+            float(np.linalg.norm(c1 - c1_0)),  # |s1|
+            float(np.linalg.norm(c2 - c2_0)),  # |s2|
+        )
+
+    at = torch.tensor(base, dtype=torch.float64)
+    TorchRestraintOptimizer(spec, max_iter=200).minimize(at)
+    aj = np.asarray(make_minimizer(spec, max_iter=200)(jnp.asarray(base), 0.0))
+
+    for gap, s1, s2 in (split(at.numpy()), split(aj)):
+        assert abs(gap - 4.0) < 1e-3, gap  # target reached
+        assert abs(s1 / s2 - 1.0 / 3.0) < 1e-2, (s1, s2)  # |s1|:|s2| = N2:N1 = 1:3
+    assert np.allclose(at.numpy(), aj, atol=1e-4)  # torch == jax
 
 
 # --- group-centroid angle / dihedral restraints ---------------------------------------
@@ -589,9 +656,7 @@ def test_func_grad_matches_backward_conformer():
     a0 = torch.tensor(coords_np[0, spec.active_sites, :], dtype=torch.float64)
 
     def e_of(a):
-        return torch_energy.total_energy(
-            a, prepared, sigma=None, include_distance=False
-        )
+        return torch_energy.total_energy(a, prepared, sigma=None)
 
     ab = a0.clone().requires_grad_(True)
     e_of(ab).backward()
@@ -649,9 +714,7 @@ def test_sync_free_cg_reduces_conformer_energy():
     a0 = torch.tensor(coords_np[0, spec.active_sites, :], dtype=torch.float64)
 
     def e_of(a):
-        return torch_energy.total_energy(
-            a, prepared, sigma=None, include_distance=False
-        )
+        return torch_energy.total_energy(a, prepared, sigma=None)
 
     e0 = float(e_of(a0))
     a1 = gpu_cg(prepared, a0, 200)
@@ -670,9 +733,7 @@ def test_sync_free_cg_reduces_rmsd_energy():
     a0 = torch.tensor(pos[0], dtype=torch.float64)
 
     def e_of(a):
-        return torch_energy.total_energy(
-            a, prepared, sigma=None, include_distance=False
-        )
+        return torch_energy.total_energy(a, prepared, sigma=None)
 
     e0 = float(e_of(a0))
     a1 = gpu_cg(prepared, a0, 500)
@@ -713,9 +774,7 @@ def test_gpu_cg_converges_stiff_chiral():
     )
 
     def e_of(a):
-        return torch_energy.total_energy(
-            a, prepared, sigma=None, include_distance=False
-        )
+        return torch_energy.total_energy(a, prepared, sigma=None)
 
     def chiral_e(a):
         ch = prepared["chiral"]
@@ -785,9 +844,7 @@ def test_gated_prepared_matches_energy_gate():
     ):  # conf+rmsd off / conf-on-rmsd-off / both / both
         pg = opt._gated_prepared(sigma)
         e_gpu = float(_energy(pos, pg))
-        e_ref = float(
-            torch_energy.total_energy(pos, opt._prepared, sigma, include_distance=False)
-        )
+        e_ref = float(torch_energy.total_energy(pos, opt._prepared, sigma))
         assert abs(e_gpu - e_ref) < 1e-9, (sigma, e_gpu, e_ref)
         # the dropped scalar leaf must not be in the compiled pytree (per-value recompile)
         assert "conf_start_sigma" not in pg

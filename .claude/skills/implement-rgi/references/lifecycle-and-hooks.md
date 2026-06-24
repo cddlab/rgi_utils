@@ -21,9 +21,10 @@ exist only as a back-compat singleton shim — do not build new code on them.
 - `config=`: pass the tool's `restraints_config` dict; setup calls `set_config`
   internally, folding the old `set_config` + `setup` into one call.
 - It resolves distance selections via `adapter.iter_atoms`, builds the conformer
-  spec via `adapter.iter_ligand_confs` + the featurizer, and picks the backend
-  from the config (`backend: jax` → jax, else **torch**; `gpu` selects the device,
-  so `gpu: false` runs the torch optimizer on CPU — there is no numpy optimizer).
+  spec via `adapter.iter_ligand_confs` + the featurizer. The backend is **inferred
+  from invocation** (`get_minimizer()` → jax for a JAX tool; `minimize(coords)` →
+  torch for a torch/numpy array), resolved lazily on the first call; `gpu` selects the
+  device, so `gpu: false` runs the torch optimizer on CPU — there is no numpy optimizer.
 - Clears `spec`/optimizers up front, so a reused instance never carries a stale
   spec.
 
@@ -67,8 +68,8 @@ each structure in a batch builds its own spec. Do not read it from a global.
 ```python
 # build time (outside scan, host/numpy):
 restr = CombinedRestraints()
-restr.setup(adapter, config=fold_input.restraints_config)   # backend=jax in config
-minimizer = restr.get_minimizer()       # pure (flat_coords, sigma) -> flat_coords
+restr.setup(adapter, config=fold_input.restraints_config)
+minimizer = restr.get_minimizer()       # calling this selects jax; pure (flat_coords, sigma) -> flat_coords
 
 # inside the compiled apply_denoising_step (hk.scan):
 shape = positions_denoised.shape        # (num_tokens, max_atoms, 3)
@@ -82,7 +83,7 @@ glue; the minimizer itself is rgi_utils.
 
 ```yaml
 restraints_config:
-  gpu: true                 # device on; backend defaults to torch (or set  backend: jax)
+  gpu: true                 # torch device on (backend is inferred from invocation, not set here)
   verbose: true             # print setup + finalize stats
   max_iter: 100             # optimizer iterations per step
   method: "CG"              # jaxopt solver: CG (NonlinearCG) or LBFGS

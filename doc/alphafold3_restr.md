@@ -44,8 +44,10 @@ AF3-specific notes:
   sequence databases, so the JSON below carries **no `unpairedMsa`/`pairedMsa`/`templates`
   fields** — the pipeline builds them. (To skip the search, inline an `unpairedMsa` and pass
   `--run_data_pipeline=False`.)
-- The backend is forced to **jax**; the `gpu` flag is **inert** (the minimizer always runs on the
-  model's device — to compute on CPU, run the whole process on the JAX CPU platform).
+- AF3 runs the **jax** backend — selected automatically because the AF3 glue grabs the pure
+  minimizer via `get_minimizer()` (not a config key). The `gpu` flag is **inert** (the minimizer
+  always runs on the model's device — to compute on CPU, run the whole process on the JAX CPU
+  platform).
 - AF3's minimizer converges near-target (~24–25 Å for the distance example); `max_iter: 2000`.
 
 `resid` is the **per-chain 1-based ordinal**; there is **no top-level `start_sigma`**.
@@ -84,7 +86,6 @@ minimizer (`lax.scan`) like every other restraint.
   "restraints_config": {
     "verbose": true,
     "gpu": true,
-    "backend": "jax",
     "method": "CG",
     "max_iter": 2000,
     "distance_restraints_config": [
