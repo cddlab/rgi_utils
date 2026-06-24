@@ -218,7 +218,19 @@ analogue of the distance restraint, distinct from the per-ligand-atom conformer 
 CG-solved; `weight: 1.0` drives any group size, as for the angle.
 
 The measured quantity is the dihedral angle $\phi$ of the four centroids $c_1, c_2, c_3, c_4$ about
-the axis through $c_2$ and $c_3$ (the periodicity-safe `atan2` convention), penalised by
+the axis through $c_2$ and $c_3$ (with $c_k$ the centroid of group $k$),
+
+```math
+\phi = \operatorname{atan2}\big( (n_1 \times \hat{b}_2)\cdot n_2,\; n_1 \cdot n_2 \big),
+\qquad
+\begin{aligned}
+b_1 &= c_2 - c_1, & n_1 &= b_1 \times b_2,\\
+b_2 &= c_3 - c_2, & n_2 &= b_2 \times b_3,\\
+b_3 &= c_4 - c_3, & \hat{b}_2 &= b_2 / \lVert b_2 \rVert,
+\end{aligned}
+```
+
+the signed `atan2` convention (range $\pm 180^\circ$), penalised by
 $E = \sum w\,\delta^2(\phi)$ (see Penalty shapes). The `harmonic` shape is **periodicity-safe**: the
 deviation $\phi - t$ is wrapped to $[-180^\circ, 180^\circ]$ before squaring, so e.g. $+179^\circ$
 and $-179^\circ$ count as a $2^\circ$ difference. The `flat-bottomed` shapes use the raw angle and
