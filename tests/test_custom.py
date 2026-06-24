@@ -253,6 +253,27 @@ def test_add_custom_direct_callable():
     assert abs(float(torch.linalg.norm(coords[0, 0] - coords[0, 1])) - 5.0) < 0.1
 
 
+def test_add_custom_re_setup_without_config_no_duplication():
+    """Regression: setup() must not mutate cfg.custom_data in place. A reused instance whose
+    SECOND setup() omits ``config`` reuses the same config object, so an in-place
+    ``extend(self._pending_custom)`` would re-append the pending custom restraint every call
+    and silently duplicate it. The local-merge fix keeps the spec at exactly one custom term
+    and leaves config.custom_data untouched."""
+    from rgi_utils import CombinedRestraints
+
+    def energy(ctx):
+        return (ctx.distance("resid 1", "resid 2") - 5.0) ** 2
+
+    restr = CombinedRestraints()
+    restr.add_custom(fn=energy)
+    restr.setup(_FakeAdapter(2), config={"gpu": False, "max_iter": 200})
+    assert len(restr.spec.custom) == 1
+    # re-setup WITHOUT a fresh config reuses self.config -- the double-merge trigger.
+    restr.setup(_FakeAdapter(2))
+    assert len(restr.spec.custom) == 1  # still one, not duplicated
+    assert restr.config.custom_data == []  # setup never mutated the config in place
+
+
 # --------------------------------------------------------------------------------------
 # gate regression: the sigma/step window actually gates the custom energy in the optimizer
 # (the gate lives independently in torch_optim._custom_energy and jax_optim._descend, so a

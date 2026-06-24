@@ -324,6 +324,10 @@ class RestraintSpec:
     group_dihedral: GroupDihedralArrays | None = None
     # one start_sigma for ALL conformer (bond/angle/chiral/improper/cistrans/vdw)
     # restraints; each distance restraint carries its own in DistanceArrays.start_sigma.
+    # NOTE: this internal spec-field default stays -1.0 (= conformer OFF) on purpose,
+    # unlike the user-facing build_spec/config defaults (+inf = active every step):
+    # build_spec ALWAYS sets this field, so the default only applies to a hand-built spec
+    # that omits it, where failing OFF is the conservative choice.
     conf_start_sigma: float = -1.0
     # shared conformer LOWER bound (mirrors conf_start_sigma): conformer terms are
     # released for sigma < conf_stop_sigma. -1 (default) = never released (off).

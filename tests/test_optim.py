@@ -231,6 +231,100 @@ def test_distance_minimal_displacement_split_torch_jax():
     assert np.allclose(at.numpy(), aj, atol=1e-4)  # torch == jax
 
 
+def test_distance_move_mode1_pins_group2_torch_jax():
+    """move_mode=1 moves ONLY group1 (atom_selection1) and pins group2 -- the 1/3 distance
+    move path that no optimizer test exercised (existing tests cover mode 0 and 2). Built
+    through the featurizer (asserts move_mode flowed into the spec) and run on BOTH torch and
+    jax: group2 stays EXACTLY fixed (the centroid_eff free=0 stop_gradient) and the centroid
+    gap reaches target."""
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.distance_restr_data import DistanceData
+    from rgi_utils.optim.jax_optim import make_minimizer
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+
+    dd = DistanceData()
+    dd.target_sites1, dd.target_sites2 = [0, 1], [2, 3]
+    dd.distance_restraint_type = "harmonic"
+    dd.target_distance = 7.0
+    dd.move_mode = 1  # only group1 (atom_selection1) moves
+    dd.run_restr = True
+    dd.start_sigma = 1e30
+    spec = build_spec(
+        [], [dd], {}, elements=np.zeros(4, dtype=np.int64), conf_start_sigma=1e30
+    )
+    assert list(spec.distance.move_mode) == [1]  # flowed into the spec via featurizer
+
+    base = np.zeros((4, 3))
+    base[2:, 0] = 20.0  # group1 centroid x=0, group2 centroid x=20 -> gap 20, target 7
+    g2_before = base[2:].copy()
+
+    at = torch.tensor(base, dtype=torch.float64)
+    TorchRestraintOptimizer(spec, max_iter=100).minimize(at)
+    aj = np.asarray(make_minimizer(spec, max_iter=100)(jnp.asarray(base), 0.0))
+
+    for a in (at.numpy(), aj):
+        gap = np.linalg.norm(a[2:].mean(0) - a[:2].mean(0))
+        assert abs(gap - 7.0) < 1e-4, gap  # centroid gap on target
+        # group2 fixed at x=20 stays EXACTLY pinned; centroid1 lands at 20 +/- 7.
+        assert np.allclose(a[2:], g2_before, atol=1e-9)
+        assert abs(abs(a[:2].mean(0)[0] - 20.0) - 7.0) < 1e-4  # only group1 moved
+    assert np.allclose(at.numpy(), aj, atol=1e-3)  # torch == jax
+
+
+def test_distance_coupled_weight_balance_torch_jax():
+    """An atom shared by two OVER-CONSTRAINED distance restraints settles at the least-squares
+    weighted balance ``B = (t1*w1 + t2*w2)/(w1+w2)`` -- the ONLY case where the per-entry
+    ``weight`` is not a no-op (a single / disjoint restraint reaches its target regardless of
+    weight, since the CG fully converges). Both restraints pin the shared anchor (move_mode=2)
+    at the origin and pull the shared atom B to targets t1/t2 along x, so B converges to their
+    weighted average; torch and jax agree."""
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.optim.jax_optim import make_minimizer
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+    from rgi_utils.spec import DistanceArrays, RestraintSpec
+
+    t1, t2, w1, w2 = 4.0, 10.0, 1.0, 3.0
+    expected = (t1 * w1 + t2 * w2) / (w1 + w2)  # 8.5 (weighted toward t2)
+    spec = RestraintSpec(
+        n_active=2,
+        active_sites=np.arange(2),
+        distance=DistanceArrays(
+            grp1_idx=np.array([[0], [0]], dtype=np.int64),  # anchor (shared, pinned)
+            grp2_idx=np.array([[1], [1]], dtype=np.int64),  # atom B (shared, free)
+            grp1_mask=np.array([[1.0], [1.0]]),
+            grp2_mask=np.array([[1.0], [1.0]]),
+            target1=np.array([t1, t2]),
+            target2=np.array([0.0, 0.0]),
+            dist_type=np.array([0, 0], dtype=np.int64),  # harmonic
+            move_mode=np.array([2, 2], dtype=np.int64),  # pin group1 (the anchor)
+            weight=np.array([w1, w2]),
+            mask=np.array([1.0, 1.0]),
+            start_sigma=np.array([1e30, 1e30]),
+            stop_sigma=np.array([-1.0, -1.0]),
+            start_step=np.full(2, float("-inf")),
+            stop_step=np.full(2, float("inf")),
+        ),
+    )
+    base = np.array([[0.0, 0.0, 0.0], [6.0, 0.0, 0.0]])  # anchor at origin, B at x=6
+
+    at = torch.tensor(base, dtype=torch.float64)
+    TorchRestraintOptimizer(spec, max_iter=300).minimize(at)
+    aj = np.asarray(make_minimizer(spec, max_iter=300)(jnp.asarray(base), 0.0))
+
+    for a in (at.numpy(), aj):
+        assert np.allclose(a[0], [0.0, 0.0, 0.0], atol=1e-9)  # anchor pinned (mode 2)
+        assert abs(a[1, 0] - expected) < 1e-3, a[1, 0]  # B at weighted balance (8.5)
+    assert np.allclose(at.numpy(), aj, atol=1e-4)  # torch == jax
+
+
 # --- group-centroid angle / dihedral restraints ---------------------------------------
 
 

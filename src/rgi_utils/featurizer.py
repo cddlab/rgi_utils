@@ -448,7 +448,13 @@ def build_spec(
     distance_restraints: list | None = None,
     conformer_config: dict | None = None,
     elements: np.ndarray | None = None,
-    conf_start_sigma: float = -1.0,
+    # Omitted start_sigma -> +inf = active at EVERY diffusion step (the documented
+    # contract; the gate is `sigma <= start_sigma` and sigma >= 0, so the old -1.0
+    # default silently disabled the conformer AND any distance/rmsd/group entry whose
+    # start_sigma falls back to this value). config.py mirrors this default; the only
+    # production caller (combined.setup) passes it explicitly, so this just makes direct
+    # build_spec() callers agree with the config path.
+    conf_start_sigma: float = float("inf"),
     conf_stop_sigma: float = -1.0,
     conf_start_step: float = float("-inf"),
     conf_stop_step: float = float("inf"),

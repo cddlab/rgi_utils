@@ -157,9 +157,14 @@ class CombinedRestraints:
             ar.resolve_sites(adapter)
         for dr in cfg.dihedral_data:
             dr.resolve_sites(adapter)
-        # merge code-added custom restraints, then resolve every custom entry's selections
-        cfg.custom_data.extend(self._pending_custom)
-        for cd in cfg.custom_data:
+        # merge code-added custom restraints into a LOCAL list, then resolve every custom
+        # entry's selections. Do NOT mutate cfg.custom_data in place: a config-less
+        # re-setup() of a reused instance reuses the same config object, so an in-place
+        # extend would re-append self._pending_custom every call and silently duplicate the
+        # custom restraints. (Clearing _pending_custom instead would drop them on a
+        # re-setup that DOES pass a fresh config, so a local merge is the correct fix.)
+        custom_data = list(cfg.custom_data) + self._pending_custom
+        for cd in custom_data:
             cd.resolve_sites(adapter)
 
         ligand_confs = []
@@ -193,7 +198,7 @@ class CombinedRestraints:
             rmsd_restraints=cfg.rmsd_data,
             angle_restraints=cfg.angle_data,
             dihedral_restraints=cfg.dihedral_data,
-            custom_restraints=cfg.custom_data,
+            custom_restraints=custom_data,
         )
         # backend is inferred lazily (get_minimizer() -> jax; minimize(coords) -> from
         # the coords type) and the matching optimizer built on first use; reset here so a

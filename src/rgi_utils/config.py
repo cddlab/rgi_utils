@@ -22,7 +22,10 @@ class RestraintsConfig:
     gpu: bool = True
     method: str = "CG"
     max_iter: int = 100
-    conf_start_sigma: float = -1.0  # one value for all conformer (ligand) restraints
+    # one value for all conformer (ligand) restraints; +inf = active every step (the
+    # documented "omitted start_sigma" default, matching build_spec). from_dict always
+    # passes this explicitly, so the default only applies to a bare RestraintsConfig().
+    conf_start_sigma: float = float("inf")
     conf_stop_sigma: float = -1.0  # shared conformer lower bound; -1 = never released
     # shared conformer STEP window (the alternative gate axis to the sigma window above):
     # active for conf_start_step <= step <= conf_stop_step. -inf/+inf = always (default).

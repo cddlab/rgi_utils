@@ -321,7 +321,10 @@ def rmsd_energy(
     nc = jnp.sum(calc_mask, axis=-1)
     Pc0 = (Pc - Pfc[..., None, :]) * mc
     Qc0 = (calc_ref - Qfc[..., None, :]) * mc
-    Yc = jax.lax.stop_gradient(Qc0 @ jnp.swapaxes(R, -1, -2))
+    # Qc0 is reference-only (no `positions` dependency) and R is already stop-gradient'd
+    # in _kabsch_R, so an extra stop_gradient on Yc is inert -- drop it to stay textually
+    # identical to torch_energy/numpy_energy (the "parity is structural" invariant).
+    Yc = Qc0 @ jnp.swapaxes(R, -1, -2)
     resid = (Pc0 - Yc) * mc
     msd = jnp.sum(resid**2, axis=(-2, -1)) / (nc + _EPS)
     rmsd = jnp.sqrt(msd + _EPS)
