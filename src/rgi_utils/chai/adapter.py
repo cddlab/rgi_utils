@@ -282,5 +282,7 @@ class ChaiStructureAdapter:
                 # per-ligand opt-in from the sidecar `conformer_restraints` map, keyed by
                 # the same subchain id as smiles_by_subchain (= the chain id used in
                 # atom_selection). Absent -> False, so a ligand opts in explicitly.
-                conformer_restraints=self._conf_restraints_by_subchain.get(str(ch), False),
+                conformer_restraints=self._conf_restraints_by_subchain.get(
+                    str(ch), False
+                ),
             )

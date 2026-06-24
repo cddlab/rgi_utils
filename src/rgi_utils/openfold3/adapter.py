@@ -95,9 +95,7 @@ class Openfold3Adapter:
         # polymer (NOT LIGAND, unlike biotite hetero), so this powers protein/dna/rna +
         # backbone/sidechain + RMSD align pairing for modified residues.
         cats = aa.get_annotation_categories()
-        mtypes = (
-            np.asarray(aa.molecule_type_id) if "molecule_type_id" in cats else None
-        )
+        mtypes = np.asarray(aa.molecule_type_id) if "molecule_type_id" in cats else None
         # Non-standard residues are biotite hetero=True; a standard polymer residue is
         # not. hetero (not molecule_type_id) drives the per-token ORDINAL below because a
         # modified residue must get its own ordinal to match the other tools.
