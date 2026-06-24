@@ -26,7 +26,7 @@ GPU paths (real CUDA torch / jax devices) are exercised by the host tools via
 conformer + RMSD restraints into a structure-prediction diffusion loop via gradient
 optimization. Shared by boltz / protenix / chai-lab / openfold-3 / esmfold2 (torch)
 and alphafold3 (jax). The end-to-end guide for integrating a new tool is the skill at
-`skills/implement-rgi/` (SKILL.md + references/). Per-tool as-built integration write-ups live in
+`.claude/skills/implement-rgi/` (SKILL.md + references/). Per-tool as-built integration write-ups live in
 `doc/<tool>.md` (one per tool); the shared config + selection-DSL surface is `doc/config.md`.
 
 Design = **3 layers + autodiff + static shapes + GPU-complete optimization**:

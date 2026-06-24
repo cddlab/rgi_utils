@@ -1,0 +1,26 @@
+{
+  "skill_name": "generate-rgi-config",
+  "evals": [
+    {
+      "id": 0,
+      "name": "distance-boltz",
+      "prompt": "boltz2 で qbp というタンパク質を予測したいです。構造予測はほぼ初めてで RGI も詳しくありません。N末側のドメイン(配列の最初のほう、残基5〜84あたり)と、真ん中のドメイン(残基90〜180あたり)を、だいたい25Å離れた状態に保ちたいです。これを実現する RGI の config(入力ファイル)を作ってください。配列は手元にあります。",
+      "expected_output": "A boltz input YAML with restraints_config NESTED under a top-level restraints_config: key, containing a distance_restraints_config harmonic entry with target_distance 25.0, both atom_selection groups qualified with `chain A`, and verbose: true. Should pass scripts/validate_config.py. Should tell the user how to run boltz and that verbose+spec-count is how to confirm the selection at run time.",
+      "files": []
+    },
+    {
+      "id": 1,
+      "name": "conformer-chai-optin",
+      "prompt": "chai-lab を使って、ATP が結合したタンパク質を予測します。予測の途中で ATP が化学的にありえない形にゆがまないように拘束したいです。chai 用の拘束設定ファイルを作ってください。配列とリガンドの SMILES はこちらで FASTA に用意します。リガンドは chain B です。",
+      "expected_output": "A chai SIDECAR YAML whose TOP LEVEL is the restraints_config (NOT nested under a restraints_config: key), containing a conformer_restraints_config block (at least bond/angle/chiral) AND the per-ligand opt-in `conformer_restraints: {B: true}` map (the #1 silent no-op if missing). verbose: true. Should pass validate_config.py with NO 'no ligand opts in' warning, and the run command should note FASTA + out_dir are positional.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "rmsd-protenix",
+      "prompt": "protenix で予測するときに、chain A の残基150〜165のループを、手元にある参照構造 ref.pdb と同じ形になるように引き寄せたいです。RGI の設定を入れた入力ファイルを作ってください。",
+      "expected_output": "A protenix input JSON (a LIST of jobs) with restraints_config nested in the job, containing an rmsd_restraints_config entry with ref_pdb: ref.pdb and a target_rmsd (harmonic 0 = match, or flat-bottomed2 to stay within X), a target/ref selection covering chain A resid 150 to 165 (using the suffixed/target/ref keys, NOT a bare atom_selection), and verbose: true. Should note that resid is the per-chain 1-based ordinal (may differ from the PDB's author numbering) and that the selection must be confirmed at run time via the spec count. Should pass validate_config.py.",
+      "files": []
+    }
+  ]
+}

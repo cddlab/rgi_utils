@@ -224,7 +224,7 @@ class MyAdapter:
 ```
 
 Tool-side adapters are tiny — see `src/rgi_utils/{boltz,protenix,chai,openfold3}/adapter.py`
-for worked examples, and the `skills/implement-rgi/` guide for the full integration recipe.
+for worked examples, and the `.claude/skills/implement-rgi/` guide for the full integration recipe.
 
 ## Development
 
