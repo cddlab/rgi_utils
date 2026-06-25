@@ -29,6 +29,27 @@ class AtomRecord:
     # unavailable (that adapter has not been plumbed; align pairing then errors loudly).
 
 
+def candidate_dict(record, resname_attr: str = "resname") -> dict:
+    """Build the selector-input dict for one atom record (the single source of truth).
+
+    The atom-selection DSL (``AtomSelector.eval`` / ``.matches``) consumes a six-key
+    dict; distance / group / RMSD selection all need exactly the same keys. Centralising
+    the construction here keeps a new selectable field from being added to some call
+    sites but not others (a divergence that would make one config select different atoms
+    in different restraints). ``record`` may be an ``AtomRecord`` (resname attr
+    ``resname``) or a ``pdb_ref.PdbAtom`` (attr ``res_name``) — pass ``resname_attr`` for
+    the latter; the other five keys share attribute names across both.
+    """
+    return {
+        "chain": record.chain,
+        "resid": record.resid,
+        "index": record.index,
+        "name": record.name,
+        "mol_type": record.mol_type,
+        "resname": getattr(record, resname_attr),
+    }
+
+
 @dataclass
 class LigandConf:
     """One ligand's ideal conformer, used to build conformer restraints.

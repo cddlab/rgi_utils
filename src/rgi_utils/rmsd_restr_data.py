@@ -86,7 +86,7 @@ from rgi_utils._config_util import (
     warn_unknown_keys,
 )
 from rgi_utils._moltype import polymer_type
-from rgi_utils.atom_context import FrameworkAdapter
+from rgi_utils.atom_context import FrameworkAdapter, candidate_dict
 from rgi_utils.pdb_ref import read_pdb_atoms
 from rgi_utils.selection import AtomSelector
 
@@ -349,20 +349,7 @@ class RmsdData:
             tgt = list(atoms)
         else:
             st = AtomSelector(sel_target)
-            tgt = [
-                a
-                for a in atoms
-                if st.matches(
-                    {
-                        "chain": a.chain,
-                        "resid": a.resid,
-                        "index": a.index,
-                        "mol_type": a.mol_type,
-                        "name": a.name,
-                        "resname": a.resname,
-                    }
-                )
-            ]
+            tgt = [a for a in atoms if st.matches(candidate_dict(a))]
         if sel_ref is None:  # whole reference (no filter)
             ref = list(ref_atoms)
         else:
@@ -370,16 +357,7 @@ class RmsdData:
             ref = [
                 r
                 for r in ref_atoms
-                if sr.matches(
-                    {
-                        "chain": r.chain,
-                        "resid": r.resid,
-                        "index": r.index,
-                        "mol_type": r.mol_type,
-                        "name": r.name,
-                        "resname": r.res_name,
-                    }
-                )
+                if sr.matches(candidate_dict(r, resname_attr="res_name"))
             ]
         if not tgt:
             raise ValueError(

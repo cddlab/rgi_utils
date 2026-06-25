@@ -3,8 +3,12 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from rgi_utils._config_util import apply_window_params, warn_unknown_keys
-from rgi_utils.atom_context import FrameworkAdapter
+from rgi_utils._config_util import (
+    apply_window_params,
+    parse_geom_type,
+    warn_unknown_keys,
+)
+from rgi_utils.atom_context import FrameworkAdapter, candidate_dict
 from rgi_utils.selection import AtomSelector
 
 logger = logging.getLogger(__name__)
@@ -104,48 +108,24 @@ class DistanceData:
                 raise ValueError(
                     f"distance 'move' must be 'both', 1, or 2 (got {_mv!r})"
                 )
-        if "harmonic" in config:
-            self.target_distance = config["harmonic"].get("target_distance", None)
-            if self.target_distance is not None:
-                self.distance_restraint_type = "harmonic"
-                self.target_distance = float(self.target_distance)
-            else:
-                raise ValueError("target_distance is None")
-        elif "flat-bottomed" in config:
-            self.target_distance1 = config["flat-bottomed"].get(
-                "target_distance1", None
-            )
-            self.target_distance2 = config["flat-bottomed"].get(
-                "target_distance2", None
-            )
-            if self.target_distance1 is not None and self.target_distance2 is not None:
-                self.distance_restraint_type = "flat-bottomed"
-                self.target_distance1 = float(self.target_distance1)
-                self.target_distance2 = float(self.target_distance2)
-                if self.target_distance1 >= self.target_distance2:
-                    raise ValueError(
-                        "target_distance1 must be smaller than target_distance2"
-                    )
-            else:
-                raise ValueError("target_distance1 or 2 is None")
-        elif "flat-bottomed1" in config:
-            self.target_distance1 = config["flat-bottomed1"].get(
-                "target_distance1", None
-            )
-            if self.target_distance1 is not None:
-                self.distance_restraint_type = "flat-bottomed1"
-                self.target_distance1 = float(self.target_distance1)
-            else:
-                raise ValueError("target_distance1 is None")
-        elif "flat-bottomed2" in config:
-            self.target_distance2 = config["flat-bottomed2"].get(
-                "target_distance2", None
-            )
-            if self.target_distance2 is not None:
-                self.distance_restraint_type = "flat-bottomed2"
-                self.target_distance2 = float(self.target_distance2)
-            else:
-                raise ValueError("target_distance2 is None")
+        # Restraint type + target(s) via the shared helper — the SAME parse rmsd /
+        # angle / dihedral use, so the four type keys (harmonic / flat-bottomed /
+        # flat-bottomed1 / flat-bottomed2) and their error messages can't drift. It maps
+        # the returned (type, t1, t2) into distance's three target fields by type;
+        # `_dist_params` reads only the field belonging to the resolved type, so the
+        # unused ones stay at their __init__ defaults. conv=float (native Angstroms; the
+        # flat-bottomed t1<t2 check lives inside parse_geom_type). No type key present ->
+        # (None, None, None), which falls through to the run_restr=False raise below.
+        gtype, t1, t2 = parse_geom_type(config, "target_distance", float)
+        self.distance_restraint_type = gtype
+        if gtype == "harmonic":
+            self.target_distance = t1
+        elif gtype == "flat-bottomed":
+            self.target_distance1, self.target_distance2 = t1, t2
+        elif gtype == "flat-bottomed1":
+            self.target_distance1 = t1
+        elif gtype == "flat-bottomed2":
+            self.target_distance2 = t2
         self.run_restr = (
             (self.atom_selection1 is not None)
             and (self.atom_selection2 is not None)
@@ -173,14 +153,7 @@ class DistanceData:
         atom_selector2 = AtomSelector(self.atom_selection2)
 
         for atom in adapter.iter_atoms():
-            candidate = {
-                "chain": atom.chain,
-                "resid": atom.resid,
-                "index": atom.index,
-                "name": atom.name,
-                "mol_type": atom.mol_type,
-                "resname": atom.resname,
-            }
+            candidate = candidate_dict(atom)
             if atom_selector1.eval(candidate):
                 self.target_sites1.append(atom.index)
             if atom_selector2.eval(candidate):

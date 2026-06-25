@@ -279,3 +279,21 @@ def test_improper_perception():
     # terms (preserves every existing conformer run).
     off = build_spec([_lig_heavy("CC(=O)N")], [], {"bond": {"weight": 0.05}})
     assert off.improper is None and off.bond is not None
+
+
+@pytest.mark.parametrize("term,default", [("bond", 0.0), ("improper", 0.05)])
+def test_conf_slack_null_handling_uniform(term, default):
+    """slack: omitted/null -> per-term default; explicit 0 -> 0.0 (the truthiness trap).
+
+    Guards the consistency fix that routed all five conformer terms through _conf_slack so
+    the null/zero handling can't drift (it previously diverged: only cistrans/improper had
+    an `or 0.0` guard, so `slack: null` crashed bond/angle/chiral and silently zeroed
+    improper's 0.05 default)."""
+    from rgi_utils.featurizer import _conf_slack
+
+    assert _conf_slack({}, term, default) == default  # key absent
+    assert _conf_slack({term: {}}, term, default) == default  # slack omitted
+    assert _conf_slack({term: None}, term, default) == default  # bare key, None body
+    assert _conf_slack({term: {"slack": None}}, term, default) == default  # null
+    assert _conf_slack({term: {"slack": 0}}, term, default) == 0.0  # explicit 0 kept
+    assert _conf_slack({term: {"slack": 0.3}}, term, default) == pytest.approx(0.3)

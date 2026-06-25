@@ -77,6 +77,22 @@ class TestDistanceDataSetConfig:
         with pytest.raises(ValueError, match="target_distance1 must be smaller"):
             _flat_bottomed(10.0, 3.0)
 
+    def test_harmonic_missing_target_raises_with_clear_message(self):
+        # shared parse_geom_type message (matches rmsd/angle/dihedral wording)
+        with pytest.raises(ValueError, match="harmonic needs target_distance"):
+            _make_dd(
+                {
+                    "atom_selection1": "chain A",
+                    "atom_selection2": "chain B",
+                    "harmonic": {},
+                }
+            )
+
+    def test_no_type_key_raises_not_run(self):
+        # no harmonic/flat-bottomed* block at all -> falls through to run_restr=False
+        with pytest.raises(ValueError, match="distance restraints not run"):
+            _make_dd({"atom_selection1": "chain A", "atom_selection2": "chain B"})
+
     def test_invalid_calc_method_raises(self):
         with pytest.raises(ValueError, match="calc_method"):
             _make_dd(

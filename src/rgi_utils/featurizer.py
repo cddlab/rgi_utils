@@ -329,6 +329,21 @@ def _conf_weight(conformer_config: dict | None, key: str) -> float:
     return float(w) if w is not None else 0.0
 
 
+def _conf_slack(conformer_config: dict | None, key: str, default: float) -> float:
+    """Slack (flat-bottom half-width) of a conformer sub-term, with uniform null handling.
+
+    Shared by all five conformer terms (bond/angle/chiral/cistrans/improper) so the
+    omitted / explicit-0 / null cases can't drift between them: an OMITTED ``slack`` ->
+    the per-term ``default``; an explicit ``slack: 0`` -> 0.0 (a hard, zero-width
+    restraint, NOT the default); a ``slack: null`` -> the ``default`` (null is treated as
+    omitted, matching ``apply_window_params``). The truthiness trap (``slack or default``
+    would silently turn an explicit 0 into the default) is what this avoids.
+    """
+    v = (conformer_config or {}).get(key)
+    v = (v or {}).get("slack", default)
+    return float(default if v is None else v)
+
+
 def _build_vdw_config(
     ligand_confs: list[LigandConf],
     conformer_config: dict,
@@ -522,16 +537,16 @@ def build_spec(
     # stay per-term (chiral/improper flat-bottom ~0.05 signed-volume; bond/angle/cistrans
     # 0.0 = pure harmonic toward the reference; cistrans slack is in radians).
     bw = _conf_weight(cfg, "bond")
-    bsl = (cfg.get("bond") or {}).get("slack", 0.0)
+    bsl = _conf_slack(cfg, "bond", 0.0)
     aw = _conf_weight(cfg, "angle")
-    asl = (cfg.get("angle") or {}).get("slack", 0.0)
+    asl = _conf_slack(cfg, "angle", 0.0)
     cw = _conf_weight(cfg, "chiral")
-    csl = (cfg.get("chiral") or {}).get("slack", 0.05)
+    csl = _conf_slack(cfg, "chiral", 0.05)
     dw = _conf_weight(cfg, "cistrans")
-    dsl = float((cfg.get("cistrans") or {}).get("slack", 0.0) or 0.0)
+    dsl = _conf_slack(cfg, "cistrans", 0.0)
     vdw_weight = _conf_weight(cfg, "vdw")
     iw = _conf_weight(cfg, "improper")
-    isl = float((cfg.get("improper") or {}).get("slack", 0.05) or 0.0)
+    isl = _conf_slack(cfg, "improper", 0.05)
 
     bonds, angles, chirals, cistrans, impropers = _extract_conformer(ligand_confs)
     # weight<=0 means "disable": drop the term BEFORE the active_sites union so its

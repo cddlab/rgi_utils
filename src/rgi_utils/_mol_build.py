@@ -9,6 +9,10 @@ so the bond/angle/chiral featurization sees the same mol regardless of tool
 
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 def atomic_number(symbol: str) -> int:
     """Atomic number for an element symbol; 0 if unknown (treated as padding)."""
@@ -99,8 +103,14 @@ def build_ligand_mol(elements, coords, bonds_local, perceive_bonds=False):
             for a in mol.GetAtoms():
                 a.SetNoImplicit(False)
             mol.UpdatePropertyCache(strict=False)
-        except Exception:
-            pass
+        except Exception as exc:
+            # Don't abort (geometry-only restraints don't need connectivity), but a
+            # bond-less mol silently drops chiral/cistrans restraints, so surface it.
+            logger.warning(
+                "connectivity perception failed for ligand; chiral/cistrans "
+                "restraints may be dropped: %s",
+                exc,
+            )
     try:
         Chem.SanitizeMol(mol)
     except Exception:  # geometry-only restraints don't need a clean valence model

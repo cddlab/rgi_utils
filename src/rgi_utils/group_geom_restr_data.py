@@ -43,7 +43,7 @@ from rgi_utils._config_util import (
     parse_geom_type,
     warn_unknown_keys,
 )
-from rgi_utils.atom_context import FrameworkAdapter
+from rgi_utils.atom_context import FrameworkAdapter, candidate_dict
 from rgi_utils.selection import AtomSelector
 
 logger = logging.getLogger(__name__)
@@ -80,14 +80,7 @@ def _resolve_group_sites(
     selectors = [AtomSelector(s) for s in selections]
     sites: list[list[int]] = [[] for _ in selectors]
     for atom in adapter.iter_atoms():
-        candidate = {
-            "chain": atom.chain,
-            "resid": atom.resid,
-            "index": atom.index,
-            "name": atom.name,
-            "mol_type": atom.mol_type,
-            "resname": atom.resname,
-        }
+        candidate = candidate_dict(atom)
         for gi, sel in enumerate(selectors):
             if sel.eval(candidate):
                 sites[gi].append(atom.index)
