@@ -224,11 +224,15 @@ class CombinedRestraints:
             gd = self.spec.group_dihedral
             n_grp_dihedral = 0 if gd is None else int(gd.mask.sum())
             vc = self.spec.vdw_config
-            vdw_s = (
-                "off"
-                if vc is None
-                else f"{len(vc.ligand_local)}lig/{len(vc.protein_global)}prot"
-            )
+            sv = self.spec.vdw  # static intra + inter-ligand pairs (energy layer)
+            vdw_bits = []
+            if sv is not None:
+                vdw_bits.append(f"{int(sv.mask.sum())}static")
+            if vc is not None:
+                vdw_bits.append(
+                    f"{len(vc.ligand_local)}lig/{len(vc.protein_global)}prot"
+                )
+            vdw_s = "+".join(vdw_bits) if vdw_bits else "off"
             # Per-restraint start_sigma: conformer terms share conf_start_sigma;
             # each distance restraint has its own (show the observed range).
             if d is None or n_dist == 0:

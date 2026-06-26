@@ -274,6 +274,58 @@ def test_grad_parity():
     assert np.allclose(g_t, g_j, atol=1e-6), f"max diff {np.abs(g_t - g_j).max()}"
 
 
+def test_interligand_vdw_energy_parity():
+    """Inter-ligand VdW pairs built by build_spec for two overlapping ligands score
+    identically across numpy/torch/jax. They are ordinary VdwArrays rows (so the vdw rows
+    in _make_spec already prove the energy-layer parity), but this guards the
+    build_spec -> prepare_spec assembly of the cross-ligand pairs specifically."""
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    from rgi_utils.atom_context import LigandConf
+    from rgi_utils.energy import jax_energy, torch_energy
+    from rgi_utils.featurizer import build_spec
+
+    m = Chem.MolFromSmiles("CC")
+    m = Chem.AddHs(m)
+    AllChem.EmbedMolecule(m, randomSeed=1)
+    m = Chem.RemoveHs(m)  # heavy-only ethane: 0 intramolecular pairs
+    c = np.asarray(m.GetConformer().GetPositions())
+    n = m.GetNumAtoms()
+    lcA = LigandConf(
+        mol=m, conf_coords=c, global_indices=np.arange(n), conformer_restraints=True
+    )
+    lcB = LigandConf(
+        mol=m, conf_coords=c, global_indices=np.arange(n) + n, conformer_restraints=True
+    )
+    spec = build_spec(
+        [lcA, lcB], [], {"vdw": {"weight": 1.0, "scale": 0.9}}, conf_start_sigma=1e30
+    )
+    assert spec.vdw is not None and spec.vdw.idx.shape[0] == n * n
+
+    pos = np.zeros((spec.n_active, 3))
+    pos[:n] = c
+    pos[n:] = c + np.array([0.3, 0.0, 0.0])  # overlap -> non-zero inter VdW energy
+
+    e_np = float(numpy_energy.total_energy(pos, numpy_energy.prepare_spec(spec)))
+    e_t = float(
+        torch_energy.total_energy(
+            torch.tensor(pos, dtype=torch.float64),
+            torch_energy.prepare_spec(spec, dtype=torch.float64),
+        )
+    )
+    e_j = float(
+        jax_energy.total_energy(jnp.asarray(pos), jax_energy.prepare_spec(spec))
+    )
+    assert e_np > 0.0  # the overlap is penalised
+    assert abs(e_np - e_t) < 1e-6, f"numpy={e_np} torch={e_t}"
+    assert abs(e_np - e_j) < 1e-6, f"numpy={e_np} jax={e_j}"
+
+
 def test_sigma_gating_parity():
     """Per-restraint start_sigma gating agrees across backends and actually gates."""
     torch = pytest.importorskip("torch")

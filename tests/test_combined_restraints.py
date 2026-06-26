@@ -460,6 +460,34 @@ def test_multiligand_conformer_setup():
     assert cr.spec.bond.idx.shape[0] == 2 * m.GetNumBonds()
 
 
+def test_multiligand_interligand_vdw_setup():
+    """Two restrained ligands + vdw on (default mode='both') build inter-ligand VdW pairs
+    in spec.vdw (the cross product). Heavy-only ethane has no intramolecular pair, so the
+    count is purely inter (n*n)."""
+    cr = CombinedRestraints.get_instance()
+    cr.set_config(
+        {
+            "conformer_restraints_config": {
+                "start_sigma": 1e30,
+                "vdw": {"weight": 1.0},
+            },
+        }
+    )
+    m = Chem.AddHs(Chem.MolFromSmiles("CC"))
+    AllChem.EmbedMolecule(m, randomSeed=1)
+    m = Chem.RemoveHs(m)  # 2 heavy atoms, 0 intramolecular pairs
+    c = np.asarray(m.GetConformer().GetPositions())
+    n = m.GetNumAtoms()
+    lcs = [
+        LigandConf(m, c, np.arange(n), conformer_restraints=True),
+        LigandConf(m, c, np.arange(n) + n, conformer_restraints=True),
+    ]
+    atoms = [AtomRecord("A", i + 1, i) for i in range(2 * n)]
+    cr.setup(MockAdapter(atoms, ligand_confs=lcs))
+    assert cr.spec.vdw is not None
+    assert cr.spec.vdw.idx.shape[0] == n * n  # inter cross product (intra=0 for ethane)
+
+
 def test_rmsd_resolve_and_minimize(tmp_path):
     """RMSD restraint (target_rmsd=0) drives the moving group's superposed RMSD to
     the reference down. Exercises pdb_ref + RmsdData.resolve_sites + the CG solver."""

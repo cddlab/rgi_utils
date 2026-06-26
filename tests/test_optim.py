@@ -698,6 +698,98 @@ def test_jax_vdw_pushes_ligand_off_fixed_protein():
     assert np.allclose(np.asarray(coords[0, n]), prot_before, atol=1e-9)
 
 
+def _heavy_ethane():
+    """Heavy-only ethane (2 carbons, no intramolecular VdW pair) for isolating the
+    inter-ligand term."""
+    m = Chem.MolFromSmiles("CC")
+    m = Chem.AddHs(m)
+    AllChem.EmbedMolecule(m, randomSeed=1)
+    m = Chem.RemoveHs(m)
+    return m, np.asarray(m.GetConformer().GetPositions())
+
+
+def test_torch_interligand_vdw_separates_two_ligands():
+    """Inter-ligand VdW: two restrained ligands overlapping (BOTH in active_sites) are
+    pushed apart, and — unlike the ligand-protein term where the protein is fixed — BOTH
+    ligands move (neither is a fixed background)."""
+    torch = pytest.importorskip("torch")
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+
+    m, c = _heavy_ethane()
+    n = m.GetNumAtoms()  # 2 heavy atoms
+    lcA = LigandConf(
+        mol=m, conf_coords=c, global_indices=np.arange(n), conformer_restraints=True
+    )
+    lcB = LigandConf(
+        mol=m, conf_coords=c, global_indices=np.arange(n) + n, conformer_restraints=True
+    )
+    spec = build_spec([lcA, lcB], [], {"vdw": {"weight": 1.0, "scale": 0.9}})
+    assert spec.vdw is not None and spec.vdw.idx.shape[0] == n * n
+    assert spec.vdw_config is None  # no elements -> inter-ligand only
+
+    coords_np = np.zeros((1, 2 * n, 3))
+    coords_np[0, :n, :] = c
+    coords_np[0, n:, :] = c + np.array([0.3, 0.0, 0.0])  # severe overlap
+    coords = torch.tensor(coords_np, dtype=torch.float64)
+    a_before = coords[0, :n].clone()
+    b_before = coords[0, n:].clone()
+    cen = lambda t: t.mean(dim=0)  # noqa: E731
+    d0 = float(torch.linalg.norm(cen(coords[0, :n]) - cen(coords[0, n:])))
+
+    opt = TorchRestraintOptimizer(spec, max_iter=300)
+    e0 = opt.energy(coords)
+    opt.minimize(coords)
+    e1 = opt.energy(coords)
+    d1 = float(torch.linalg.norm(cen(coords[0, :n]) - cen(coords[0, n:])))
+
+    assert e1 < 0.5 * e0, f"{e0} -> {e1}"
+    assert d1 > d0, f"ligands not separated: {d0} -> {d1}"
+    # BOTH ligands moved (inter-ligand has no fixed background)
+    assert not torch.allclose(coords[0, :n], a_before, atol=1e-4)
+    assert not torch.allclose(coords[0, n:], b_before, atol=1e-4)
+
+
+def test_jax_interligand_vdw_separates_two_ligands():
+    """The JAX port: two overlapping restrained ligands separate under the jax minimizer
+    (the inter-ligand VdW pairs are ordinary spec.vdw rows, so they ride lax.scan/AF3)."""
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.optim.jax_optim import make_minimizer
+
+    m, c = _heavy_ethane()
+    n = m.GetNumAtoms()
+    lcA = LigandConf(
+        mol=m, conf_coords=c, global_indices=np.arange(n), conformer_restraints=True
+    )
+    lcB = LigandConf(
+        mol=m, conf_coords=c, global_indices=np.arange(n) + n, conformer_restraints=True
+    )
+    spec = build_spec(
+        [lcA, lcB], [], {"vdw": {"weight": 1.0, "scale": 0.9}}, conf_start_sigma=1e30
+    )
+    assert spec.vdw is not None and spec.vdw_config is None
+
+    coords_np = np.zeros((1, 2 * n, 3))
+    coords_np[0, :n, :] = c
+    coords_np[0, n:, :] = c + np.array([0.3, 0.0, 0.0])
+    coords = jnp.asarray(coords_np)
+    a_before = np.asarray(coords[0, :n])
+    b_before = np.asarray(coords[0, n:])
+    cen = lambda arr: np.asarray(arr).mean(axis=0)  # noqa: E731
+    d0 = float(np.linalg.norm(cen(coords[0, :n]) - cen(coords[0, n:])))
+
+    minimize = make_minimizer(spec, max_iter=300)
+    coords = minimize(coords, 0.0)
+    d1 = float(np.linalg.norm(cen(coords[0, :n]) - cen(coords[0, n:])))
+
+    assert d1 > d0, f"ligands not separated: {d0} -> {d1}"
+    # BOTH ligands moved (no fixed background)
+    assert not np.allclose(np.asarray(coords[0, :n]), a_before, atol=1e-4)
+    assert not np.allclose(np.asarray(coords[0, n:]), b_before, atol=1e-4)
+
+
 # --- sync-free GPU CG (optim/_torch_cg_gpu.py) -----------------------------------
 
 

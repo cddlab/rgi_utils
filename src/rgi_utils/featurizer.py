@@ -458,6 +458,77 @@ def _build_intramolecular_vdw(
     )
 
 
+def _build_interligand_vdw(
+    ligand_confs: list[LigandConf],
+    conformer_config: dict,
+    g2l: dict,
+) -> VdwArrays | None:
+    """Static inter-ligand VdW repulsion BETWEEN distinct ligands (all backends).
+
+    The third VdW flavour, alongside intramolecular (within one ligand) and the
+    dynamic ligand-protein term. Both endpoints of every pair live in
+    ``active_sites`` (each ligand moves under its own conformer restraint), so
+    autodiff drives BOTH ligands apart — exactly like ``vdw_energy``'s
+    intramolecular pairs, only the pair list crosses molecules. Unlike
+    ``_build_intramolecular_vdw`` there is NO topological skip (different mols have
+    no shared bonds) and NO reference-distance ``dmax`` cutoff (two ligands'
+    ``conf_coords`` live in independent frames, so a build-time distance is
+    meaningless); every cross pair is listed and the ``clamp(d - r_min, max=0)``
+    penalty contributes zero beyond contact. Ligands are H-removed and small, so
+    the all-pairs list stays cheap. Built only when VdW is on, ``mode`` is the
+    default ``'both'``, and at least two ligands opted in.
+    """
+    vcfg = (conformer_config or {}).get("vdw", {}) or {}
+    weight = _conf_weight(conformer_config, "vdw")
+    if weight <= 0.0 or len(ligand_confs) < 2:
+        return None
+
+    scale = float(vcfg.get("scale", 0.75))
+    radii = [
+        [_vdw_radius(a.GetAtomicNum()) for a in lc.mol.GetAtoms()]
+        for lc in ligand_confs
+    ]
+    idx_pairs: list[list[int]] = []
+    r_min_list: list[float] = []
+    for a in range(len(ligand_confs)):
+        gA = np.asarray(ligand_confs[a].global_indices, dtype=np.int64)
+        for b in range(a + 1, len(ligand_confs)):
+            gB = np.asarray(ligand_confs[b].global_indices, dtype=np.int64)
+            for i in range(len(gA)):
+                li = g2l[int(gA[i])]
+                ri = radii[a][i]
+                for j in range(len(gB)):
+                    idx_pairs.append([li, g2l[int(gB[j])]])
+                    r_min_list.append(scale * (ri + radii[b][j]))
+    if not idx_pairs:
+        return None
+    n_pair = len(idx_pairs)
+    return VdwArrays(
+        idx=np.array(idx_pairs, dtype=np.int64),
+        r_min=np.array(r_min_list, dtype=np.float64),
+        weight=np.full(n_pair, weight),
+        mask=np.ones(n_pair),
+    )
+
+
+def _concat_vdw_arrays(*parts: VdwArrays | None) -> VdwArrays | None:
+    """Stack several ``VdwArrays`` into one (drops ``None``s). They are scored by the
+    same ``vdw_energy`` term under the same conformer gate, so concatenating their
+    ``idx``/``r_min``/``weight``/``mask`` rows composes the flavours with no extra
+    wiring. Returns ``None`` when every part is empty."""
+    present = [p for p in parts if p is not None]
+    if not present:
+        return None
+    if len(present) == 1:
+        return present[0]
+    return VdwArrays(
+        idx=np.concatenate([p.idx for p in present], axis=0),
+        r_min=np.concatenate([p.r_min for p in present]),
+        weight=np.concatenate([p.weight for p in present]),
+        mask=np.concatenate([p.mask for p in present]),
+    )
+
+
 def build_spec(
     ligand_confs: list[LigandConf] | None = None,
     distance_restraints: list | None = None,
@@ -601,25 +672,33 @@ def build_spec(
     g2l = {int(g): i for i, g in enumerate(active_sites)}
     # custom restraints: remap each resolved selection to LOCAL indices (CustomSpec).
     custom_specs = [cr.build_spec(g2l) for cr in custom_restraints]
-    # Two VdW flavours share the conformer_config['vdw'] block: static intramolecular
-    # (VdwArrays in the spec -> energy layer, all backends) and the dynamic
-    # ligand-protein term (VdwConfig -> torch/jax optimizer). `mode` picks one, or the
-    # DEFAULT "both" enables them together: they occupy SEPARATE spec fields and are
-    # scored independently, so they compose with no extra wiring (intramolecular
-    # penalises the ligand's internal clashes, ligand-protein pushes it out of the
-    # pocket). They share this one weight/scale/dmax block. Both halves now run on torch
-    # AND jax; on numpy (energy reference only) the ligand-protein half is inert.
+    # Three VdW flavours share the conformer_config['vdw'] block: static intramolecular
+    # (within one ligand) and inter-ligand (between distinct restrained ligands), both
+    # VdwArrays in the spec -> energy layer / all backends; and the dynamic ligand-protein
+    # term (VdwConfig -> torch/jax optimizer). `mode` picks the intra/background split, or
+    # the DEFAULT "both" enables intramolecular + ligand-protein together. The inter-ligand
+    # flavour rides the DEFAULT "both" too (it is neither purely intra nor background): two
+    # restrained ligands each sit in active_sites, so neither is in the other's fixed
+    # background and ligand-protein alone never repels A<->B. The intra + inter pairs are
+    # CONCATENATED into one VdwArrays (same energy term, same conformer gate); ligand-protein
+    # stays a separate spec field. The explicit "intramolecular"/"ligand_protein" modes keep
+    # their precise meaning (no inter). All halves run on torch AND jax; on numpy (energy
+    # reference only) the ligand-protein half is inert.
     vdw_mode = (cfg.get("vdw", {}) or {}).get("mode", "both")
     if vdw_mode not in ("ligand_protein", "intramolecular", "both"):
         raise ValueError(
             "conformer vdw mode must be 'ligand_protein', 'intramolecular', or "
             f"'both', got {vdw_mode!r}"
         )
-    vdw_arrays = (
+    vdw_intra = (
         _build_intramolecular_vdw(ligand_confs, cfg, g2l)
         if vdw_mode in ("intramolecular", "both")
         else None
     )
+    vdw_inter = (
+        _build_interligand_vdw(ligand_confs, cfg, g2l) if vdw_mode == "both" else None
+    )
+    vdw_arrays = _concat_vdw_arrays(vdw_intra, vdw_inter)
     vdw_config = (
         _build_vdw_config(ligand_confs, cfg, active_sites, g2l, elements)
         if vdw_mode in ("ligand_protein", "both")
@@ -883,12 +962,14 @@ def build_spec(
         custom=custom_specs,
     )
     vdw_parts = []
+    if vdw_intra is not None:
+        vdw_parts.append(f"{len(vdw_intra.idx)}intra")
+    if vdw_inter is not None:
+        vdw_parts.append(f"{len(vdw_inter.idx)}inter")
     if vdw_config is not None:
         vdw_parts.append(
             f"{len(vdw_config.ligand_local)}lig/{len(vdw_config.protein_global)}prot"
         )
-    if vdw_arrays is not None:
-        vdw_parts.append(f"{len(vdw_arrays.idx)}intra")
     vdw_desc = "+".join(vdw_parts) if vdw_parts else "off"
     logger.info(
         "built spec: n_active=%d bonds=%d angles=%d chirals=%d impropers=%d cistrans=%d "

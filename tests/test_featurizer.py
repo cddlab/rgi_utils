@@ -281,6 +281,69 @@ def test_improper_perception():
     assert off.improper is None and off.bond is not None
 
 
+def _lig_heavy_at(smi: str, base: int, seed: int = 1) -> tuple[LigandConf, int]:
+    """Like ``_lig_heavy`` but with a global-index offset ``base`` so several ligands get
+    disjoint global indices (what the adapters guarantee per structure)."""
+    m = Chem.MolFromSmiles(smi)
+    mh = Chem.AddHs(m)
+    AllChem.EmbedMolecule(mh, randomSeed=seed)
+    AllChem.UFFOptimizeMolecule(mh)
+    m = Chem.RemoveHs(mh)
+    n = m.GetNumAtoms()
+    crds = np.asarray(m.GetConformer(0).GetPositions(), dtype=np.float64)
+    lc = LigandConf(
+        mol=m,
+        conf_coords=crds,
+        global_indices=np.arange(n) + base,
+        conformer_restraints=True,
+    )
+    return lc, n
+
+
+def test_interligand_vdw_default_both():
+    """Two restrained ligands + the DEFAULT mode='both' add inter-ligand VdW pairs to
+    spec.vdw: the cross product of the two ligands' atoms (ethane has no intramolecular
+    pair — its two carbons are bonded — so spec.vdw is purely inter). Every pair crosses
+    the two ligands' atom sets, and no protein background means vdw_config is None."""
+    lcA, n = _lig_heavy_at("CC", base=0)
+    lcB, _ = _lig_heavy_at("CC", base=100)
+    spec = build_spec([lcA, lcB], [], {"vdw": {"weight": 1.0}})
+    assert spec.vdw is not None
+    assert spec.vdw_config is None  # no elements -> no protein background
+    assert spec.vdw.idx.shape == (n * n, 2)  # inter cross product only
+    assert int(spec.vdw.idx.max()) < spec.n_active  # valid local indices
+    # every pair has one local index from each ligand's block (crosses molecules)
+    g2l = {int(g): i for i, g in enumerate(spec.active_sites)}
+    locA = {g2l[g] for g in range(n)}
+    locB = {g2l[g] for g in range(100, 100 + n)}
+    for li, lj in spec.vdw.idx:
+        a, b = int(li), int(lj)
+        assert (a in locA and b in locB) or (a in locB and b in locA)
+
+
+def test_interligand_vdw_composes_with_intra():
+    """mode='both' CONCATENATES intra (per ligand) + inter (cross) pairs into one
+    spec.vdw: two butanes give 2 intra (one C1-C4 each) + n*n inter."""
+    lcA, n = _lig_heavy_at("CCCC", base=0, seed=1)  # butane: 1 intra pair (C1-C4)
+    lcB, _ = _lig_heavy_at("CCCC", base=100, seed=2)
+    spec = build_spec([lcA, lcB], [], {"vdw": {"weight": 1.0, "dmax": 10.0}})
+    assert spec.vdw.idx.shape == (2 + n * n, 2)
+
+
+def test_interligand_vdw_only_in_both_mode():
+    """Inter-ligand pairs ride the default 'both' only: explicit 'intramolecular' and the
+    single-ligand case never produce them (ethane intra=0 -> spec.vdw stays None)."""
+    lcA, _ = _lig_heavy_at("CC", base=0)
+    lcB, _ = _lig_heavy_at("CC", base=100)
+    # explicit intramolecular: no inter, ethane has no intra pair -> spec.vdw None
+    spec_intra = build_spec(
+        [lcA, lcB], [], {"vdw": {"weight": 1.0, "mode": "intramolecular"}}
+    )
+    assert spec_intra.vdw is None
+    # single ligand under 'both': inter needs >=2 ligands -> none built
+    assert build_spec([lcA], [], {"vdw": {"weight": 1.0}}).vdw is None
+
+
 @pytest.mark.parametrize("term,default", [("bond", 0.0), ("improper", 0.05)])
 def test_conf_slack_null_handling_uniform(term, default):
     """slack: omitted/null -> per-term default; explicit 0 -> 0.0 (the truthiness trap).
