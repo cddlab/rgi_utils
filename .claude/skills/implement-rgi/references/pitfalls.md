@@ -75,8 +75,8 @@ If a tool needs a feature another tool already has (e.g. intramolecular VdW), ad
 it to `rgi_utils` (gated/opt-in so other tools are unaffected) rather than in the
 tool. That keeps one implementation and brings the feature to every tool at once.
 Example: AF3's intramolecular VdW became `featurizer._build_intramolecular_vdw`,
-opt-in via `vdw: {mode: intramolecular}`, leaving boltz/protenix's dynamic VdW
-untouched.
+opt-in via `vdw: {mode: intramolecular}`, leaving boltz/protenix's dynamic
+(intermolecular fixed-background) VdW untouched.
 
 ## 10. The structure's atom coords may be ZEROED — take conformer geometry from the reference
 Some tools zero their atom-array coordinates at inference (a placeholder the

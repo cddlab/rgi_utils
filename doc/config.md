@@ -309,20 +309,24 @@ E = w \sum_{(i,j)} \min\big(0,\; d_{ij} - \text{scale}\cdot(r_i + r_j)\big)^2,
 over non-bonded atom pairs closer than `dmax`, where $d_{ij}$ is the pair distance and $r_i, r_j$
 are their VdW radii.
 
-`vdw.mode`: `"intramolecular"` (static ligand-internal pairs, all backends), `"ligand_protein"`
-(dynamic ligand-vs-fixed-background, torch/jax), or `"both"` (default). The `ligand_protein`
-background is every heavy atom **not** being optimised, so it already repels the ligand off
-protein, DNA/RNA, and any **non-restrained** ligand. The default `"both"` additionally adds
-**inter-ligand** repulsion **between distinct restrained ligands** (two ligands that each set
-`conformer_restraints: true` + `vdw` both move, so neither is in the other's fixed background):
-with ≥2 such ligands, every cross-molecule atom pair gets the same one-sided penalty, scored in the
-energy layer on all backends. So to make two restrained ligands avoid each other, just keep the
-default `mode: both` and give both a `vdw` block — no extra key. The explicit `intramolecular` /
-`ligand_protein` modes do **not** add inter-ligand pairs. `scale` = fraction of the summed VdW radii
-used as the contact threshold; `dmax` = pairs farther than this are ignored (the inter-ligand pairs
-ignore `dmax` — the two ligands' frames are independent, so all cross pairs are listed and the clamp
-zeroes non-contacts). Like every conformer term, `vdw` is built only when a `vdw:` block is present
-(then `weight` defaults to 1.0); omit the block to leave it off.
+`vdw.mode` picks **two categories** (default `"both"` = both):
+
+- `"intramolecular"` — clashes **within** a ligand (static ligand-internal pairs, all backends).
+- `"intermolecular"` — clashes between the ligand and **every other molecule**: the **fixed
+  background** (every heavy atom not being optimised — protein, DNA/RNA, any **non-restrained**
+  ligand; dynamic, torch/jax) **and** other **restrained** ligands (≥2 ligands that each set
+  `conformer_restraints: true` + `vdw` both move, so neither is in the other's background — every
+  cross-molecule atom pair gets the same one-sided penalty, scored in the energy layer on all
+  backends).
+
+So to make two restrained ligands avoid each other, just keep the default `mode: both` (or set
+`intermolecular`) and give both a `vdw` block — no extra key. `scale` = fraction of the summed VdW
+radii used as the contact threshold; `dmax` = pairs farther than this are ignored (the inter-ligand
+pairs ignore `dmax` — the two ligands' frames are independent, so all cross pairs are listed and the
+clamp zeroes non-contacts). Like every conformer term, `vdw` is built only when a `vdw:` block is
+present (then `weight` defaults to 1.0); omit the block to leave it off. **The old
+`mode: ligand_protein` was removed** (it was only the fixed-background half) — it now raises a
+migration error pointing to `intermolecular`.
 
 ## `rmsd_restraints_config` (list)
 

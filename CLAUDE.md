@@ -155,48 +155,47 @@ Supporting modules:
   the same knob is available on distance + conformer restraints** (see the start_sigma note
   below). All tools share sigma_data=16, so the value transfers.
 
-### Conformer: VdW (three flavours)
+### Conformer: VdW (two categories — intramolecular / intermolecular)
 
 VdW is **not a sixth restraint type** — it is the non-bonded term of the **conformer**
 restraint, configured under `conformer_restraints_config.vdw` (one of bond/angle/chiral/
-improper/cistrans/vdw). It has three flavours:
+improper/cistrans/vdw). `mode` picks **two categories** (default `both` = both):
 
-- **Intramolecular** (`mode: intramolecular`): static non-bonded ligand-internal pairs
-  (topo distance > 2, within `dmax`), built in `featurizer.py` and carried in `spec.vdw`
-  (`VdwArrays`). Scored in the **energy layer → all backends**.
-- **Dynamic ligand-protein** (`mode: ligand_protein`): lives in the optimizers
-  (`optim/torch_optim.py` AND `optim/jax_optim.py` — `_vdw_pair_energy` is the shared
-  formula, ported to jnp). The ligand moves (it is in `active_sites`); the **fixed
-  background** is every heavy atom NOT in `active_sites` (so it covers protein, DNA/RNA,
-  and any non-restrained ligand) read from the full coordinate tensor
-  (`VdwConfig.protein_global`) at minimize time, so only the ligand is pushed out of
-  contacts. Penalty `weight * clamp(d - scale*(r_i+r_j), max=0)**2`, all-pairs (zero
-  gradient beyond contact) — same maths as boltz's radius search. Works on **torch +
-  jax** (numpy is the energy reference only, so it does not run this optimizer term).
-- **Inter-ligand** (rides the default `mode: both`, built by `featurizer._build_interligand_vdw`):
-  static cross-molecule pairs between **distinct restrained ligands** (the gap the other
-  two miss — two ligands that each opted into conformer restraints both sit in
-  `active_sites`, so neither is in the other's fixed background and `ligand_protein` alone
-  never repels A↔B). Both endpoints move, so autodiff drives BOTH ligands apart. Carried
-  in `spec.vdw` **concatenated with the intramolecular rows** (same `VdwArrays`, same
-  `vdw_energy` term, same conformer gate → all backends + parity for free). Unlike
-  intramolecular there is **no topological skip and no `dmax` cutoff** (two ligands'
-  `conf_coords` live in independent frames, so a build-time distance is meaningless); all
-  cross pairs are listed and the clamp contributes zero beyond contact. Only built when
-  ≥2 ligands opted in.
+- **Intramolecular** (`mode: intramolecular`): clashes WITHIN one ligand. Static
+  non-bonded ligand-internal pairs (topo distance > 2, within `dmax`), built in
+  `featurizer.py` (`_build_intramolecular_vdw`) and carried in `spec.vdw` (`VdwArrays`).
+  Scored in the **energy layer → all backends**.
+- **Intermolecular** (`mode: intermolecular`): clashes between that ligand and **every
+  other molecule** — protein, DNA/RNA, and any other ligand (restrained or not). One
+  category, **two implementation halves** depending on whether the other molecule is fixed
+  or moving:
+  - *Fixed background* (`_build_vdw_config` → `VdwConfig` → optimizers): the partner is
+    every heavy atom NOT in `active_sites` (protein / DNA/RNA / **non-restrained** ligand),
+    read from the full coordinate tensor at minimize time and held fixed (it needs no
+    gradient). Lives in `optim/torch_optim.py` AND `optim/jax_optim.py` (`_vdw_pair_energy`
+    is the shared formula, ported to jnp). **torch + jax** (numpy is the energy reference
+    only, so it does not run this optimizer term).
+  - *Other restrained ligands* (`_build_interligand_vdw` → `VdwArrays`): two ligands that
+    each opted into conformer restraints both sit in `active_sites`, so neither is in the
+    other's fixed background — this half repels A↔B. Both endpoints move, so autodiff
+    drives BOTH apart. Carried in `spec.vdw` **concatenated with the intramolecular rows**
+    (same `vdw_energy` term, same conformer gate → all backends + parity for free). Unlike
+    intramolecular there is **no topological skip and no `dmax` cutoff** (two ligands'
+    `conf_coords` live in independent frames, so a build-time distance is meaningless); all
+    cross pairs are listed and the clamp contributes zero beyond contact. Only built when
+    ≥2 ligands opted in.
 
-`mode` defaults to **`both`** (`ligand_protein` / `intramolecular` pick one explicitly).
-"both" builds `spec.vdw` (intramolecular **+ inter-ligand**, concatenated) AND
-`spec.vdw_config` (ligand-protein) from the one `vdw` block (shared weight/scale/dmax);
-the static and dynamic halves sit in separate spec fields scored independently, so they
-compose. The explicit `intramolecular` / `ligand_protein` modes keep their precise
-meaning (**no inter-ligand**). An unknown mode raises. All halves run on torch and jax
-(so AF3 gets the full VdW — it no longer force-downgrades to intramolecular). VdW is
-**off unless a `vdw:` block is present** (then `weight` defaults to 1.0, like every
-conformer term — see `featurizer._conf_weight`); omit the block to leave it off. The
-static `vdw_energy` (idx pairs) lives in the energy layer for parity across backends.
-The `built spec: ... vdw=Iintra+Jinter+Llig/Mprot` log reports the three counts
-separately — confirm `Jinter>0` when you expect ligand-ligand repulsion.
+Both halves share `weight * clamp(d - scale*(r_i+r_j), max=0)**2` (all-pairs, zero gradient
+beyond contact — same maths as boltz's radius search). `mode` defaults to **`both`**
+(intramolecular + intermolecular); the explicit values pick one category. **The old
+`mode: ligand_protein` is REMOVED** — it was only the fixed-background half; it now raises a
+migration hint pointing to `intermolecular` (which additionally repels other restrained
+ligands), mirroring the rejected `backend:` key. An unknown mode raises. VdW is **off unless
+a `vdw:` block is present** (then `weight` defaults to 1.0, like every conformer term — see
+`featurizer._conf_weight`); omit the block to leave it off. The `built spec: ...
+vdw=Iintra+Jinter+Llig/Mprot` log breaks the counts down: `intra` = intramolecular, `inter`
++ `lig/prot` together = intermolecular (`inter` = restrained-ligand pairs, `lig/prot` =
+fixed background) — confirm `Jinter>0` when you expect ligand-ligand repulsion.
 
 ### Custom restraints (the extension point — `rgi_utils/custom/`)
 

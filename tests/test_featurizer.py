@@ -183,9 +183,9 @@ def test_intramolecular_vdw_static_arrays():
     assert float(spec.vdw.weight[0]) == 1.0
     assert int(spec.vdw.idx.max()) < spec.n_active  # valid local indices
 
-    # explicit mode=ligand_protein keeps ONLY the dynamic path (no static vdw); the
-    # default is now "both", so request ligand_protein to isolate it
-    spec_dyn = build_spec([lc], [], {"vdw": {"weight": 1.0, "mode": "ligand_protein"}})
+    # explicit mode=intermolecular keeps ONLY the dynamic/inter paths (no static intra);
+    # a single ligand has no inter pairs, so spec.vdw stays None
+    spec_dyn = build_spec([lc], [], {"vdw": {"weight": 1.0, "mode": "intermolecular"}})
     assert spec_dyn.vdw is None
 
 
@@ -342,6 +342,35 @@ def test_interligand_vdw_only_in_both_mode():
     assert spec_intra.vdw is None
     # single ligand under 'both': inter needs >=2 ligands -> none built
     assert build_spec([lcA], [], {"vdw": {"weight": 1.0}}).vdw is None
+
+
+def test_vdw_mode_intermolecular_excludes_intra():
+    """mode='intermolecular' = fixed background + inter-ligand, but NO intramolecular: two
+    butanes (each would add 1 intra C1-C4 pair under 'both') give ONLY the n*n inter cross
+    pairs in spec.vdw, plus a fixed-background vdw_config from a non-active heavy atom."""
+    lcA, n = _lig_heavy_at("CCCC", base=0, seed=1)
+    lcB, _ = _lig_heavy_at("CCCC", base=4, seed=2)
+    elements = np.zeros(9, dtype=np.int64)
+    elements[:8] = 6  # the two butanes (in active_sites)
+    elements[8] = 7  # a background heavy atom (NOT in active_sites)
+    spec = build_spec(
+        [lcA, lcB],
+        [],
+        {"vdw": {"weight": 1.0, "mode": "intermolecular"}},
+        elements=elements,
+    )
+    assert spec.vdw is not None
+    assert spec.vdw.idx.shape == (n * n, 2)  # inter only, NO intra (would be 2 + n*n)
+    assert spec.vdw_config is not None  # fixed-background half present
+    assert {int(x) for x in spec.vdw_config.protein_global} == {8}
+
+
+def test_vdw_mode_ligand_protein_removed():
+    """The old 'ligand_protein' mode value is removed -> raises a migration hint pointing
+    to 'intermolecular' (mirrors the rejected `backend:` key)."""
+    lcA, _ = _lig_heavy_at("CC", base=0)
+    with pytest.raises(ValueError, match="ligand_protein.*renamed to 'intermolecular'"):
+        build_spec([lcA], [], {"vdw": {"weight": 1.0, "mode": "ligand_protein"}})
 
 
 @pytest.mark.parametrize("term,default", [("bond", 0.0), ("improper", 0.05)])

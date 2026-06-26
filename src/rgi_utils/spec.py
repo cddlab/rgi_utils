@@ -136,17 +136,19 @@ class VdwArrays:
 
 @dataclass
 class VdwConfig:
-    """Dynamic ligand-protein VdW repulsion for the torch optimizer.
+    """Dynamic fixed-background VdW repulsion for the torch optimizer.
 
-    Ligand atoms move (they live in ``active_sites``, addressed by
-    ``ligand_local``); protein atoms are a *fixed background* read from the full
-    coordinate tensor via ``protein_global``. Each optimization step recomputes
-    the ligand-protein clash penalty against the moving ligand, so only the
-    ligand is pushed out of contacts (protein is held fixed). This matches
-    boltz's ``ligand_only`` VdW behaviour while keeping the optimised variable
-    set limited to ``active_sites``. The penalty is ``clamp(d - scale*(r_i+r_j),
-    max=0)**2`` summed over pairs within ``dmax`` — identical maths to
-    ``vdw_energy``, only the pair list is dynamic.
+    The fixed-background half of the ``intermolecular`` VdW category. Ligand atoms
+    move (they live in ``active_sites``, addressed by ``ligand_local``); the
+    background atoms (every heavy atom not optimised — protein, DNA/RNA, any
+    non-restrained ligand) are read from the full coordinate tensor via
+    ``protein_global`` and held *fixed*. Each optimization step recomputes the clash
+    penalty against the moving ligand, so only the ligand is pushed out of contacts.
+    This matches boltz's ``ligand_only`` VdW behaviour while keeping the optimised
+    variable set limited to ``active_sites``. The penalty is ``clamp(d -
+    scale*(r_i+r_j), max=0)**2`` summed over pairs within ``dmax`` — identical maths
+    to ``vdw_energy``, only the pair list is dynamic. (``protein_*`` field names are
+    historical; the background is not protein-specific.)
     """
 
     weight: float

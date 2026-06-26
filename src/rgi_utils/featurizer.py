@@ -351,13 +351,14 @@ def _build_vdw_config(
     g2l: dict,
     elements: np.ndarray | None,
 ) -> VdwConfig | None:
-    """Build the dynamic ligand-protein VdW config (torch + jax optimizers).
+    """Build the dynamic fixed-background VdW config (torch + jax optimizers).
 
-    Ligand atoms (the moving set) come from the RDKit mols; the protein
-    background is every heavy atom NOT in ``active_sites`` (i.e. not optimised),
-    so the VdW term pushes the ligand out of the fixed pocket. Returns ``None``
-    when VdW is disabled (weight<=0), there are no ligands, or element info is
-    unavailable.
+    The fixed-background half of the ``intermolecular`` category. Ligand atoms (the
+    moving set) come from the RDKit mols; the background is every heavy atom NOT in
+    ``active_sites`` (i.e. not optimised) — protein, DNA/RNA, and any non-restrained
+    ligand — so the VdW term pushes the ligand out of the fixed pocket. Returns
+    ``None`` when VdW is disabled (weight<=0), there are no ligands, or element info
+    is unavailable.
     """
     vcfg = (conformer_config or {}).get("vdw", {}) or {}
     weight = _conf_weight(conformer_config, "vdw")
@@ -415,10 +416,10 @@ def _build_intramolecular_vdw(
     Penalizes non-bonded atom pairs within one ligand — topological distance > 2
     (so 1-2 bonds and 1-3 angles are skipped) and reference-conformer distance
     < ``dmax`` — with a lower bound ``scale * (r_i + r_j)``. Unlike the dynamic
-    ligand-protein ``VdwConfig``, the pair list is fixed, so this term also works in
-    the jax/numpy backends via ``VdwArrays``. Enabled when
+    dynamic fixed-background ``VdwConfig``, the pair list is fixed, so this term also
+    works in the jax/numpy backends via ``VdwArrays``. Enabled when
     ``conformer_config['vdw']['mode']`` is ``'intramolecular'`` or ``'both'`` (the
-    DEFAULT); ``'ligand_protein'`` leaves it off.
+    DEFAULT); ``'intermolecular'`` leaves it off.
     """
     vcfg = (conformer_config or {}).get("vdw", {}) or {}
     weight = _conf_weight(conformer_config, "vdw")
@@ -465,8 +466,8 @@ def _build_interligand_vdw(
 ) -> VdwArrays | None:
     """Static inter-ligand VdW repulsion BETWEEN distinct ligands (all backends).
 
-    The third VdW flavour, alongside intramolecular (within one ligand) and the
-    dynamic ligand-protein term. Both endpoints of every pair live in
+    The restrained-ligand half of the ``intermolecular`` category (the other half is
+    the dynamic fixed-background ``VdwConfig``). Both endpoints of every pair live in
     ``active_sites`` (each ligand moves under its own conformer restraint), so
     autodiff drives BOTH ligands apart — exactly like ``vdw_energy``'s
     intramolecular pairs, only the pair list crosses molecules. Unlike
@@ -475,8 +476,8 @@ def _build_interligand_vdw(
     ``conf_coords`` live in independent frames, so a build-time distance is
     meaningless); every cross pair is listed and the ``clamp(d - r_min, max=0)``
     penalty contributes zero beyond contact. Ligands are H-removed and small, so
-    the all-pairs list stays cheap. Built only when VdW is on, ``mode`` is the
-    default ``'both'``, and at least two ligands opted in.
+    the all-pairs list stays cheap. Built only when VdW is on, ``mode`` is
+    ``'intermolecular'`` or ``'both'``, and at least two ligands opted in.
     """
     vcfg = (conformer_config or {}).get("vdw", {}) or {}
     weight = _conf_weight(conformer_config, "vdw")
@@ -672,22 +673,30 @@ def build_spec(
     g2l = {int(g): i for i, g in enumerate(active_sites)}
     # custom restraints: remap each resolved selection to LOCAL indices (CustomSpec).
     custom_specs = [cr.build_spec(g2l) for cr in custom_restraints]
-    # Three VdW flavours share the conformer_config['vdw'] block: static intramolecular
-    # (within one ligand) and inter-ligand (between distinct restrained ligands), both
-    # VdwArrays in the spec -> energy layer / all backends; and the dynamic ligand-protein
-    # term (VdwConfig -> torch/jax optimizer). `mode` picks the intra/background split, or
-    # the DEFAULT "both" enables intramolecular + ligand-protein together. The inter-ligand
-    # flavour rides the DEFAULT "both" too (it is neither purely intra nor background): two
-    # restrained ligands each sit in active_sites, so neither is in the other's fixed
-    # background and ligand-protein alone never repels A<->B. The intra + inter pairs are
-    # CONCATENATED into one VdwArrays (same energy term, same conformer gate); ligand-protein
-    # stays a separate spec field. The explicit "intramolecular"/"ligand_protein" modes keep
-    # their precise meaning (no inter). All halves run on torch AND jax; on numpy (energy
-    # reference only) the ligand-protein half is inert.
+    # VdW has two CATEGORIES, set by conformer_config['vdw']['mode']:
+    #   - "intramolecular": clashes WITHIN one ligand (static VdwArrays -> energy layer).
+    #   - "intermolecular": clashes between that ligand and EVERY OTHER molecule. This is
+    #     itself two pieces sharing one category: (a) vs the FIXED background — every heavy
+    #     atom not in active_sites, i.e. protein/DNA/RNA/non-restrained ligand — built as
+    #     VdwConfig and run in the torch/jax optimizer (the background needs no gradient);
+    #     (b) vs OTHER RESTRAINED ligands — both move, so it is a static VdwArrays scored in
+    #     the energy layer with the inter-ligand pairs CONCATENATED onto the intramolecular
+    #     rows (same energy term, same conformer gate, all backends).
+    #   - "both" (DEFAULT): intramolecular + intermolecular.
+    # The old "ligand_protein" value (the fixed-background piece only) is REMOVED -> raise a
+    # migration hint, mirroring the rejected `backend:` key. Both halves run on torch AND
+    # jax; on numpy (energy reference only) the optimizer fixed-background half is inert.
     vdw_mode = (cfg.get("vdw", {}) or {}).get("mode", "both")
-    if vdw_mode not in ("ligand_protein", "intramolecular", "both"):
+    if vdw_mode == "ligand_protein":
         raise ValueError(
-            "conformer vdw mode must be 'ligand_protein', 'intramolecular', or "
+            "conformer vdw mode 'ligand_protein' was renamed to 'intermolecular', which "
+            "now repels the ligand off EVERY other molecule (protein/DNA/RNA/non-restrained "
+            "ligand background AND other restrained ligands), not just the fixed background "
+            "-- update your config to mode: intermolecular"
+        )
+    if vdw_mode not in ("intramolecular", "intermolecular", "both"):
+        raise ValueError(
+            "conformer vdw mode must be 'intramolecular', 'intermolecular', or "
             f"'both', got {vdw_mode!r}"
         )
     vdw_intra = (
@@ -696,12 +705,14 @@ def build_spec(
         else None
     )
     vdw_inter = (
-        _build_interligand_vdw(ligand_confs, cfg, g2l) if vdw_mode == "both" else None
+        _build_interligand_vdw(ligand_confs, cfg, g2l)
+        if vdw_mode in ("intermolecular", "both")
+        else None
     )
     vdw_arrays = _concat_vdw_arrays(vdw_intra, vdw_inter)
     vdw_config = (
         _build_vdw_config(ligand_confs, cfg, active_sites, g2l, elements)
-        if vdw_mode in ("ligand_protein", "both")
+        if vdw_mode in ("intermolecular", "both")
         else None
     )
 

@@ -127,7 +127,7 @@ restraints_config:
     chiral:   {weight: 1.0}
     cistrans: {weight: 1.0}                          # cis/trans (E/Z): holds acyclic, non-aromatic double bonds at their reference torsion. ON by default; weight<=0 disables. optional slack (radians).
     improper: {weight: 1.0}                          # sp2 double-bond planarity (signed volume ~0, same maths as chiral). OFF by default (weight 0); fires on acyclic, non-aromatic double-bond endpoints with 3 heavy neighbours (carbonyl/amide/ester/carboxyl/trisubstituted). optional slack.
-    vdw:      {weight: 1.0}                          # mode defaults to "both" (intramolecular + dynamic ligand-protein); both run on torch AND jax
+    vdw:      {weight: 1.0}                          # mode defaults to "both" (intramolecular + intermolecular: vs fixed background AND other restrained ligands); runs on torch AND jax
   rmsd_restraints_config:           # Kabsch-superposed RMSD of a group toward a reference PDB
     - ref_pdb: "ref.pdb"            # required; parsed by the dependency-free read_pdb_atoms
       harmonic: {target_rmsd: 0.0}  # required: a restraint-type block on the RMSD value (Å);
