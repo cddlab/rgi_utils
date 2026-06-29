@@ -17,32 +17,34 @@ ESMFold2 spans **two** repos — install both on `rgi-integration`:
 
 ## Install
 
-ESMFold2 uses a **pixi** environment. Install the **local** `transformers_restr` fork + `rgi_utils`
-editable so they override the pyproject git deps. Clone all three repos as siblings. Run on a CUDA
-GPU (RTX 4090 / sm_89; this pixi env's torch is cu124, no Blackwell sm_120 kernels).
+ESMFold2 uses a **pixi** environment. Both engines are declared as dependencies in `esm_restr`'s
+`pyproject.toml`: the **`transformers_restr`** fork (installed as the `transformers` package — it
+carries the per-step `restraints.minimize` hook) and the `rgi_utils` engine. So `pixi install` pulls
+both, with no extra steps. Run on a CUDA GPU (RTX 4090 / sm_89; this pixi env's torch is cu124, no
+Blackwell sm_120 kernels).
 
 ```bash
 git clone -b rgi-integration https://github.com/cddlab/esm_restr.git
-git clone -b rgi-integration https://github.com/cddlab/transformers_restr.git   # sibling
-git clone -b rgi-integration https://github.com/cddlab/rgi_utils.git            # sibling
 cd esm_restr
 PIXI="${PIXI:-$([ -x ../.pixi-bin/pixi ] && echo ../.pixi-bin/pixi || echo pixi)}"
-
-"$PIXI" install
-"$PIXI" run python -m pip install -e ../transformers_restr -e "../rgi_utils[torch]"
-
-# CRITICAL — `pip install -e ../transformers_restr` does NOT win over the real `transformers`
-# dir pixi already put in site-packages (same package name → no editable finder), so the STALE
-# copy WITHOUT the per-step `restraints.minimize` hook imports and the restraint silently never
-# runs (rgi_utils IS editable, so setup/finalize still log — it looks like an unrestrained
-# "stall", not an error). Copy the esmfold2 model dir over the installed one, then assert the hook:
-SP=$("$PIXI" run python -c "import transformers,os;print(os.path.dirname(transformers.__file__))")
-cp -rf ../transformers_restr/src/transformers/models/esmfold2/. "$SP/models/esmfold2/"
-"$PIXI" run python -c "import inspect; from transformers.models.esmfold2 import modeling_esmfold2_common as m; assert 'restraints.minimize' in inspect.getsource(m), 'esmfold2 hook missing — copy-over failed'"
+"$PIXI" install                                  # pulls transformers_restr (hooked) + rgi_utils
 ```
 
 To use Blackwell (sm_120): add a cu128 `[tool.pixi.pypi-options]` extra-index + `pixi update torch`
 and remove the cu124-pinned `cuequivariance` (esmfold2 falls back to pure torch).
+
+### Co-development
+
+Clone `transformers_restr` / `rgi_utils` as siblings and override the git deps AFTER `pixi install`
+(e.g. `"$PIXI" run python -m pip install -e ../rgi_utils`). Editing the **esmfold2 hook** is the one
+catch: `pip install -e ../transformers_restr` does **not** win over the installed `transformers`
+(same package name → no editable finder), so copy the model dir over and assert the hook:
+
+```bash
+SP=$("$PIXI" run python -c "import transformers,os;print(os.path.dirname(transformers.__file__))")
+cp -rf ../transformers_restr/src/transformers/models/esmfold2/. "$SP/models/esmfold2/"
+"$PIXI" run python -c "import inspect; from transformers.models.esmfold2 import modeling_esmfold2_common as m; assert 'restraints.minimize' in inspect.getsource(m), 'esmfold2 hook missing — copy-over failed'"
+```
 
 ## Configuring restraints
 
@@ -209,9 +211,9 @@ if __name__ == "__main__":
 
 ### Run
 
-Save as `run_restr_example.sh` and run it on a GPU machine (`bash run_restr_example.sh`). Note the
-**copy-over + assert** after the editable install — without it the per-step hook is silently absent
-and restraints never apply (the run looks like an unrestrained stall, not an error):
+Save as `run_restr_example.sh` and run it on a GPU machine (`bash run_restr_example.sh`). A fresh
+`pixi install` ships the hooked transformers (the `transformers_restr` dep), so the runner is just
+build-env + fold:
 
 ```bash
 #!/bin/bash
@@ -222,16 +224,7 @@ cd "$(dirname "$0")"
 
 PIXI="${PIXI:-$([ -x ../.pixi-bin/pixi ] && echo ../.pixi-bin/pixi || echo pixi)}"
 
-# Build the env + install the LOCAL transformers fork (esmfold2 with the RGI hook) and rgi_utils.
-"$PIXI" install
-"$PIXI" run python -m pip install -e ../transformers_restr -e "../rgi_utils[torch]"
-
-# CRITICAL: copy the esmfold2 model dir over the installed transformers, else the stale copy
-# WITHOUT the per-step `restraints.minimize` hook imports and the restraint silently never runs.
-SP=$("$PIXI" run python -c "import transformers,os;print(os.path.dirname(transformers.__file__))")
-cp -rf ../transformers_restr/src/transformers/models/esmfold2/. "$SP/models/esmfold2/"
-"$PIXI" run python -c "import inspect; from transformers.models.esmfold2 import modeling_esmfold2_common as m; assert 'restraints.minimize' in inspect.getsource(m), 'esmfold2 hook missing'"
-
+"$PIXI" install                     # pulls transformers_restr (hooked) + rgi_utils
 "$PIXI" run python restr_example.py
 ```
 
@@ -241,4 +234,5 @@ With `verbose: True`, the `setup` log prints `built spec: n_active=.. bonds=.. .
 rmsd=.. group_angle=.. group_dihedral=..` — confirm the counts are non-zero. The esm pixi env has no
 gemmi, so run the centroid check with another tool's venv: `../chai-lab_restr/.venv/bin/python
 ../check_dist.py out_esm.cif`. If setup/finalize log but the structure is unchanged (an unrestrained
-"stall"), the copy-over step above was skipped — re-run it and assert the hook is present.
+"stall"), the imported `transformers` lacks the esmfold2 hook — confirm the `transformers_restr` dep
+installed (a co-dev editable needs the copy-over from the Install section).

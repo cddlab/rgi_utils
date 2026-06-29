@@ -49,10 +49,12 @@ once `sigma < stop_sigma`).
 
 ## Installation
 
+`rgi_utils` is the shared engine; each integrated tool **declares it as a dependency**, so installing
+a tool (`uv pip install -e .` / `pixi install`) pulls it automatically — see the tool's guide in
+[`doc/`](doc/). To hack on the engine itself, in this checkout:
+
 ```bash
-uv sync                                  # this checkout (dev)
-uv pip install -e <path>/rgi_utils[torch]   # into a PyTorch tool's env
-uv pip install -e <path>/rgi_utils[jax]     # into a JAX tool's env
+uv sync          # dev environment for this repo
 ```
 
 ## Usage

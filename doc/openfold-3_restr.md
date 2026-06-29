@@ -11,14 +11,18 @@ The RGI code lives in the `cddlab/openfold-3_restr` fork (branch `rgi-integratio
 **that fork**, not the upstream PyPI `openfold3`. Building the **pixi** `openfold3-cuda12`
 environment and fetching the model params (`setup_openfold`) is the involved part — follow the
 upstream OpenFold-3 setup for that; **this guide assumes that environment is already installed**.
-The RGI delta is just the editable `rgi_utils` install, **without** the `[torch]` extra (it must use
-the conda torch, not a pip wheel). Run on a CUDA GPU (RTX 4090 / sm_89 works).
+The `rgi_utils` engine is declared in `pixi.toml` (no `[torch]` extra — it uses the conda torch, not
+a pip wheel), so building the `openfold3-cuda12` environment pulls it automatically. Run on a CUDA
+GPU (RTX 4090 / sm_89 works).
 
 ```bash
-# in the existing openfold3-cuda12 pixi env, with rgi_utils cloned as a sibling:
-pixi run -e openfold3-cuda12 python -m pip install -e ../rgi_utils      # NO [torch] extra: use the conda torch
+# building the openfold3-cuda12 pixi env also pulls rgi_utils (declared in pixi.toml):
+pixi install -e openfold3-cuda12
 export OPENFOLD_CACHE="$HOME/.openfold3"
 ```
+
+> For co-development of the engine, override with a local editable checkout AFTER pixi install:
+> `pixi run -e openfold3-cuda12 python -m pip install -e ../rgi_utils` (sibling clone).
 
 ## Configuring restraints
 

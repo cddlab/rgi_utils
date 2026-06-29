@@ -15,13 +15,11 @@ fork**, not the upstream PyPI `boltz`, which has no RGI hooks. Run on a machine 
 git clone -b rgi-integration https://github.com/cddlab/boltz_restr.git
 cd boltz_restr
 uv venv && source .venv/bin/activate           # Python 3.11+
-uv pip install -e ".[cuda]"
-# the shared engine (torch extra); PyPI default torch is +cpu, the cuda extra above pins CUDA
-uv pip install "rgi_utils[torch] @ git+https://github.com/cddlab/rgi_utils.git@rgi-integration"
+uv pip install -e ".[cuda]"                     # also pulls the rgi_utils engine (declared in pyproject)
 ```
 
-> For co-development of the engine, install it editable from a sibling checkout instead of the
-> git URL: `uv pip install -e ../rgi_utils[torch]`.
+> For co-development of the engine, override the pinned dependency with a local editable
+> checkout in a SEPARATE step: `uv pip install -e ../rgi_utils` (sibling clone).
 
 ## Configuring restraints
 

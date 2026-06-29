@@ -73,9 +73,12 @@ rgi_utils one instead.
 
 ### Step 1 — Install (the backend is inferred, not configured)
 
-Install editable into the tool's venv: `uv pip install -e <path>/rgi_utils[torch]`
-for a PyTorch tool, `[jax]` for a JAX tool. You do **not** choose the backend — it is
-**inferred from how you invoke the engine**: a JAX tool grabs the pure minimizer via
+Declare `rgi_utils` as a dependency of the tool so its normal install pulls the engine —
+add `rgi-utils @ git+https://github.com/cddlab/rgi_utils.git` to the tool's
+`[project.dependencies]` (or its requirements file / pixi `pypi-dependencies`), with **no
+extra** since the tool supplies its own torch/jax. To co-develop the engine, override with a
+local editable checkout: `uv pip install -e <path>/rgi_utils`. You do **not** choose the
+backend — it is **inferred from how you invoke the engine**: a JAX tool grabs the pure minimizer via
 `get_minimizer()` → jax; a PyTorch tool calls `minimize(coords)`, where a torch/numpy
 array → torch. `gpu` in the restraints_config still selects the torch *device*
 (`gpu: false` runs the torch optimizer on CPU). There is **no numpy optimizer** —

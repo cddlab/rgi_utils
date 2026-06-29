@@ -14,9 +14,11 @@ fork**, not the upstream PyPI `protenix`, which has no RGI hooks.
 git clone -b rgi-integration https://github.com/cddlab/protenix_restr.git
 cd protenix_restr
 uv venv && source .venv/bin/activate           # Python 3.11+
-uv pip install -e .
-uv pip install "rgi_utils[torch] @ git+https://github.com/cddlab/rgi_utils.git@rgi-integration"
+uv pip install -e .                             # also pulls the rgi_utils engine (declared in requirements.txt)
 ```
+
+> For co-development of the engine, override the pinned dependency with a local editable
+> checkout in a SEPARATE step: `uv pip install -e ../rgi_utils` (sibling clone).
 
 > **Run protenix on sm_89 (e.g. RTX 4090), NOT on Blackwell (sm_120).** On Blackwell its
 > cuequivariance fused kernels **silently** emit all-NaN coordinates (no crash, exit 0) even for a
