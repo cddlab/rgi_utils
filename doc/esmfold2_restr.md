@@ -24,10 +24,9 @@ both, with no extra steps. Run on a CUDA GPU (RTX 4090 / sm_89; this pixi env's 
 Blackwell sm_120 kernels).
 
 ```bash
-git clone -b rgi-integration https://github.com/cddlab/esm_restr.git
+git clone https://github.com/cddlab/esm_restr.git
 cd esm_restr
-PIXI="${PIXI:-$([ -x ../.pixi-bin/pixi ] && echo ../.pixi-bin/pixi || echo pixi)}"
-"$PIXI" install                                  # pulls transformers_restr (hooked) + rgi_utils
+pixi install                                     # pulls transformers_restr (hooked) + rgi_utils
 ```
 
 To use Blackwell (sm_120): add a cu128 `[tool.pixi.pypi-options]` extra-index + `pixi update torch`
@@ -36,14 +35,14 @@ and remove the cu124-pinned `cuequivariance` (esmfold2 falls back to pure torch)
 ### Co-development
 
 Clone `transformers_restr` / `rgi_utils` as siblings and override the git deps AFTER `pixi install`
-(e.g. `"$PIXI" run python -m pip install -e ../rgi_utils`). Editing the **esmfold2 hook** is the one
+(e.g. `pixi run python -m pip install -e ../rgi_utils`). Editing the **esmfold2 hook** is the one
 catch: `pip install -e ../transformers_restr` does **not** win over the installed `transformers`
 (same package name → no editable finder), so copy the model dir over and assert the hook:
 
 ```bash
-SP=$("$PIXI" run python -c "import transformers,os;print(os.path.dirname(transformers.__file__))")
+SP=$(pixi run python -c "import transformers,os;print(os.path.dirname(transformers.__file__))")
 cp -rf ../transformers_restr/src/transformers/models/esmfold2/. "$SP/models/esmfold2/"
-"$PIXI" run python -c "import inspect; from transformers.models.esmfold2 import modeling_esmfold2_common as m; assert 'restraints.minimize' in inspect.getsource(m), 'esmfold2 hook missing — copy-over failed'"
+pixi run python -c "import inspect; from transformers.models.esmfold2 import modeling_esmfold2_common as m; assert 'restraints.minimize' in inspect.getsource(m), 'esmfold2 hook missing — copy-over failed'"
 ```
 
 ## Configuring restraints
@@ -222,10 +221,8 @@ build-env + fold:
 set -e
 cd "$(dirname "$0")"
 
-PIXI="${PIXI:-$([ -x ../.pixi-bin/pixi ] && echo ../.pixi-bin/pixi || echo pixi)}"
-
-"$PIXI" install                     # pulls transformers_restr (hooked) + rgi_utils
-"$PIXI" run python restr_example.py
+pixi install                     # pulls transformers_restr (hooked) + rgi_utils
+pixi run python restr_example.py
 ```
 
 ## Verify

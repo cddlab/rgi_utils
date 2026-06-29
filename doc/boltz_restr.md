@@ -7,12 +7,11 @@ Boltz-1/2 + [`rgi_utils`](https://github.com/cddlab/rgi_utils) restraint-guided 
 
 ## Install
 
-The RGI code lives in the `cddlab/boltz_restr` fork (branch `rgi-integration`) — install **that
-fork**, not the upstream PyPI `boltz`, which has no RGI hooks. Run on a machine with a CUDA GPU
-(RTX 4090 / sm_89 works).
+The RGI code lives in the `cddlab/boltz_restr` fork — install **that fork**, not the upstream PyPI
+`boltz`, which has no RGI hooks. Run on a machine with a CUDA GPU (RTX 4090 / sm_89 works).
 
 ```bash
-git clone -b rgi-integration https://github.com/cddlab/boltz_restr.git
+git clone https://github.com/cddlab/boltz_restr.git
 cd boltz_restr
 uv venv && source .venv/bin/activate           # Python 3.11+
 uv pip install -e ".[cuda]"                     # also pulls the rgi_utils engine (declared in pyproject)

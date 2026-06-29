@@ -7,11 +7,11 @@ Protenix + [`rgi_utils`](https://github.com/cddlab/rgi_utils) restraint-guided i
 
 ## Install
 
-The RGI code lives in the `cddlab/protenix_restr` fork (branch `rgi-integration`) — install **that
-fork**, not the upstream PyPI `protenix`, which has no RGI hooks.
+The RGI code lives in the `cddlab/protenix_restr` fork — install **that fork**, not the upstream
+PyPI `protenix`, which has no RGI hooks.
 
 ```bash
-git clone -b rgi-integration https://github.com/cddlab/protenix_restr.git
+git clone https://github.com/cddlab/protenix_restr.git
 cd protenix_restr
 uv venv && source .venv/bin/activate           # Python 3.11+
 uv pip install -e .                             # also pulls the rgi_utils engine (declared in requirements.txt)

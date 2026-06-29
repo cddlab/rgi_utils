@@ -7,12 +7,12 @@ Chai-1 + [`rgi_utils`](https://github.com/cddlab/rgi_utils) restraint-guided inf
 
 ## Install
 
-The RGI code lives in the `cddlab/chai-lab_restr` fork (branch `rgi-integration`) — install **that
-fork**, not the upstream PyPI `chai_lab`, which has no RGI hooks. Run on a CUDA GPU with bfloat16
-support (RTX 4090 / sm_89 works).
+The RGI code lives in the `cddlab/chai-lab_restr` fork — install **that fork**, not the upstream
+PyPI `chai_lab`, which has no RGI hooks. Run on a CUDA GPU with bfloat16 support (RTX 4090 / sm_89
+works).
 
 ```bash
-git clone -b rgi-integration https://github.com/cddlab/chai-lab_restr.git
+git clone https://github.com/cddlab/chai-lab_restr.git
 cd chai-lab_restr
 uv venv --python 3.12 .venv && source .venv/bin/activate
 uv pip install -e .                                                                   # also pulls the rgi_utils engine (declared in requirements.in)

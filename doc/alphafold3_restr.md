@@ -10,14 +10,13 @@ JIT-able minimizer closure (`get_minimizer()`) runs inside the compiled loop on 
 
 ## Install
 
-The RGI code lives in the `cddlab/alphafold3_restr` fork (branch `rgi-integration`). The base AF3
-env is involved (it compiles C++ components via scikit-build-core, and the model parameters must be
-obtained from Google) — follow the upstream `docs/installation.md` for the full setup; the RGI
-delta is just the editable fork install (the rgi_utils engine is declared in pyproject and comes
-with it):
+The RGI code lives in the `cddlab/alphafold3_restr` fork. The base AF3 env is involved (it compiles
+C++ components via scikit-build-core, and the model parameters must be obtained from Google) —
+follow the upstream `docs/installation.md` for the full setup; the RGI delta is just the editable
+fork install (the rgi_utils engine is declared in pyproject and comes with it):
 
 ```bash
-git clone -b rgi-integration https://github.com/cddlab/alphafold3_restr.git
+git clone https://github.com/cddlab/alphafold3_restr.git
 cd alphafold3_restr
 uv venv && source .venv/bin/activate           # Python 3.12+
 uv pip install -e .                            # compiles the C++ chem components (cmake/ninja) + pulls the rgi_utils engine

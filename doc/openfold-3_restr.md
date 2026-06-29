@@ -7,17 +7,16 @@ Full `restraints_config` schema & atom-selection DSL: [`config.md`](config.md).
 
 ## Install
 
-The RGI code lives in the `cddlab/openfold-3_restr` fork (branch `rgi-integration`) — install
-**that fork**, not the upstream PyPI `openfold3`. Building the **pixi** `openfold3-cuda12`
-environment and fetching the model params (`setup_openfold`) is the involved part — follow the
-upstream OpenFold-3 setup for that; **this guide assumes that environment is already installed**.
-The `rgi_utils` engine is declared in `pixi.toml` (no `[torch]` extra — it uses the conda torch, not
-a pip wheel), so building the `openfold3-cuda12` environment pulls it automatically. Run on a CUDA
-GPU (RTX 4090 / sm_89 works).
+The RGI code lives in the `cddlab/openfold-3_restr` fork — install **that fork**, not the upstream
+PyPI `openfold3`. The `rgi_utils` engine is declared in `pixi.toml` (no `[torch]` extra — it uses the
+conda torch, not a pip wheel), so `pixi install` pulls it automatically. Run on a CUDA GPU (RTX 4090
+/ sm_89 works).
 
 ```bash
-# building the openfold3-cuda12 pixi env also pulls rgi_utils (declared in pixi.toml):
-pixi install -e openfold3-cuda12
+git clone https://github.com/cddlab/openfold-3_restr.git
+cd openfold-3_restr
+pixi install -e openfold3-cuda12        # builds the env + pulls rgi_utils (declared in pixi.toml)
+printf '\n\n\nno\n' | pixi run -e openfold3-cuda12 setup_openfold   # fetch model params to ~/.openfold3
 export OPENFOLD_CACHE="$HOME/.openfold3"
 ```
 
@@ -164,13 +163,10 @@ Save as `run_restr_example.sh` and run it on a GPU machine (`bash run_restr_exam
 set -e
 cd "$(dirname "$0")"
 
-# pixi.toml needs pixi >=0.68; prefer a fresh binary if the workspace ships one. Override with PIXI=...
-PIXI="${PIXI:-$([ -x ../.pixi-bin/pixi ] && echo ../.pixi-bin/pixi || echo pixi)}"
-export PATH="$HOME/.local/bin:$PATH"
 export OPENFOLD_CACHE="${OPENFOLD_CACHE:-$HOME/.openfold3}"
 
 rm -rf out_restr_example
-"$PIXI" run -e openfold3-cuda12 run_openfold predict \
+pixi run -e openfold3-cuda12 run_openfold predict \
     --query-json restr_example.json \
     --output-dir out_restr_example \
     --num-diffusion-samples 2 --use-msa-server true --use-templates false
