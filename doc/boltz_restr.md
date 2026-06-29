@@ -136,7 +136,6 @@ Save this as `run_restr_example.sh` and run it on a GPU machine (`bash run_restr
 #!/bin/bash
 # boltz RGI example runner. Run on a machine with a CUDA GPU.
 set -e
-cd "$(dirname "$0")"
 source .venv/bin/activate
 
 boltz predict restr_example.yaml \

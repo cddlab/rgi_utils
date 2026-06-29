@@ -219,7 +219,6 @@ build-env + fold:
 # ESMFold2 RGI example runner (pixi env). Run on an sm_89 CUDA GPU (RTX 4090): the pixi
 # env's torch is cu124 (no Blackwell sm_120 kernels).
 set -e
-cd "$(dirname "$0")"
 
 pixi install                     # pulls transformers_restr (hooked) + rgi_utils
 pixi run python restr_example.py

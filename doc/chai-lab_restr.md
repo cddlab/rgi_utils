@@ -144,7 +144,6 @@ the FASTA and out_dir are **positional** arguments:
 #!/bin/bash
 # chai-lab RGI example runner. Run on a machine with a CUDA GPU.
 set -e
-cd "$(dirname "$0")"
 source .venv/bin/activate
 
 export PATH="$HOME/.local/bin:$PATH"

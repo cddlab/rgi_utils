@@ -153,7 +153,6 @@ Save as `run_restr_example.sh` and run it on a GPU machine (`bash run_restr_exam
 #!/bin/bash
 # protenix RGI example runner. Run on an sm_89 CUDA GPU (Blackwell sm_120 emits silent all-NaN coords).
 set -e
-cd "$(dirname "$0")"
 source .venv/bin/activate
 
 protenix pred -i restr_example.json -o out_restr_example \

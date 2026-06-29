@@ -161,7 +161,6 @@ Save as `run_restr_example.sh` and run it on a GPU machine (`bash run_restr_exam
 #!/bin/bash
 # openfold-3 RGI example runner (pixi env). Run on a machine with a CUDA GPU.
 set -e
-cd "$(dirname "$0")"
 
 export OPENFOLD_CACHE="${OPENFOLD_CACHE:-$HOME/.openfold3}"
 

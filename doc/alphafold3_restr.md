@@ -180,7 +180,6 @@ Save as `run_restr_example.sh` and run it on a GPU machine (`bash run_restr_exam
 #!/bin/bash
 # alphafold3 RGI example runner (JAX backend). Run on a machine with a CUDA GPU.
 set -e
-cd "$(dirname "$0")"
 source .venv/bin/activate
 
 MODEL_DIR="${MODEL_DIR:?set MODEL_DIR to your AF3 model-parameters directory}"
