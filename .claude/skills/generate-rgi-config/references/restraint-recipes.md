@@ -124,7 +124,7 @@ conformation / homolog.
 
 ```yaml
 rmsd_restraints_config:
-  - ref_pdb: "ref.pdb"
+  - ref_pdb: "ref.pdb"          # OR ref_cif: "ref.cif" (mmCIF) — mutually exclusive
     atom_selection_target: "chain A and backbone"   # which atoms to fit+measure (both sides)
     atom_selection_ref:    "chain A and backbone"
     harmonic:
@@ -132,8 +132,10 @@ rmsd_restraints_config:
     # stop_sigma: 1.0           # release late so the model re-idealises a strained terminus
 ```
 
-Key points: `target_rmsd: 0` matches the ref; `flat-bottomed2: {target_rmsd2: 2.0}` keeps
-it within 2 Å. `pairing` defaults to `align` (a homolog ref maps on by sequence). Fit and
+Key points: the reference is `ref_pdb` (PDB) **or** `ref_cif` (mmCIF), mutually exclusive —
+use `ref_cif` to point straight at a `.cif` prediction. `target_rmsd: 0` matches the ref;
+`flat-bottomed2: {target_rmsd2: 2.0}` keeps it within 2 Å. `pairing` defaults to `align` (a
+homolog ref maps on by sequence). Fit and
 measured atoms can be chosen separately (`atom_selection_*_fit` / `_calc`); restrict the
 fit to `backbone` / `name CA` so a substituted side chain is not pinned. There is **no bare
 `atom_selection` key** — it raises; use the suffixed/target/ref keys. Full surface in

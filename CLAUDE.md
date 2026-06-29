@@ -126,7 +126,10 @@ Supporting modules:
   prefers `AtomRecord.mol_type` and falls back to `resname` — so both flow through the
   candidate dict); a ligand atom named "C"/"N"/"O" never matches them.
 - **RMSD restraint** (`rmsd_restr_data.py` + `pdb_ref.py`): `RmsdData` resolves a moving
-  group against a reference PDB (parsed by the dependency-free `read_pdb_atoms`), driving the
+  group against a reference structure — `ref_pdb` (PDB) or `ref_cif` (mmCIF), **mutually
+  exclusive**, both parsed dependency-free by `read_pdb_atoms` / `read_cif_atoms` into the
+  same `PdbAtom` list (a shared `_build_atoms` applies the per-chain ordinal once, so the two
+  are interchangeable; the mmCIF reader prefers the `auth_*` `_atom_site` columns) — driving the
   Kabsch-superposed RMSD, shaped by a restraint-type block (`harmonic` / `flat-bottomed` /
   `flat-bottomed1` / `flat-bottomed2`, the same four types as distance/angle/dihedral). The
   superposition ("fit") and measured ("calc")

@@ -1541,6 +1541,183 @@ def test_rmsd_ligand_identity_pairing(tmp_path):
     assert np.allclose(rr.calc_ref_coords, [[0, 0, 0], [1, 0, 0], [2, 0, 0]], atol=1e-3)
 
 
+def _cif_block(rows):
+    """An mmCIF ``_atom_site`` loop holding the SAME atoms ``_pdb_atom_line`` renders
+    (resName ``LIG``, element = ``name[0]``), so read_pdb_atoms / read_cif_atoms can be
+    compared row-for-row. ``label_asym_id`` is deliberately a DIFFERENT value (``_<chain>``)
+    so a passing test also proves ``auth_asym_id`` wins. Each row is
+    ``(rec, chain, resseq, name, x, y, z)``."""
+    header = [
+        "loop_",
+        "_atom_site.group_PDB",
+        "_atom_site.id",
+        "_atom_site.type_symbol",
+        "_atom_site.label_atom_id",
+        "_atom_site.label_alt_id",
+        "_atom_site.label_comp_id",
+        "_atom_site.label_asym_id",
+        "_atom_site.label_seq_id",
+        "_atom_site.pdbx_PDB_ins_code",
+        "_atom_site.Cartn_x",
+        "_atom_site.Cartn_y",
+        "_atom_site.Cartn_z",
+        "_atom_site.auth_seq_id",
+        "_atom_site.auth_comp_id",
+        "_atom_site.auth_asym_id",
+        "_atom_site.auth_atom_id",
+        "_atom_site.pdbx_PDB_model_num",
+    ]
+    lines = ["data_test", "#"] + header
+    for i, (rec, chain, resseq, name, x, y, z) in enumerate(rows, 1):
+        grp = "HETATM" if rec.strip() == "HETATM" else "ATOM"
+        el = name[0] if name else "C"
+        # gemmi double-quotes a value containing an apostrophe, so a primed name (O5')
+        # is written "O5'" -- mimic that so the reader's unquoting is exercised offline.
+        nm = f'"{name}"' if "'" in name else name
+        lines.append(
+            f"{grp} {i} {el} {nm} . LIG _{chain} {resseq} ? "
+            f"{x:.3f} {y:.3f} {z:.3f} {resseq} LIG {chain} {nm} 1"
+        )
+    lines.append("#")
+    return "\n".join(lines) + "\n"
+
+
+def test_cif_pdb_equivalence(tmp_path):
+    """read_cif_atoms must yield the SAME PdbAtom list as read_pdb_atoms for the same
+    structure (the invariant that makes ref_cif and ref_pdb interchangeable downstream).
+    Includes a primed atom name (O5') to exercise the whitespace-split path that shlex /
+    quote-stripping would corrupt."""
+    from dataclasses import astuple
+
+    from rgi_utils.pdb_ref import read_cif_atoms, read_pdb_atoms
+
+    rows = [
+        ("ATOM  ", "A", 5, "N", 1.0, 2.0, 3.0),
+        ("ATOM  ", "A", 5, "CA", 1.5, 2.5, 3.5),  # same residue -> same ordinal
+        ("ATOM  ", "A", 6, "O5'", 4.0, 5.0, 6.0),  # primed name survives split()
+        ("HETATM", "B", 900, "C1", 7.0, 8.0, 9.0),
+        ("HETATM", "B", 900, "C2", 7.5, 8.5, 9.5),  # own ordinal
+    ]
+    pdb = tmp_path / "ref.pdb"
+    pdb.write_text("".join(_pdb_atom_line(*r) for r in rows) + "END\n")
+    cif = tmp_path / "ref.cif"
+    cif.write_text(_cif_block(rows))
+
+    pa = read_pdb_atoms(str(pdb))
+    ca = read_cif_atoms(str(cif))
+    assert [astuple(a) for a in pa] == [astuple(a) for a in ca]
+    assert any(a.name == "O5'" for a in ca)  # not corrupted to "O5"
+    assert all(a.chain in ("A", "B") for a in ca)  # auth_asym_id won over label "_A"
+
+
+def test_cif_ref_hetatm_per_atom_ordinal(tmp_path):
+    """CIF version of test_pdb_ref_hetatm_per_atom_ordinal: HETATM atoms get a per-atom
+    ordinal, ATOM atoms in one residue share one (the same _build_atoms convention)."""
+    from rgi_utils.pdb_ref import read_cif_atoms
+
+    cif = tmp_path / "mix.cif"
+    cif.write_text(
+        _cif_block(
+            [
+                ("ATOM  ", "A", 5, "N", 0.0, 0.0, 0.0),
+                ("ATOM  ", "A", 5, "CA", 1.0, 0.0, 0.0),  # same residue -> same ordinal
+                ("HETATM", "B", 900, "C1", 0.0, 0.0, 0.0),
+                ("HETATM", "B", 900, "C2", 1.0, 0.0, 0.0),  # same resSeq, own ordinal
+                ("HETATM", "B", 900, "C3", 2.0, 0.0, 0.0),
+            ]
+        )
+    )
+    by = {(a.chain, a.name): a.resid for a in read_cif_atoms(str(cif))}
+    assert by[("A", "N")] == 1 and by[("A", "CA")] == 1
+    assert by[("B", "C1")] == 1 and by[("B", "C2")] == 2 and by[("B", "C3")] == 3
+
+
+def test_rmsd_ref_cif_and_pdb_mutually_exclusive():
+    """ref_pdb and ref_cif are mutually exclusive -- giving both is a config error
+    (which file wins would otherwise be silent)."""
+    from rgi_utils.rmsd_restr_data import RmsdData
+
+    rr = RmsdData()
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        rr.set_config(
+            {
+                "ref_pdb": "a.pdb",
+                "ref_cif": "a.cif",
+                "harmonic": {"target_rmsd": 0.0},
+            }
+        )
+
+
+def test_rmsd_resolve_with_cif(tmp_path):
+    """A ligand reference given as ref_cif resolves to the same sites/coords ref_pdb would
+    (read_cif_atoms feeds the identical pairing path)."""
+    from rgi_utils.rmsd_restr_data import RmsdData
+
+    cif = tmp_path / "lig.cif"
+    cif.write_text(
+        _cif_block(
+            [
+                ("HETATM", "B", 900, "C1", 0.0, 0.0, 0.0),
+                ("HETATM", "B", 900, "C2", 1.0, 0.0, 0.0),
+                ("HETATM", "B", 900, "C3", 2.0, 0.0, 0.0),
+            ]
+        )
+    )
+    atoms = [
+        AtomRecord("B", 1, 10, name="C1"),
+        AtomRecord("B", 2, 11, name="C2"),
+        AtomRecord("B", 3, 12, name="C3"),
+    ]
+    rr = RmsdData()
+    rr.set_config(
+        {
+            "ref_cif": str(cif),
+            "harmonic": {"target_rmsd": 0.0},
+            "atom_selection_ref": "chain B",
+            "atom_selection_target": "chain B",
+        }
+    )
+    assert rr.ref_path == str(cif)
+    rr.resolve_sites(MockAdapter(atoms))
+    assert rr.calc_target_sites == [10, 11, 12]
+    assert np.allclose(rr.calc_ref_coords, [[0, 0, 0], [1, 0, 0], [2, 0, 0]], atol=1e-3)
+
+
+def test_cif_no_atom_site_loop_raises(tmp_path):
+    """A CIF with no _atom_site loop must fail loudly (a missing restraint is the worst
+    silent failure), like read_pdb_atoms on an empty file."""
+    from rgi_utils.pdb_ref import read_cif_atoms
+
+    cif = tmp_path / "empty.cif"
+    cif.write_text("data_x\n#\n_cell.length_a 1.0\n#\n")
+    with pytest.raises(ValueError, match="no _atom_site loop"):
+        read_cif_atoms(str(cif))
+
+
+def test_cif_label_only_fallback(tmp_path):
+    """An mmCIF with only label_* columns (no auth_*) falls back to the label fields."""
+    from rgi_utils.pdb_ref import read_cif_atoms
+
+    cif = tmp_path / "label.cif"
+    cif.write_text(
+        "data_x\n#\nloop_\n"
+        "_atom_site.group_PDB\n"
+        "_atom_site.type_symbol\n"
+        "_atom_site.label_atom_id\n"
+        "_atom_site.label_comp_id\n"
+        "_atom_site.label_asym_id\n"
+        "_atom_site.label_seq_id\n"
+        "_atom_site.Cartn_x\n"
+        "_atom_site.Cartn_y\n"
+        "_atom_site.Cartn_z\n"
+        "ATOM N N MET C 7 1.0 2.0 3.0\n"
+        "#\n"
+    )
+    (a,) = read_cif_atoms(str(cif))
+    assert a.chain == "C" and a.name == "N" and a.res_name == "MET"
+    assert a.resid == 1 and a.mol_type == "protein"
+
+
 def test_rmsd_duplicate_ref_key_raises():
     """Duplicate (chain, resid, name) reference atoms must raise rather than silently
     collapse last-wins (e.g. an altloc collision within one polymer residue)."""
@@ -1649,12 +1826,12 @@ def test_rmsd_no_selection_best_effort_skips_unmatched(tmp_path):
 
 
 def test_rmsd_requires_ref_pdb_and_target_only():
-    """Selections are optional now, but ref_pdb + target_rmsd are still required."""
+    """Selections are optional now, but a reference + target_rmsd are still required."""
     from rgi_utils.rmsd_restr_data import RmsdData
 
-    with pytest.raises(ValueError, match="ref_pdb and a restraint-type"):
-        RmsdData().set_config({"harmonic": {"target_rmsd": 0.0}})  # missing ref_pdb
-    with pytest.raises(ValueError, match="ref_pdb and a restraint-type"):
+    with pytest.raises(ValueError, match="ref_pdb or ref_cif and a restraint-type"):
+        RmsdData().set_config({"harmonic": {"target_rmsd": 0.0}})  # missing reference
+    with pytest.raises(ValueError, match="ref_pdb or ref_cif and a restraint-type"):
         RmsdData().set_config({"ref_pdb": "x.pdb"})  # missing target_rmsd
     rr = RmsdData()
     rr.set_config(

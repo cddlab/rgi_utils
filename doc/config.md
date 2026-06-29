@@ -330,9 +330,11 @@ migration error pointing to `intermolecular`.
 
 ## `rmsd_restraints_config` (list)
 
-Drives the **Kabsch-superposed RMSD** of a moving group versus a reference PDB, shaped by one of the
-penalty blocks (see Penalty shapes) on the RMSD value. The reference must be generated first (a
-vanilla prediction → PDB via gemmi); see each tool's page.
+Drives the **Kabsch-superposed RMSD** of a moving group versus a reference structure, shaped by one
+of the penalty blocks (see Penalty shapes) on the RMSD value. The reference must be generated first
+(a vanilla prediction → PDB or mmCIF via gemmi); see each tool's page. Supply it as **either**
+`ref_pdb` (legacy PDB) **or** `ref_cif` (mmCIF) — mutually exclusive; both parse, dependency-free, to
+the same atom records, so a `.cif` prediction can be used directly without converting to PDB first.
 
 The energy is
 
@@ -350,7 +352,7 @@ from a Kabsch SVD on the **fit** atoms. $\hat{R}$ (and the centroids) are treate
 
 | key | type | default | meaning |
 |---|---|---|---|
-| `ref_pdb` | str | — (required) | path to the reference PDB |
+| `ref_pdb` / `ref_cif` | str | — (one required, mutually exclusive) | path to the reference structure — `ref_pdb` = legacy PDB, `ref_cif` = mmCIF; both read dependency-free to the same atoms |
 | `harmonic` / `flat-bottomed` / `flat-bottomed1` / `flat-bottomed2` | block | — (one required) | restraint-type block on the RMSD (Å); target keys `target_rmsd` (harmonic) / `target_rmsd1` / `target_rmsd2` (see Penalty shapes). `harmonic: {target_rmsd: 0}` = match the reference; `flat-bottomed2: {target_rmsd2: X}` = stay within $X$ Å |
 | `weight` | float | `1.0` | energy scale |
 | `start_sigma` / `stop_sigma` | float | `+inf` / `-1` | sigma gating (set `stop_sigma`, e.g. `1.0`, to release late and heal a strained terminus) |
