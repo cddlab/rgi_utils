@@ -188,7 +188,7 @@ DB_DIR="${DB_DIR:?set DB_DIR to your AF3 sequence-database directory}"
 # AF3 enables no persistent XLA cache by default (~2 min recompile/run); this reuses it.
 export JAX_COMPILATION_CACHE_DIR="${JAX_COMPILATION_CACHE_DIR:-/tmp/${USER}_jax_cache}"
 
-rm -rf out_restr_example   # else AF3 skip-existing early-returns on the prior output
+# NB: AF3 early-returns if --output_dir already holds results — use a fresh dir to re-run.
 python run_alphafold.py \
     --run_data_pipeline=True \
     --model_dir="$MODEL_DIR" \

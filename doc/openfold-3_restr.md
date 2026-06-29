@@ -165,7 +165,6 @@ cd "$(dirname "$0")"
 
 export OPENFOLD_CACHE="${OPENFOLD_CACHE:-$HOME/.openfold3}"
 
-rm -rf out_restr_example
 pixi run -e openfold3-cuda12 run_openfold predict \
     --query-json restr_example.json \
     --output-dir out_restr_example \

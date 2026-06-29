@@ -156,7 +156,6 @@ set -e
 cd "$(dirname "$0")"
 source .venv/bin/activate
 
-rm -rf out_restr_example
 protenix pred -i restr_example.json -o out_restr_example \
     --use_default_params true --use_msa true --seeds 0 --step 200 --sample 1 --cycle 4
 ```

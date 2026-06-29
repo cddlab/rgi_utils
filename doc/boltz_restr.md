@@ -139,7 +139,6 @@ set -e
 cd "$(dirname "$0")"
 source .venv/bin/activate
 
-rm -rf out_restr_example
 boltz predict restr_example.yaml \
     --seed 0 --out_dir out_restr_example --model boltz2 --use_msa_server
 ```

@@ -151,7 +151,6 @@ export PATH="$HOME/.local/bin:$PATH"
 python -c "import yaml" 2>/dev/null || uv pip install pyyaml   # chai1.py imports yaml (not a chai dep)
 export CHAI_DOWNLOADS_DIR="${CHAI_DOWNLOADS_DIR:-$HOME/.cache/chai}"
 
-rm -rf out_restr_example
 # fasta & out_dir are POSITIONAL args
 python -m chai_lab.main fold \
     restr_example.fasta \
