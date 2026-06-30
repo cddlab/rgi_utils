@@ -8,20 +8,17 @@ runs never cross-contaminate:
     restr.finalize(coords, step)           # optional per-term energy stats
 
 ``setup`` clears any prior derived state and (re)builds the spec, so reusing an
-instance is safe too. Two calls ``set_config(dict)`` then ``setup(adapter)`` are
-equivalent to passing ``config=`` to ``setup``.
+instance is safe too. Prefer the single call ``setup(config=...)``; the two-call
+``set_config(dict)`` then ``setup(adapter)`` is the deprecated equivalent. ``set_config``
+is kept as the adapter-independent config parse/validate step — ``setup`` calls it
+internally, and config-validation tests use it to inspect ``self.config`` without an
+adapter — so it is NOT a removal candidate.
 
 The backend (torch/jax) is INFERRED from how the engine is invoked, not configured:
 ``get_minimizer()`` (used only by JAX tools inside ``jax.lax.scan``) selects jax;
 ``minimize(coords)`` infers from the coords type (a jax array -> jax, a torch tensor
 or numpy array -> torch). The matching optimizer is built lazily on first use, and
 torch/jax are imported lazily so importing this module needs neither.
-
-``get_instance()`` / ``reset()`` are a back-compat singleton shim (kept only because
-``tests/test_combined_restraints.py`` still uses it -- no production tool does); new
-code should use the instance-scoped lifecycle above, not the singleton. To delete the
-shim, migrate that test file to ``cr = CombinedRestraints()`` (a fresh per-test
-instance, which needs no ``reset()``).
 """
 
 from __future__ import annotations
@@ -49,19 +46,6 @@ def _enable_verbose_logging() -> None:
 
 
 class CombinedRestraints:
-    _instance = None
-
-    @classmethod
-    def get_instance(cls) -> "CombinedRestraints":
-        if cls._instance is None:
-            cls._instance = cls()
-        return cls._instance
-
-    @classmethod
-    def reset(cls) -> None:
-        """Reset the singleton (call between independent uses / tests)."""
-        cls._instance = None
-
     def __init__(self) -> None:
         self.config = RestraintsConfig()
         self.spec = None
@@ -230,7 +214,7 @@ class CombinedRestraints:
                 vdw_bits.append(f"{int(sv.mask.sum())}static")
             if vc is not None:
                 vdw_bits.append(
-                    f"{len(vc.ligand_local)}lig/{len(vc.protein_global)}prot"
+                    f"{len(vc.ligand_local)}lig/{len(vc.background_global)}bg"
                 )
             vdw_s = "+".join(vdw_bits) if vdw_bits else "off"
             # Per-restraint start_sigma: conformer terms share conf_start_sigma;
@@ -416,7 +400,7 @@ class CombinedRestraints:
             )
 
     def _build_optimizer(self) -> None:
-        # Dynamic ligand-protein VdW (vdw_config) runs on BOTH backends (the torch
+        # Dynamic fixed-background VdW (vdw_config) runs on BOTH backends (the torch
         # optimizer and jax_optim, which ports the torch term), so AF3 gets it too.
         b = self._backend
         if b == "torch":
@@ -480,7 +464,7 @@ class CombinedRestraints:
         - ``torch.Tensor``: optimize on the coords' device, except with ``gpu:false``
           on an accelerator tensor, where we compute on CPU (move to CPU, optimize,
           write the result back to the original device). The optimization is identical
-          to the GPU path and the dynamic ligand-protein VdW still applies.
+          to the GPU path and the dynamic fixed-background VdW still applies.
         - numpy array: optimize on a CPU torch tensor and write the result back in
           place (the torch optimizer replaces the old scipy path for array callers)."""
         import torch
@@ -534,7 +518,7 @@ class CombinedRestraints:
             # setup spec means SATISFIED (cross-check the setup `custom=N` count).
             custom_bd = self._custom_breakdown(coords)
             total += sum(custom_bd.values())
-            # The dynamic ligand-protein VdW (spec.vdw_config) is applied only inside
+            # The dynamic fixed-background VdW (spec.vdw_config) is applied only inside
             # the torch optimizer and is absent from the static per-term breakdown
             # above (energy_breakdown reads only spec.vdw). Add it directly (it is
             # >= 0 by construction) — NOT as (optimizer.energy - static total), which

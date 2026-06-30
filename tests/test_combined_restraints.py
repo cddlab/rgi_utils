@@ -69,19 +69,8 @@ class MockAdapter:
         return max((a.index for a in self._atoms), default=-1) + 1
 
 
-@pytest.fixture(autouse=True)
-def _reset_singleton():
-    CombinedRestraints.reset()
-    yield
-    CombinedRestraints.reset()
-
-
-def test_singleton():
-    assert CombinedRestraints.get_instance() is CombinedRestraints.get_instance()
-
-
 def test_config_defaults():
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config({})
     assert cr.config.verbose is False
     assert cr.config.gpu is True
@@ -100,7 +89,7 @@ def test_start_sigma_validation():
     (active at every step); explicit per-restraint values are honored."""
     import math
 
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     dist = {
         "atom_selection1": "chain A",
         "atom_selection2": "chain B",
@@ -131,7 +120,7 @@ def test_start_sigma_validation():
 
 
 def test_setup_empty_is_inactive():
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config({})
     cr.setup(MockAdapter([AtomRecord("A", 1, 0), AtomRecord("A", 2, 1)]))
     assert not cr.is_active()
@@ -154,21 +143,20 @@ def test_get_elements_failure_loud_only_when_vdw_requested(caplog):
     weight 0 (default) -> tolerate (warn + continue); weight > 0 -> re-raise."""
     atoms = [AtomRecord("A", 1, 0), AtomRecord("A", 2, 1)]
     # (a) VdW OFF (default): tolerate the failure -> warn and continue, no raise.
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config({})
     with caplog.at_level(logging.WARNING):
         cr.setup(_ThrowingElementsAdapter(atoms))  # must NOT raise
     assert any("get_elements failed" in r.getMessage() for r in caplog.records)
     # (b) VdW requested (weight > 0): the failure is fatal -> re-raise the real error.
-    CombinedRestraints.reset()
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config({"conformer_restraints_config": {"vdw": {"weight": 1.0}}})
     with pytest.raises(RuntimeError, match="boom"):
         cr.setup(_ThrowingElementsAdapter(atoms))
 
 
 def test_distance_resolve_and_minimize():
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(
         {
             "distance_restraints_config": [
@@ -205,7 +193,7 @@ def test_distance_hits_target():
     """The centroid-distance restraint is optimized by the autodiff CG (reduced-mass
     rescale -> rigid group translation), landing the group centroid distance on target
     within CG tolerance. Equal groups + move_mode=0 -> minimal-displacement symmetric split."""
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(
         {
             "distance_restraints_config": [
@@ -244,7 +232,7 @@ def test_distance_move_mode_end_to_end():
     middle wiring that the parity tests (move_mode=0) and the hand-built-dict tests both
     skip -- a dropped schema field / wrong featurizer attr would silently fall back to 0
     (both) and chain A would move."""
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(
         {
             "distance_restraints_config": [
@@ -285,7 +273,7 @@ def test_distance_name_ca_selects_backbone_only():
     and a CB, so the group must hold only the CA indices -- a regression that dropped
     `name` from the distance candidate dict would admit every atom and break these
     sets."""
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(
         {
             "distance_restraints_config": [
@@ -327,7 +315,7 @@ def test_distance_moltype_selector_matches():
     (the distance candidate dict now carries mol_type). Guards the silent-failure
     footgun where 'protein'/'dna' would match nothing and an OR with a chain term would
     quietly return a wrong, non-empty group."""
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(
         {
             "distance_restraints_config": [
@@ -357,7 +345,7 @@ def test_distance_backbone_sidechain_resname_gated():
     polymer path: each atom carries resname but NO mol_type (the chai/of3/protenix
     case), so the distance candidate dict's `resname` is what fires the polymer gate.
     CA -> group1 (backbone), CB -> group2 (sidechain)."""
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(
         {
             "distance_restraints_config": [
@@ -383,7 +371,7 @@ def test_distance_backbone_sidechain_resname_gated():
 
 
 def test_minimize_skipped_above_start_sigma():
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(
         {
             "distance_restraints_config": [
@@ -415,7 +403,7 @@ def test_conformer_opt_in():
     conf_cfg = {
         "conformer_restraints_config": {"start_sigma": 1e30, "bond": {"weight": 0.1}},
     }
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
 
     # (a) conformer_restraints_config present + ligand flagged -> conformer active
     cr.set_config(conf_cfg)
@@ -436,7 +424,7 @@ def test_conformer_opt_in():
 
 
 def test_multiligand_conformer_setup():
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(
         {
             "conformer_restraints_config": {
@@ -464,7 +452,7 @@ def test_multiligand_interligand_vdw_setup():
     """Two restrained ligands + vdw on (default mode='both') build inter-ligand VdW pairs
     in spec.vdw (the cross product). Heavy-only ethane has no intramolecular pair, so the
     count is purely inter (n*n)."""
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(
         {
             "conformer_restraints_config": {
@@ -502,7 +490,7 @@ def test_rmsd_resolve_and_minimize(tmp_path):
     )
     tgt = ref @ rz.T + np.array([4.0, -2.0, 1.0]) + rng.standard_normal((n, 3)) * 0.8
 
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(
         {
             "rmsd_restraints_config": [
@@ -544,7 +532,7 @@ def test_rmsd_stop_sigma_releases_below(tmp_path):
     )
     tgt = ref @ rz.T + np.array([4.0, -2.0, 1.0]) + rng.standard_normal((n, 3)) * 0.8
 
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(
         {
             "rmsd_restraints_config": [
@@ -584,7 +572,7 @@ def test_rmsd_stop_sigma_above_start_raises(tmp_path):
     ref = rng.standard_normal((n, 3)) * 3.0
     pdb = tmp_path / "ref.pdb"
     _write_pdb(pdb, ref)
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(
         {
             "rmsd_restraints_config": [
@@ -658,7 +646,7 @@ def test_distance_stop_sigma_releases_below():
     turns it off): minimize at sigma < stop leaves the centroid separation untouched,
     while in the active window it lands on target. Exercises
     DistanceData.stop_sigma -> per-entry gate (stop_sigma on a distance term)."""
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(
         {
             "distance_restraints_config": [
@@ -700,7 +688,7 @@ def test_distance_stop_sigma_releases_below():
 def test_distance_stop_sigma_above_start_raises():
     """Empty window (stop_sigma > start_sigma) on a DISTANCE restraint must RAISE,
     mirroring the rmsd / conformer checks in _warn_never_active."""
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(
         {
             "distance_restraints_config": [
@@ -813,7 +801,7 @@ def test_conformer_stop_sigma_above_start_raises():
     c = np.asarray(m.GetConformer().GetPositions())
     n = m.GetNumAtoms()
     atoms = [AtomRecord("A", i + 1, i) for i in range(n)]
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(
         {
             "conformer_restraints_config": {
@@ -833,7 +821,7 @@ def test_rmsd_count_mismatch_raises(tmp_path):
     ref = np.random.default_rng(1).standard_normal((6, 3))
     pdb = tmp_path / "ref.pdb"
     _write_pdb(pdb, ref)
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(
         {
             "rmsd_restraints_config": [
@@ -852,7 +840,7 @@ def test_rmsd_count_mismatch_raises(tmp_path):
 
 
 def test_rmsd_missing_pdb_raises(tmp_path):
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(
         {
             "rmsd_restraints_config": [
@@ -898,7 +886,7 @@ def test_gpu_false_uses_torch_on_cpu():
     numpy/scipy fallback). Backend is inferred at minimize time, so _backend is None
     until the first minimize."""
     torch = pytest.importorskip("torch")
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(
         _dist_config(gpu=False)
     )  # gpu defaults True now; set False for the CPU path
@@ -920,7 +908,7 @@ def test_gpu_false_cuda_coords_compute_on_cpu():
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
         pytest.skip("no CUDA device")
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(_dist_config(gpu=False))
     cr.setup(MockAdapter(_dist_atoms()))
     coords = torch.zeros((1, 4, 3), device="cuda")
@@ -935,7 +923,7 @@ def test_gpu_false_cuda_coords_compute_on_cpu():
 def test_backend_inferred_torch_from_numpy():
     """backend is inferred at minimize time: a numpy coords array -> the torch path.
     setup leaves _backend None (lazy); the first minimize resolves it."""
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(_dist_config())
     cr.setup(MockAdapter(_dist_atoms()))
     assert cr._backend is None  # not resolved until first minimize/get_minimizer
@@ -948,7 +936,7 @@ def test_backend_inferred_torch_from_numpy():
 def test_backend_inferred_jax_via_get_minimizer():
     """get_minimizer() selects the jax backend (the AF3 path) -- no config key needed."""
     pytest.importorskip("jax")
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(_dist_config())
     cr.setup(MockAdapter(_dist_atoms()))
     m = cr.get_minimizer()
@@ -998,7 +986,7 @@ def test_rmsd_identity_pairing_within_residue_order(tmp_path):
             records.append((r, nm, *coords[(r, nm)]))
     pdb = tmp_path / "ref.pdb"
     _write_pdb_records(pdb, records)
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(
         {
             "rmsd_restraints_config": [
@@ -1026,7 +1014,7 @@ def test_rmsd_fit_calc_resolves(tmp_path):
     pdb = tmp_path / "ref.pdb"
     _write_pdb_records(pdb, [(i + 1, "CA", *ref[i]) for i in range(n)])
     atoms = [AtomRecord("A", i + 1, i, name="CA") for i in range(n)]
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(
         {
             "rmsd_restraints_config": [
@@ -1068,7 +1056,7 @@ def test_rmsd_strict_missing_atom_raises(tmp_path):
     pdb = tmp_path / "ref.pdb"
     _write_pdb_records(pdb, [(i + 1, "CA", *ref[i]) for i in range(5)])
     atoms = [AtomRecord("A", i + 1, i, name="CA") for i in range(6)]  # 1..6
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(_missing_atom_cfg(pdb, strict=True))
     with pytest.raises(ValueError, match="no matching"):
         cr.setup(MockAdapter(atoms))
@@ -1081,7 +1069,7 @@ def test_rmsd_default_best_effort_skips_missing(tmp_path):
     pdb = tmp_path / "ref.pdb"
     _write_pdb_records(pdb, [(i + 1, "CA", *ref[i]) for i in range(5)])
     atoms = [AtomRecord("A", i + 1, i, name="CA") for i in range(6)]  # 1..6 (6 absent)
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(_missing_atom_cfg(pdb, strict=False))
     cr.setup(MockAdapter(atoms))  # must NOT raise
     assert cr.config.rmsd_data[0].fit_target_sites == [0, 1, 2, 3, 4]
@@ -1095,7 +1083,7 @@ def test_rmsd_best_effort_skips_missing(tmp_path):
     pdb = tmp_path / "ref.pdb"
     _write_pdb_records(pdb, [(i + 1, "CA", *ref[i]) for i in range(5)])
     atoms = [AtomRecord("A", i + 1, i, name="CA") for i in range(6)]  # 6 not in ref
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(
         {
             "rmsd_restraints_config": [
@@ -1126,7 +1114,7 @@ def test_rmsd_best_effort_no_overlap_still_raises(tmp_path):
     pdb = tmp_path / "ref.pdb"
     _write_pdb_records(pdb, [(i + 1, "CA", *ref[i]) for i in range(3)])
     atoms = [AtomRecord("A", i + 11, i, name="CA") for i in range(3)]  # disjoint
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(
         {
             "rmsd_restraints_config": [
@@ -1189,7 +1177,7 @@ def test_rmsd_align_homolog_indel(tmp_path):
     # ref homolog: residue 11 ("I") deleted -> 19 residues
     ref_seq = _ALIGN_BASE[:10] + _ALIGN_BASE[11:]
     _write_seq_ca_pdb(tmp_path / "ref.pdb", ref_seq, rng.standard_normal((19, 3)) * 3)
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(
         {
             "rmsd_restraints_config": [
@@ -1226,7 +1214,7 @@ def test_rmsd_pairing_defaults_to_align(tmp_path):
     ]
     ref_seq = _ALIGN_BASE[:10] + _ALIGN_BASE[11:]  # residue 11 deleted
     _write_seq_ca_pdb(tmp_path / "ref.pdb", ref_seq, rng.standard_normal((19, 3)) * 3)
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(
         {
             "rmsd_restraints_config": [
@@ -1292,7 +1280,7 @@ def test_rmsd_align_strict_gap_raises(tmp_path):
     ]
     ref_seq = _ALIGN_BASE[:10] + _ALIGN_BASE[11:]  # residue 11 deleted -> a gap
     _write_seq_ca_pdb(tmp_path / "ref.pdb", ref_seq, rng.standard_normal((19, 3)) * 3)
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(
         {
             "rmsd_restraints_config": [
@@ -1319,7 +1307,7 @@ def test_rmsd_align_requires_target_resname(tmp_path):
         for i in range(len(_ALIGN_BASE))
     ]
     _write_seq_ca_pdb(tmp_path / "ref.pdb", _ALIGN_BASE, rng.standard_normal((20, 3)))
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(
         {
             "rmsd_restraints_config": [
@@ -1347,7 +1335,7 @@ def test_rmsd_align_derives_polymer_from_resname(tmp_path):
     assert all(a.mol_type is None for a in atoms)  # mimics an un-typed adapter
     ref_seq = _ALIGN_BASE[:10] + _ALIGN_BASE[11:]  # residue 11 deleted
     _write_seq_ca_pdb(tmp_path / "ref.pdb", ref_seq, rng.standard_normal((19, 3)))
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(
         {
             "rmsd_restraints_config": [
@@ -1407,7 +1395,7 @@ def test_rmsd_align_name_ca_only_excludes_side_chain(tmp_path):
         ["CA", "CB"],
         rng.standard_normal((len(ref_seq) * 2, 3)) * 3,
     )
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(
         {
             "rmsd_restraints_config": [
@@ -1449,7 +1437,7 @@ def test_rmsd_backbone_selection_resname_gated(tmp_path):
     _write_seq_atoms_pdb(
         tmp_path / "ref.pdb", seq, ["CA", "CB"], np.zeros((len(seq) * 2, 3))
     )
-    cr = CombinedRestraints.get_instance()
+    cr = CombinedRestraints()
     cr.set_config(
         {
             "rmsd_restraints_config": [

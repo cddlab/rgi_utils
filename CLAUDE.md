@@ -72,7 +72,7 @@ Supporting modules:
 - **`featurizer.py`**: `build_spec(ligand_confs, distance_restraints, conformer_config,
   elements, conf_start_sigma, rmsd_restraints)` — the single place RDKit mols become bond/angle/
   chiral/cistrans restraints (global indices, multi-ligand) and the dynamic
-  ligand-protein `VdwConfig` is assembled. Cis/trans detection keys on
+  fixed-background `VdwConfig` is assembled. Cis/trans detection keys on
   acyclic, non-aromatic `BondType.DOUBLE` bonds and targets the reference-conformer
   torsion; it needs real bond orders, which every tool supplies — chai via its adapter's
   source-SMILES path (`chai/adapter.py` `_mol_from_smiles`, Kekulized orders), the
@@ -83,8 +83,8 @@ Supporting modules:
   structure** (NOT a singleton): `CombinedRestraints()` →
   `setup(adapter, nbatch, config=dict)` (folds in the old `set_config`; clears any
   prior spec/optimizer up front so a reused instance is safe) →
-  `minimize(coords, step, sigma)` → `finalize(coords, step)`. `get_instance()` /
-  `reset()` remain only as back-compat shims — do not build new code on them. The
+  `minimize(coords, step, sigma)` → `finalize(coords, step)`. Always construct a fresh
+  instance per structure (the old `get_instance()`/`reset()` singleton shim was removed). The
   backend is **inferred from invocation, NOT a config key**: `get_minimizer()` →
   jax (only AF3 calls it); `minimize(coords)` → jax if `coords` is a jax array, else
   torch (numpy/torch coords both take the torch path). Resolution is lazy — `setup`
@@ -173,7 +173,7 @@ improper/cistrans/vdw). `mode` picks **two categories** (default `both` = both):
   category, **two implementation halves** depending on whether the other molecule is fixed
   or moving:
   - *Fixed background* (`_build_vdw_config` → `VdwConfig` → optimizers): the partner is
-    every heavy atom NOT in `active_sites` (protein / DNA/RNA / **non-restrained** ligand),
+    every non-padding atom NOT in `active_sites` (protein / DNA/RNA / **non-restrained** ligand),
     read from the full coordinate tensor at minimize time and held fixed (it needs no
     gradient). Lives in `optim/torch_optim.py` AND `optim/jax_optim.py` (`_vdw_pair_energy`
     is the shared formula, ported to jnp). **torch + jax** (numpy is the energy reference
@@ -196,8 +196,8 @@ migration hint pointing to `intermolecular` (which additionally repels other res
 ligands), mirroring the rejected `backend:` key. An unknown mode raises. VdW is **off unless
 a `vdw:` block is present** (then `weight` defaults to 1.0, like every conformer term — see
 `featurizer._conf_weight`); omit the block to leave it off. The `built spec: ...
-vdw=Iintra+Jinter+Llig/Mprot` log breaks the counts down: `intra` = intramolecular, `inter`
-+ `lig/prot` together = intermolecular (`inter` = restrained-ligand pairs, `lig/prot` =
+vdw=Iintra+Jinter+Llig/Mbg` log breaks the counts down: `intra` = intramolecular, `inter`
++ `lig/bg` together = intermolecular (`inter` = restrained-ligand pairs, `lig/bg` =
 fixed background) — confirm `Jinter>0` when you expect ligand-ligand repulsion.
 
 ### Custom restraints (the extension point — `rgi_utils/custom/`)
@@ -235,7 +235,8 @@ safety). Full config surface: `doc/config.md`.
 
 - `CombinedRestraints` is **instance-scoped — a fresh `CombinedRestraints()` per
   structure** (this is what makes batch runs / retries correct without leaking the
-  previous structure's config). `get_instance()`/`reset()` are back-compat shims only.
+  previous structure's config). There is no singleton accessor (the old
+  `get_instance()`/`reset()` shim was removed).
 - `AtomRecord.index` is the atom's **row in the coordinate tensor handed to
   `minimize`** (global flat index, after any reshape); `resid` is the **per-chain
   1-based residue/token ordinal** (resets at each chain) — not the author residue

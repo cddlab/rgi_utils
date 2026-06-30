@@ -14,8 +14,8 @@ restr.finalize(coords, step)                        # optional per-term energy l
 Construct a **fresh instance per structure**. `setup()` clears derived state
 first, so reusing an instance is also safe, but a per-structure instance is what
 makes batch runs and retries correct with zero extra bookkeeping (no shared
-state to leak the previous structure's config). `get_instance()` / `reset()`
-exist only as a back-compat singleton shim — do not build new code on them.
+state to leak the previous structure's config). There is no singleton accessor —
+always construct `CombinedRestraints()` directly.
 
 ## `setup(adapter, nbatch=1, config=None)`
 - `config=`: pass the tool's `restraints_config` dict; setup calls `set_config`

@@ -8,11 +8,12 @@ matching the jax backend's pure-jax CG (a port of this solver); ``"l-bfgs"`` ->
 and stays on whatever device the coordinates live on, so ``gpu: true`` runs
 entirely on GPU.
 
-The ligand-protein VdW term (``spec.vdw_config``) is handled here rather than in
+The fixed-background VdW term (``spec.vdw_config``) is handled here rather than in
 the static energy layer: the ligand atoms come from the optimised ``active`` set
-while the protein atoms are a *fixed background* read from the full coordinate
-tensor. The clash penalty is recomputed every closure call, so it tracks the
-moving ligand (only the ligand is pushed; the protein is held fixed).
+while the background atoms (protein / DNA/RNA / non-restrained ligand) are a *fixed
+background* read from the full coordinate tensor. The clash penalty is recomputed
+every closure call, so it tracks the moving ligand (only the ligand is pushed; the
+background is held fixed).
 """
 
 from __future__ import annotations
@@ -47,7 +48,7 @@ class TorchRestraintOptimizer:
         self._prepared_g = {}  # cache {gate-state -> stable pre-gated prepared} (GPU CG)
         self._active_idx = None
         self._device = None
-        self._vdw = None  # dict of device tensors for the ligand-protein VdW term
+        self._vdw = None  # dict of device tensors for the fixed-background VdW term
         # custom restraints -> torch closures, built lazily in _ensure UNDER
         # inference_mode(False) and on the coords' device, so the baked selection-index
         # tensors are normal + on-device (an inference tensor used in the autograd gather
@@ -250,10 +251,10 @@ class TorchRestraintOptimizer:
                 vc.ligand_local, dtype=torch.long, device=device
             ),
             "lig_r": torch.as_tensor(vc.ligand_radii, dtype=dtype, device=device),
-            "prot_global": torch.as_tensor(
-                vc.protein_global, dtype=torch.long, device=device
+            "bg_global": torch.as_tensor(
+                vc.background_global, dtype=torch.long, device=device
             ),
-            "prot_r": torch.as_tensor(vc.protein_radii, dtype=dtype, device=device),
+            "bg_r": torch.as_tensor(vc.background_radii, dtype=dtype, device=device),
             # 0-dim tensors (NOT python floats): passed into the compiled VdW energy, where
             # a python-float arg would make dynamo guard on its value and recompile per
             # distinct scale/weight across structures in a batch.
@@ -261,20 +262,20 @@ class TorchRestraintOptimizer:
             "scale": torch.as_tensor(float(vc.scale), dtype=dtype, device=device),
         }
 
-    def _vdw_energy(self, active, prot_pos):
-        """Ligand-protein VdW repulsion (delegates to the pure ``_vdw_pair_energy`` so the
+    def _vdw_energy(self, active, bg_pos):
+        """Fixed-background VdW repulsion (delegates to the pure ``_vdw_pair_energy`` so the
         all-pairs ``weight*sum(clamp(d - scale*(r_i+r_j), max=0)**2)`` maths lives once —
         the compiled GPU energy folds in the same function). ``active`` (..., n_active, 3)
-        is the optimised tensor; ``prot_pos`` (..., n_prot, 3) the fixed background."""
+        is the optimised tensor; ``bg_pos`` (..., n_bg, 3) the fixed background."""
         from rgi_utils.optim._torch_cg_gpu import _vdw_pair_energy
 
         v = self._vdw
         return _vdw_pair_energy(
             active,
-            prot_pos,
+            bg_pos,
             v["lig_local"],
             v["lig_r"],
-            v["prot_r"],
+            v["bg_r"],
             v["scale"],
             v["weight"],
         )
@@ -361,26 +362,26 @@ class TorchRestraintOptimizer:
             if has_dist or has_conf or has_rmsd or has_group or has_custom:
                 active = active.detach().clone()
                 active.requires_grad_(True)
-                prot_pos = None
+                bg_pos = None
                 if vdw_active:
-                    prot_pos = torch.empty(
-                        coords[..., self._vdw["prot_global"], :].shape,
+                    bg_pos = torch.empty(
+                        coords[..., self._vdw["bg_global"], :].shape,
                         dtype=work_dtype,
                         device=coords.device,
                     )
-                    prot_pos.copy_(coords[..., self._vdw["prot_global"], :])
+                    bg_pos.copy_(coords[..., self._vdw["bg_global"], :])
 
                 def energy_fn():
                     e = torch_energy.total_energy(active, prepared, sigma, step)
-                    if prot_pos is not None:
-                        e = e + self._vdw_energy(active, prot_pos)
+                    if bg_pos is not None:
+                        e = e + self._vdw_energy(active, bg_pos)
                     ce = self._custom_energy(active, sigma, step)
                     if ce is not None:
                         e = e + ce
                     return e
 
-                if self._is_cg() and active.is_cuda and has_custom and prot_pos is None:
-                    # GPU + custom (no dynamic ligand-protein VdW): a per-optimizer
+                if self._is_cg() and active.is_cuda and has_custom and bg_pos is None:
+                    # GPU + custom (no dynamic fixed-background VdW): a per-optimizer
                     # torch.compile'd energy that INCLUDES the custom closures (gpu_cg's
                     # module-global energy can't see them). Falls back to the eager CG if
                     # compile is disabled / fails. (custom + dynamic VdW stays eager below.)
@@ -396,16 +397,16 @@ class TorchRestraintOptimizer:
                     # _gated_prepared pre-folds the noise gate into the masks (so the
                     # compiled energy takes sigma=None and carries NO python-float scalar
                     # leaf, which would make dynamo recompile per value) and caches a
-                    # stable dict per gate state for compile reuse. dynamic ligand-protein
-                    # VdW is folded in via gpu_cg's `vdw` tuple (prot_pos + radii/consts).
+                    # stable dict per gate state for compile reuse. dynamic fixed-background
+                    # VdW is folded in via gpu_cg's `vdw` tuple (bg_pos + radii/consts).
                     vdw = None
-                    if prot_pos is not None:
+                    if bg_pos is not None:
                         v = self._vdw
                         vdw = (
-                            prot_pos,
+                            bg_pos,
                             v["lig_local"],
                             v["lig_r"],
-                            v["prot_r"],
+                            v["bg_r"],
                             v["scale"],
                             v["weight"],
                         )
@@ -551,12 +552,12 @@ class TorchRestraintOptimizer:
             active = coords[..., self._active_idx, :]
             e = torch_energy.total_energy(active, self._prepared)
             if self._vdw is not None:
-                prot_pos = coords[..., self._vdw["prot_global"], :]
-                e = e + self._vdw_energy(active, prot_pos)
+                bg_pos = coords[..., self._vdw["bg_global"], :]
+                e = e + self._vdw_energy(active, bg_pos)
             return float(e)
 
     def dynamic_vdw_energy(self, coords) -> float:
-        """The dynamic ligand-protein VdW term alone (>= 0); for finalize stats.
+        """The dynamic fixed-background VdW term alone (>= 0); for finalize stats.
 
         Computed directly (not as energy - static_total) so the reported value is
         exact and non-negative, with no float32/float64 cancellation error.
@@ -571,5 +572,5 @@ class TorchRestraintOptimizer:
             return 0.0
         with torch.no_grad():
             active = coords[..., self._active_idx, :]
-            prot_pos = coords[..., self._vdw["prot_global"], :]
-            return float(self._vdw_energy(active, prot_pos))
+            bg_pos = coords[..., self._vdw["bg_global"], :]
+            return float(self._vdw_energy(active, bg_pos))

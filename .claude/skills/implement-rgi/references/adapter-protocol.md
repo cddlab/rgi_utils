@@ -31,7 +31,7 @@ consumes the records they yield.
 |---|---|---|
 | `iter_atoms()` | distance restraints | `Iterator[AtomRecord]` over every real atom |
 | `num_atoms()` | conformer / VdW | padded atom count (`int`) |
-| `get_elements()` | dynamic ligand-protein VdW | `(num_atoms,)` atomic numbers, padding → 0 |
+| `get_elements()` | dynamic fixed-background VdW | `(num_atoms,)` atomic numbers, padding → 0 |
 | `iter_ligand_confs()` | conformer / VdW | `Iterator[LigandConf]`, one per ligand |
 
 `setup()` calls `iter_atoms` (through `DistanceData.resolve_sites`),

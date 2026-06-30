@@ -130,7 +130,7 @@ def test_group_angle_dihedral_active_union_and_padding():
     assert spec.has_group_angle() and spec.has_group_dihedral()
 
 
-def test_vdw_config_protein_background():
+def test_vdw_config_fixed_background():
     m, c = _ethane()
     n = m.GetNumAtoms()
     lc = LigandConf(
@@ -150,9 +150,9 @@ def test_vdw_config_protein_background():
     # every ligand atom is optimisable and addressed by a local index
     assert len(spec.vdw_config.ligand_local) == n
     assert int(spec.vdw_config.ligand_local.max()) < spec.n_active
-    # protein background = heavy atoms NOT in active_sites; padding (n+2) excluded
-    assert {int(x) for x in spec.vdw_config.protein_global} == {n, n + 1}
-    assert spec.vdw_config.protein_radii.shape == (2,)
+    # fixed background = non-padding atoms NOT in active_sites; padding (n+2) excluded
+    assert {int(x) for x in spec.vdw_config.background_global} == {n, n + 1}
+    assert spec.vdw_config.background_radii.shape == (2,)
 
     # disabled when weight <= 0
     spec0 = build_spec([lc], [], {"vdw": {"weight": 0.0}}, elements=elements)
@@ -161,7 +161,7 @@ def test_vdw_config_protein_background():
 
 def test_intramolecular_vdw_static_arrays():
     """vdw mode=intramolecular builds a static spec.vdw (works in jax/numpy too),
-    not the dynamic ligand-protein vdw_config."""
+    not the dynamic fixed-background vdw_config."""
     m = Chem.MolFromSmiles("CCCC")  # butane: only C1-C4 has topological dist > 2
     m = Chem.AddHs(m)
     AllChem.EmbedMolecule(m, randomSeed=1)
@@ -175,7 +175,7 @@ def test_intramolecular_vdw_static_arrays():
     spec = build_spec(
         [lc], [], {"vdw": {"weight": 1.0, "mode": "intramolecular", "dmax": 10.0}}
     )
-    # static VdwArrays, not the dynamic ligand-protein config
+    # static VdwArrays, not the dynamic fixed-background config
     assert spec.vdw is not None
     assert spec.vdw_config is None
     # butane: the only non-bonded heavy pair is C1-C4 (topological distance 3)
@@ -191,7 +191,7 @@ def test_intramolecular_vdw_static_arrays():
 
 def test_vdw_both_modes_compose():
     """vdw mode='both' builds the static intramolecular spec.vdw AND the dynamic
-    ligand-protein vdw_config together (separate spec fields, scored independently)."""
+    fixed-background vdw_config together (separate spec fields, scored independently)."""
     m = Chem.MolFromSmiles("CCCC")  # butane: one non-bonded heavy pair (C1-C4)
     m = Chem.AddHs(m)
     AllChem.EmbedMolecule(m, randomSeed=1)
@@ -216,8 +216,8 @@ def test_vdw_both_modes_compose():
     # BOTH flavours present and independent
     assert spec.vdw is not None  # static intramolecular (all backends)
     assert spec.vdw.idx.shape == (1, 2)  # butane C1-C4
-    assert spec.vdw_config is not None  # dynamic ligand-protein (torch)
-    assert {int(x) for x in spec.vdw_config.protein_global} == {n, n + 1}
+    assert spec.vdw_config is not None  # dynamic fixed-background (torch)
+    assert {int(x) for x in spec.vdw_config.background_global} == {n, n + 1}
 
 
 def test_vdw_unknown_mode_raises():
@@ -362,7 +362,7 @@ def test_vdw_mode_intermolecular_excludes_intra():
     assert spec.vdw is not None
     assert spec.vdw.idx.shape == (n * n, 2)  # inter only, NO intra (would be 2 + n*n)
     assert spec.vdw_config is not None  # fixed-background half present
-    assert {int(x) for x in spec.vdw_config.protein_global} == {8}
+    assert {int(x) for x in spec.vdw_config.background_global} == {8}
 
 
 def test_vdw_mode_ligand_protein_removed():

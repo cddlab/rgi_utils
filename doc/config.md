@@ -313,7 +313,7 @@ are their VdW radii.
 
 - `"intramolecular"` — clashes **within** a ligand (static ligand-internal pairs, all backends).
 - `"intermolecular"` — clashes between the ligand and **every other molecule**: the **fixed
-  background** (every heavy atom not being optimised — protein, DNA/RNA, any **non-restrained**
+  background** (every non-padding atom not being optimised — protein, DNA/RNA, any **non-restrained**
   ligand; dynamic, torch/jax) **and** other **restrained** ligands (≥2 ligands that each set
   `conformer_restraints: true` + `vdw` both move, so neither is in the other's background — every
   cross-molecule atom pair gets the same one-sided penalty, scored in the energy layer on all

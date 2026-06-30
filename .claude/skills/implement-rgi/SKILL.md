@@ -113,7 +113,7 @@ records:
   `index` is the **global flat atom index** in the coordinate tensor.
 - `num_atoms() -> int` — padded atom count (the coordinate tensor length).
 - `get_elements() -> np.ndarray` — per-atom atomic numbers (padding → 0); only
-  needed for the dynamic ligand-protein VdW term.
+  needed for the dynamic fixed-background VdW term.
 - `iter_ligand_confs() -> Iterator[LigandConf(mol, conf_coords, global_indices)]`
   — one per ligand: an RDKit mol (heavy atoms), its reference coordinates, and
   the global flat indices of those atoms. The featurizer derives bond/angle/

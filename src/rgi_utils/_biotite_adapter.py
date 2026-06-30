@@ -62,7 +62,7 @@ def biotite_ligand_confs(
         (protenix rebuilds a stereo-correct SMILES ideal conformer); None = identity.
 
     A monatomic ion (1 atom, 0 bonds) still yields a ``LigandConf`` (no bond/angle/
-    chiral terms, but it joins ligand-protein VdW), matching boltz.
+    chiral terms, but it joins fixed-background VdW), matching boltz.
     """
     elements_all = np.asarray(atom_array.element)
     coords_all = np.asarray(coords_all, dtype=np.float64)
@@ -74,7 +74,7 @@ def biotite_ligand_confs(
         conf_rest_annot = np.asarray(atom_array.conformer_restraints, dtype=bool)
     # bonds may be absent (a structure whose only hetero atoms are monatomic ions has
     # no BondList); treat as no bonds rather than bailing so the ions still surface as
-    # LigandConf for ligand-protein VdW (matching boltz).
+    # LigandConf for fixed-background VdW (matching boltz).
     bond_arr = (
         atom_array.bonds.as_array()  # (n_bond, 3): i, j, order
         if getattr(atom_array, "bonds", None) is not None

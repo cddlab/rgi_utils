@@ -601,7 +601,7 @@ def test_gated_prepared_folds_group_gate_cpu():
 
 
 def test_torch_vdw_pushes_ligand_off_fixed_protein():
-    """Dynamic ligand-protein VdW: a ligand atom clashing with a fixed protein
+    """Dynamic fixed-background VdW: a ligand atom clashing with a fixed protein
     atom is pushed away, while the protein atom (not in active_sites) stays put."""
     torch = pytest.importorskip("torch")
     from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
@@ -625,14 +625,14 @@ def test_torch_vdw_pushes_ligand_off_fixed_protein():
         [lc], [], {"vdw": {"weight": 1.0, "scale": 0.9}}, elements=elements
     )
     assert spec.vdw_config is not None
-    assert n in set(int(x) for x in spec.vdw_config.protein_global)
+    assert n in set(int(x) for x in spec.vdw_config.background_global)
 
     coords_np = np.zeros((1, n_atom, 3))
     coords_np[0, :n, :] = c
     # drop the protein atom 0.5 A from ligand atom 0: a severe clash
     coords_np[0, n, :] = c[0] + np.array([0.5, 0.0, 0.0])
     coords = torch.tensor(coords_np, dtype=torch.float64)
-    prot_before = coords[0, n].clone()
+    bg_before = coords[0, n].clone()
 
     opt = TorchRestraintOptimizer(spec, max_iter=200)
     e0 = opt.energy(coords)
@@ -644,13 +644,13 @@ def test_torch_vdw_pushes_ligand_off_fixed_protein():
     assert e1 < 0.5 * e0, f"{e0} -> {e1}"
     assert d1 > d0, f"ligand not pushed away: {d0} -> {d1}"
     # the fixed protein atom must not move (it is not in active_sites)
-    assert torch.allclose(coords[0, n], prot_before, atol=1e-9)
+    assert torch.allclose(coords[0, n], bg_before, atol=1e-9)
 
 
 def test_jax_vdw_pushes_ligand_off_fixed_protein():
-    """The JAX port of the dynamic ligand-protein VdW: the jax minimizer pushes a
+    """The JAX port of the dynamic fixed-background VdW: the jax minimizer pushes a
     clashing ligand atom off a FIXED protein atom (not in active_sites), same as the
-    torch optimizer. This is what makes `ligand_protein` / `both` work on AF3."""
+    torch optimizer. This is what makes `intermolecular` / `both` work on AF3."""
     jax = pytest.importorskip("jax")
     jax.config.update("jax_enable_x64", True)
     import jax.numpy as jnp
@@ -686,7 +686,7 @@ def test_jax_vdw_pushes_ligand_off_fixed_protein():
     coords_np[0, :n, :] = c
     coords_np[0, n, :] = c[0] + np.array([0.5, 0.0, 0.0])  # severe clash
     coords = jnp.asarray(coords_np)
-    prot_before = np.asarray(coords[0, n])
+    bg_before = np.asarray(coords[0, n])
     d0 = float(np.linalg.norm(np.asarray(coords[0, 0]) - np.asarray(coords[0, n])))
 
     minimize = make_minimizer(spec, max_iter=200)
@@ -695,7 +695,7 @@ def test_jax_vdw_pushes_ligand_off_fixed_protein():
 
     assert d1 > d0, f"ligand not pushed away: {d0} -> {d1}"
     # the fixed protein atom must not move (it is not in active_sites)
-    assert np.allclose(np.asarray(coords[0, n]), prot_before, atol=1e-9)
+    assert np.allclose(np.asarray(coords[0, n]), bg_before, atol=1e-9)
 
 
 def _heavy_ethane():
@@ -710,7 +710,7 @@ def _heavy_ethane():
 
 def test_torch_interligand_vdw_separates_two_ligands():
     """Inter-ligand VdW: two restrained ligands overlapping (BOTH in active_sites) are
-    pushed apart, and — unlike the ligand-protein term where the protein is fixed — BOTH
+    pushed apart, and — unlike the fixed-background term where the protein is fixed — BOTH
     ligands move (neither is a fixed background)."""
     torch = pytest.importorskip("torch")
     from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
@@ -1104,7 +1104,7 @@ def test_compiled_energy_matches_eager():
 def test_dynamic_vdw_pair_energy_matches_optimizer():
     """The pure _vdw_pair_energy (folded into the compiled GPU energy) must equal the
     optimizer's _vdw_energy method (used on the CPU/eager path) — so compiling the
-    dynamic ligand-protein VdW conformer path doesn't change the energy."""
+    dynamic fixed-background VdW conformer path doesn't change the energy."""
     torch = pytest.importorskip("torch")
     from rgi_utils.optim._torch_cg_gpu import _vdw_pair_energy
     from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
@@ -1125,7 +1125,7 @@ def test_dynamic_vdw_pair_energy_matches_optimizer():
     spec = build_spec(
         [lc], [], {"vdw": {"weight": 1.0, "scale": 0.9}}, elements=elements
     )
-    assert spec.vdw_config is not None  # dynamic ligand-protein VdW
+    assert spec.vdw_config is not None  # dynamic fixed-background VdW
 
     coords = torch.zeros((1, n_atom, 3), dtype=torch.float64)
     coords[0, :n, :] = torch.tensor(c)
@@ -1133,17 +1133,17 @@ def test_dynamic_vdw_pair_energy_matches_optimizer():
     opt = TorchRestraintOptimizer(spec, max_iter=10)
     opt._ensure(coords.device, coords.dtype)  # builds opt._vdw
     active = coords[0, opt._active_idx, :]
-    prot_pos = coords[0, opt._vdw["prot_global"], :]
+    bg_pos = coords[0, opt._vdw["bg_global"], :]
     v = opt._vdw
 
-    e_method = float(opt._vdw_energy(active, prot_pos))
+    e_method = float(opt._vdw_energy(active, bg_pos))
     e_pure = float(
         _vdw_pair_energy(
             active,
-            prot_pos,
+            bg_pos,
             v["lig_local"],
             v["lig_r"],
-            v["prot_r"],
+            v["bg_r"],
             v["scale"],
             v["weight"],
         )

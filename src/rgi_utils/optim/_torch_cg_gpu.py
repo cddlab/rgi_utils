@@ -27,7 +27,7 @@ NB: the default (inductor) compile mode is deliberate -- ``mode="reduce-overhead
 every line-search step, which makes the CUDA-graph tree re-record each call; plain
 inductor fusion has no such static-input requirement.
 
-The dynamic ligand-protein VdW term (default boltz/protenix conformer) is folded into a
+The dynamic fixed-background VdW term (default boltz/protenix conformer) is folded into a
 second compiled energy (``_energy_vdw``) so that path is JIT-compiled too. Used only for
 CUDA coords; CPU keeps ``_minimize_cg``. Shared ``_cg_config`` constants keep the
 convergence contract identical to CPU/jax. Any compile failure degrades to the eager
@@ -61,7 +61,7 @@ _COMPILE_DISABLED = os.environ.get("RGI_DISABLE_COMPILE", "") not in ("", "0", "
 # independent one for the rest of the batch.
 _compile_failed = {False: False, True: False}
 _CVG = None  # compiled grad_and_value(_energy), built lazily
-_CVG_VDW = None  # compiled grad_and_value(_energy_vdw) (dynamic ligand-protein VdW)
+_CVG_VDW = None  # compiled grad_and_value(_energy_vdw) (dynamic fixed-background VdW)
 
 # Defense-in-depth: the compiled energy is module-global and reused across all structures
 # in a process, so an unforeseen value-specialized leaf must not silently trip dynamo's
@@ -90,25 +90,25 @@ def _energy(a, prepared):
     return torch_energy.total_energy(a, prepared, sigma=None)
 
 
-def _vdw_pair_energy(active, prot_pos, lig_local, lig_r, prot_r, scale, weight):
-    """Dynamic ligand-protein VdW repulsion — the canonical impl (the optimizer's
+def _vdw_pair_energy(active, bg_pos, lig_local, lig_r, bg_r, scale, weight):
+    """Dynamic fixed-background VdW repulsion — the canonical impl (the optimizer's
     ``_vdw_energy`` method delegates here), a pure fn so it can also live inside the
-    compiled energy: the moving ligand atoms (``active[lig_local]``) vs the FIXED protein
-    background ``prot_pos``. All-pairs ``weight * sum(clamp(d - scale*(r_i+r_j), max=0)^2)``
+    compiled energy: the moving ligand atoms (``active[lig_local]``) vs the FIXED
+    background ``bg_pos``. All-pairs ``weight * sum(clamp(d - scale*(r_i+r_j), max=0)^2)``
     (zero gradient beyond contact, so it equals a radius-limited contact sum)."""
     lig = active[..., lig_local, :]
-    diff = lig[..., :, None, :] - prot_pos[..., None, :, :]
+    diff = lig[..., :, None, :] - bg_pos[..., None, :, :]
     dist = torch.sqrt(torch.sum(diff**2, dim=-1) + EPS)
-    r_min = scale * (lig_r[:, None] + prot_r[None, :])
+    r_min = scale * (lig_r[:, None] + bg_r[None, :])
     delta = torch.clamp(dist - r_min, max=0.0)
     return weight * torch.sum(delta**2)
 
 
-def _energy_vdw(a, prepared, prot_pos, lig_local, lig_r, prot_r, scale, weight):
-    """``_energy`` + the dynamic ligand-protein VdW term, as one compiled energy so the
+def _energy_vdw(a, prepared, bg_pos, lig_local, lig_r, bg_r, scale, weight):
+    """``_energy`` + the dynamic fixed-background VdW term, as one compiled energy so the
     default boltz/protenix conformer (which uses the dynamic VdW) is JIT-compiled too."""
     return _energy(a, prepared) + _vdw_pair_energy(
-        a, prot_pos, lig_local, lig_r, prot_r, scale, weight
+        a, bg_pos, lig_local, lig_r, bg_r, scale, weight
     )
 
 
@@ -189,8 +189,8 @@ def _cg_minimize_torch(vg, x0, max_iter, max_ls=MAX_LS, gtol=GTOL, ftol=FTOL):
 
 def gpu_cg(prepared, x0, max_iter, vdw=None):
     """Run the CG on CUDA coords. ``prepared`` is the (stable, pre-gated) energy dict;
-    ``x0`` the active coords; ``vdw`` an optional tuple ``(prot_pos, lig_local, lig_r,
-    prot_r, scale, weight)`` folding the dynamic ligand-protein VdW term into the compiled
+    ``x0`` the active coords; ``vdw`` an optional tuple ``(bg_pos, lig_local, lig_r,
+    bg_r, scale, weight)`` folding the dynamic fixed-background VdW term into the compiled
     energy. The energy+grad is inductor-compiled for CUDA coords (the non-GPU tests
     exercise the eager functional CG, the same correct algorithm); any compile/runtime
     failure degrades permanently to eager. Returns optimized coords."""

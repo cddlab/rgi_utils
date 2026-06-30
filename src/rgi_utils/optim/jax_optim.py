@@ -106,16 +106,16 @@ def _cg_minimize(energy_fn, x0, max_iter, max_ls=MAX_LS, gtol=GTOL, ftol=FTOL):
     return x
 
 
-def _vdw_pair_energy(active, prot_pos, lig_local, lig_r, prot_r, scale, weight):
-    """jnp port of the torch dynamic ligand-protein VdW (``optim/_torch_cg_gpu.py``):
-    the moving ligand atoms (``active[lig_local]``) vs the FIXED protein background
-    ``prot_pos``, all-pairs ``weight * sum(clamp(d - scale*(r_i+r_j), max=0)^2)`` (zero
+def _vdw_pair_energy(active, bg_pos, lig_local, lig_r, bg_r, scale, weight):
+    """jnp port of the torch dynamic fixed-background VdW (``optim/_torch_cg_gpu.py``):
+    the moving ligand atoms (``active[lig_local]``) vs the FIXED background
+    ``bg_pos``, all-pairs ``weight * sum(clamp(d - scale*(r_i+r_j), max=0)^2)`` (zero
     gradient beyond contact). Pure jnp so it composes into the scan/vmap energy. Same
     formula + ``EPS`` as the torch impl, so the two agree on value and gradient."""
     lig = active[..., lig_local, :]
-    diff = lig[..., :, None, :] - prot_pos[..., None, :, :]
+    diff = lig[..., :, None, :] - bg_pos[..., None, :, :]
     dist = jnp.sqrt(jnp.sum(diff**2, axis=-1) + EPS)
-    r_min = scale * (lig_r[:, None] + prot_r[None, :])
+    r_min = scale * (lig_r[:, None] + bg_r[None, :])
     delta = jnp.minimum(dist - r_min, 0.0)  # torch clamp(max=0.0)
     return weight * jnp.sum(delta**2)
 
@@ -152,7 +152,7 @@ def make_minimizer(
     from rgi_utils.custom.closure import build_terms
 
     custom_terms = build_terms(spec.custom, "jax") if has_custom else []
-    # dynamic ligand-protein VdW (formerly torch-only; now jax too). The protein
+    # dynamic fixed-background VdW (formerly torch-only; now jax too). The fixed
     # background is read from the FULL coords at minimize time (it moves per diffusion
     # step), so it is NOT baked into the spec -- only the indices/radii are. Gated on
     # conf_start_sigma like the other conformer terms.
@@ -161,8 +161,8 @@ def make_minimizer(
     if has_vdw:
         vdw_lig_local = jnp.asarray(_vc.ligand_local, dtype=jnp.int32)
         vdw_lig_r = jnp.asarray(_vc.ligand_radii)
-        vdw_prot_global = jnp.asarray(_vc.protein_global, dtype=jnp.int32)
-        vdw_prot_r = jnp.asarray(_vc.protein_radii)
+        vdw_bg_global = jnp.asarray(_vc.background_global, dtype=jnp.int32)
+        vdw_bg_r = jnp.asarray(_vc.background_radii)
         vdw_scale = jnp.asarray(float(_vc.scale))
         vdw_weight = jnp.asarray(float(_vc.weight))
         conf_ss = jnp.asarray(float(spec.conf_start_sigma))
@@ -176,12 +176,12 @@ def make_minimizer(
         # Distance + conformer + RMSD + group restraints all minimise ONE objective via the
         # CG (total_energy sums every active term; distance is now an autodiff CG term whose
         # reduced-mass-rescaled centroid gradient translates each group rigidly — no
-        # closed-form shift), plus the ligand-protein VdW term (gated on conf_start_sigma —
+        # closed-form shift), plus the fixed-background VdW term (gated on conf_start_sigma —
         # the `jnp.where` zeroes its weight AND gradient above the gate). has_conf is already
         # True when vdw_config is set.
         if has_dist or has_conf or has_rmsd or has_vdw or has_group or has_custom:
             if has_vdw:
-                prot_pos = coords[..., vdw_prot_global, :]
+                bg_pos = coords[..., vdw_bg_global, :]
                 # conformer window: active sigma window (conf_stop <= sigma <= conf_start)
                 # AND active step window (conf_sstep <= step <= conf_estep). NOT a _TERMS
                 # entry, so this gate is maintained by hand (mirrors torch_optim).
@@ -200,10 +200,10 @@ def make_minimizer(
                 if has_vdw:
                     e = e + _vdw_pair_energy(
                         a,
-                        prot_pos,
+                        bg_pos,
                         vdw_lig_local,
                         vdw_lig_r,
-                        vdw_prot_r,
+                        vdw_bg_r,
                         vdw_scale,
                         vdw_w,
                     )

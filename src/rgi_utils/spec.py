@@ -136,26 +136,24 @@ class VdwArrays:
 
 @dataclass
 class VdwConfig:
-    """Dynamic fixed-background VdW repulsion for the torch optimizer.
+    """Dynamic fixed-background VdW repulsion for the torch + jax optimizers.
 
     The fixed-background half of the ``intermolecular`` VdW category. Ligand atoms
     move (they live in ``active_sites``, addressed by ``ligand_local``); the
-    background atoms (every heavy atom not optimised — protein, DNA/RNA, any
+    background atoms (every non-padding atom not optimised — protein, DNA/RNA, any
     non-restrained ligand) are read from the full coordinate tensor via
-    ``protein_global`` and held *fixed*. Each optimization step recomputes the clash
-    penalty against the moving ligand, so only the ligand is pushed out of contacts.
-    This matches boltz's ``ligand_only`` VdW behaviour while keeping the optimised
-    variable set limited to ``active_sites``. The penalty is ``clamp(d -
-    scale*(r_i+r_j), max=0)**2`` summed over pairs within ``dmax`` — identical maths
-    to ``vdw_energy``, only the pair list is dynamic. (``protein_*`` field names are
-    historical; the background is not protein-specific.)
+    ``background_global`` and held *fixed*. Each optimization step recomputes the clash
+    penalty against the moving ligand, so only the ligand is pushed out of contacts,
+    keeping the optimised variable set limited to ``active_sites``. The penalty is
+    ``clamp(d - scale*(r_i+r_j), max=0)**2`` summed over pairs within ``dmax`` —
+    identical maths to ``vdw_energy``, only the pair list is dynamic.
     """
 
     weight: float
     ligand_local: np.ndarray  # (n_lig,) local indices into active_sites (moving)
     ligand_radii: np.ndarray  # (n_lig,) VdW radius per ligand atom
-    protein_global: np.ndarray  # (n_prot,) global atom indices (fixed background)
-    protein_radii: np.ndarray  # (n_prot,) VdW radius per protein atom
+    background_global: np.ndarray  # (n_bg,) global atom indices (fixed background)
+    background_radii: np.ndarray  # (n_bg,) VdW radius per background atom
     scale: float = 0.75
     dmax: float = 5.0
 

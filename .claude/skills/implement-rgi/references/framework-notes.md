@@ -13,8 +13,8 @@
   dict/array, imports no framework code — EXCEPT boltz, whose feats are native torch
   tensors, so its adapter imports torch, read at batch 0).
 - **VdW flavours**: the conformer `vdw` term has two flavours — static
-  intramolecular (ligand-internal pairs) and dynamic ligand-protein (a per-step
-  radius search). `mode` defaults to **`both`** (run them together); both now run
+  intramolecular (ligand-internal pairs) and dynamic fixed-background / intermolecular
+  (a per-step radius search). `mode` defaults to **`both`** (run them together); both now run
   on **torch AND jax**, so a JAX tool gets the full VdW too.
 
 ## JAX (JIT / `lax.scan`) — AlphaFold3

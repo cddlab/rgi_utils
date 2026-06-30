@@ -30,10 +30,10 @@ Five **built-in** restraint types, all minimized during the denoising loop to gu
 
 - **conformer** — ligand bond / angle / chiral-volume / cistrans (E/Z) / improper
   (sp2 double-bond planarity, opt-in) toward an ideal RDKit geometry, plus **VdW**
-  non-bonded clash avoidance (intramolecular and/or dynamic ligand-protein; `mode`
+  non-bonded clash avoidance (intramolecular and/or intermolecular; `mode`
   defaults to `both`).
 - **RMSD** — Kabsch-superposed RMSD of a group toward a reference PDB.
-- **distance** — centroid distance between two atom groups (applied closed-form).
+- **distance** — centroid distance between two atom groups (CG-minimised like every other restraint).
 - **angle** — the angle of three atom groups' centroids (vertex = group 2), in degrees;
   the angular analogue of the distance restraint.
 - **dihedral** — the dihedral of four atom groups' centroids (axis = groups 2–3), in degrees.
@@ -42,10 +42,11 @@ Beyond these five built-ins you can define your **own** restraint — see
 [Custom restraints](#custom-restraints) below.
 
 The default `method='CG'` solver (a nonlinear conjugate gradient with autodiff gradients)
-runs on GPU or CPU via the same torch/jax backend (`gpu: false` runs it on CPU); distance
-restraints skip the solver and are applied closed-form. Each restraint is gated by an
-optional `start_sigma` (active once `sigma <= start_sigma`) and `stop_sigma` (released
-once `sigma < stop_sigma`).
+runs on GPU or CPU via the same torch/jax backend (`gpu: false` runs it on CPU); all
+restraints — distance included — are minimised by this solver (distance uses a
+reduced-mass-rescaled centroid gradient so each group translates rigidly toward the
+target). Each restraint is gated by an optional `start_sigma` (active once
+`sigma <= start_sigma`) and `stop_sigma` (released once `sigma < stop_sigma`).
 
 ## Installation
 
@@ -155,9 +156,9 @@ per-chain 1-based ordinal:
 
 Distance is calculated between the centroids (unweighted geometric centers) of the two selected atom groups (`calc_method: "unfixed-absolute"`).
 
-The per-entry `move` key picks which group the closed-form centroid shift moves: `both`
-(default, both move) / `1` / `2` (pin the other group — e.g. move only a ligand toward a
-fixed pocket).
+The per-entry `move` key picks which group the CG moves toward the target: `both`
+(default, both move — minimal-displacement split) / `1` / `2` (pin the other group via
+`stop_gradient` — e.g. move only a ligand toward a fixed pocket).
 
 ### Angle / dihedral restraints
 

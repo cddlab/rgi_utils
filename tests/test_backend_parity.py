@@ -1064,8 +1064,8 @@ def test_rmsd_fit_calc_separation():
     assert e < 1e-6, e
 
 
-def test_vdw_ligand_protein_torch_jax_parity():
-    """The dynamic ligand-protein VdW lives in the OPTIMIZERS (not the energy layer that
+def test_vdw_fixed_background_torch_jax_parity():
+    """The dynamic fixed-background VdW lives in the OPTIMIZERS (not the energy layer that
     the numpy reference covers), so the jnp port is otherwise unguarded. Here torch and
     jax must agree on value AND gradient w.r.t. the moving active coords."""
     torch = pytest.importorskip("torch")
@@ -1077,21 +1077,21 @@ def test_vdw_ligand_protein_torch_jax_parity():
     from rgi_utils.optim.jax_optim import _vdw_pair_energy as j_vdw
 
     rng = np.random.default_rng(0)
-    n_active, n_prot = 6, 5
+    n_active, n_bg = 6, 5
     active = rng.standard_normal((n_active, 3))
-    prot = rng.standard_normal((n_prot, 3))  # same cluster -> guaranteed contacts
+    bg = rng.standard_normal((n_bg, 3))  # same cluster -> guaranteed contacts
     lig_local = np.array([0, 2, 4], dtype=np.int64)  # 3 of 6 active atoms are ligand
     lig_r = np.array([1.7, 1.5, 1.6])
-    prot_r = np.array([1.7, 1.5, 1.6, 1.55, 1.8])
+    bg_r = np.array([1.7, 1.5, 1.6, 1.55, 1.8])
     scale, weight = 0.9, 2.0
 
     at = torch.tensor(active, requires_grad=True)
     e_t = t_vdw(
         at,
-        torch.tensor(prot),
+        torch.tensor(bg),
         torch.tensor(lig_local),
         torch.tensor(lig_r),
-        torch.tensor(prot_r),
+        torch.tensor(bg_r),
         scale,
         weight,
     )
@@ -1101,10 +1101,10 @@ def test_vdw_ligand_protein_torch_jax_parity():
     def jf(a):
         return j_vdw(
             a,
-            jnp.asarray(prot),
+            jnp.asarray(bg),
             jnp.asarray(lig_local),
             jnp.asarray(lig_r),
-            jnp.asarray(prot_r),
+            jnp.asarray(bg_r),
             scale,
             weight,
         )

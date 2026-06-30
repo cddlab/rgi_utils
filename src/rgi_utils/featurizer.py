@@ -354,8 +354,8 @@ def _build_vdw_config(
     """Build the dynamic fixed-background VdW config (torch + jax optimizers).
 
     The fixed-background half of the ``intermolecular`` category. Ligand atoms (the
-    moving set) come from the RDKit mols; the background is every heavy atom NOT in
-    ``active_sites`` (i.e. not optimised) — protein, DNA/RNA, and any non-restrained
+    moving set) come from the RDKit mols; the background is every non-padding atom NOT
+    in ``active_sites`` (i.e. not optimised) — protein, DNA/RNA, and any non-restrained
     ligand — so the VdW term pushes the ligand out of the fixed pocket. Returns
     ``None`` when VdW is disabled (weight<=0), there are no ligands, or element info
     is unavailable.
@@ -378,10 +378,11 @@ def _build_vdw_config(
         [lig_radius[int(g)] for g in ligand_global], dtype=np.float64
     )
 
-    # protein background = heavy atoms that are NOT optimised (not in active_sites)
+    # fixed background = all non-padding atoms NOT optimised (not in active_sites):
+    # protein / DNA/RNA / non-restrained ligand. element code 0 is the padding sentinel.
     elements = np.asarray(elements)
     active_set = {int(a) for a in active_sites}
-    protein_global = np.array(
+    background_global = np.array(
         [
             a
             for a in range(len(elements))
@@ -389,18 +390,18 @@ def _build_vdw_config(
         ],
         dtype=np.int64,
     )
-    if len(protein_global) == 0:
+    if len(background_global) == 0:
         return None
-    protein_radii = np.array(
-        [_vdw_radius(int(elements[a])) for a in protein_global], dtype=np.float64
+    background_radii = np.array(
+        [_vdw_radius(int(elements[a])) for a in background_global], dtype=np.float64
     )
 
     return VdwConfig(
         weight=weight,
         ligand_local=ligand_local,
         ligand_radii=ligand_radii,
-        protein_global=protein_global,
-        protein_radii=protein_radii,
+        background_global=background_global,
+        background_radii=background_radii,
         scale=float(vcfg.get("scale", 0.75)),
         dmax=float(vcfg.get("dmax", 5.0)),
     )
@@ -979,7 +980,7 @@ def build_spec(
         vdw_parts.append(f"{len(vdw_inter.idx)}inter")
     if vdw_config is not None:
         vdw_parts.append(
-            f"{len(vdw_config.ligand_local)}lig/{len(vdw_config.protein_global)}prot"
+            f"{len(vdw_config.ligand_local)}lig/{len(vdw_config.background_global)}bg"
         )
     vdw_desc = "+".join(vdw_parts) if vdw_parts else "off"
     logger.info(
