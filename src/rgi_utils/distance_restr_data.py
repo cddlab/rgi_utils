@@ -48,7 +48,7 @@ class DistanceData:
     start_step: float  # step-window lower bound (-inf = always); XOR the sigma window
     stop_step: float  # step-window upper bound (+inf = always)
     move_mode: int  # 0=both / 1=grp1 only / 2=grp2 only (the 'move' config key)
-    # per-restraint relative strength for the closed-form weighted-average Jacobi. A NO-OP
+    # per-restraint least-squares weight (the CG jointly minimises Σ wᵢ·δᵢ²). A NO-OP
     # for a single restraint / restraints with disjoint groups (each reaches its exact
     # target regardless); only changes the outcome for OVER-CONSTRAINED coupled restraints
     # whose shared atom is their sole mover, where it balances the competition (2:1 etc).

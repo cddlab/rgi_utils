@@ -95,8 +95,8 @@ _SPEC_SCHEMA = [
     # group-centroid angle (3 groups, vertex = group 2) / dihedral (4 groups, axis =
     # group2-group3): each group is a padded (n, max_grp) index list + {0,1} mask (same
     # layout as distance). target1/target2/geom_type mirror distance's four
-    # types; move_free ((n,n_groups) {0,1}) drives the energy's detach-select (unlike
-    # distance, where move lives in the closed-form shift).
+    # types; move_free ((n,n_groups) {0,1}) drives the energy's detach-select — like
+    # distance's move_mode, both now CG-solved in the energy leaf.
     # start_sigma/stop_sigma are per-restraint.
     (
         "group_angle",
