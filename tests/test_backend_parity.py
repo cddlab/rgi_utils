@@ -19,7 +19,7 @@ from rgi_utils.spec import (
     DistanceArrays,
     GroupAngleArrays,
     GroupDihedralArrays,
-    ImproperArrays,
+    PlanarityArrays,
     RestraintSpec,
     VdwArrays,
 )
@@ -29,7 +29,7 @@ N_ACTIVE = 12
 
 def _make_spec(
     include_groups: bool = True,
-    include_improper: bool = True,
+    include_planarity: bool = True,
     include_distance: bool = True,
 ) -> RestraintSpec:
     """A small spec exercising every restraint type with non-zero energy.
@@ -38,10 +38,10 @@ def _make_spec(
     torch-vs-jax CG-convergence test opts out (``include_groups=False``) so its
     calibrated tolerance keeps its original group-free landscape — the periodic group
     dihedral makes the two backends' CG minima diverge a touch more than that tolerance
-    (group CG convergence is covered directly in test_optim.py). ``include_improper``
-    (default on) adds the planarity improper term; the same fuzzy CG-convergence test
+    (group CG convergence is covered directly in test_optim.py). ``include_planarity``
+    (default on) adds the planarity term; the same fuzzy CG-convergence test
     opts out of it too (its stiff near-zero-volume target shifts the fixed-iteration
-    minimum a touch — improper energy/grad parity is covered by the other tests)."""
+    minimum a touch — planarity energy/grad parity is covered by the other tests)."""
     bond = BondArrays(
         idx=np.array([[0, 1], [2, 3], [4, 5]], dtype=np.int64),
         r0=np.array([1.0, 1.5, 1.2]),
@@ -64,14 +64,14 @@ def _make_spec(
         weight=np.array([0.1, 0.1]),
         mask=np.array([1.0, 1.0]),
     )
-    # planarity improper: same signed-volume maths as chiral but target vol0 ~ 0 (a
+    # planarity: same signed-volume maths as chiral but target vol0 ~ 0 (a
     # planar sp2 centre). Random positions give a non-zero volume so energy > 0; the
     # second entry is masked-out padding. Reuses chiral_energy via the _terms dispatch,
-    # so this row is what proves improper is wired + parity-correct across backends.
-    improper = (
+    # so this row is what proves planarity is wired + parity-correct across backends.
+    planarity = (
         None
-        if not include_improper
-        else ImproperArrays(
+        if not include_planarity
+        else PlanarityArrays(
             idx=np.array([[8, 9, 10, 11], [0, 2, 4, 6]], dtype=np.int64),
             vol0=np.array([0.0, 0.0]),
             slack=np.array([0.0, 0.05]),
@@ -173,7 +173,7 @@ def _make_spec(
         bond=bond,
         angle=angle,
         chiral=chiral,
-        improper=improper,
+        planarity=planarity,
         cistrans=cistrans,
         vdw=vdw,
         distance=distance if include_distance else None,
@@ -685,14 +685,14 @@ def test_jax_torch_cg_same_minimum_at_default_iters():
     from rgi_utils.optim._torch_cg_gpu import _cg_minimize_torch
     from rgi_utils.optim.jax_optim import _cg_minimize
 
-    # conformer + vdw only (no rmsd, group, improper, OR distance); the CG handles conf
+    # conformer + vdw only (no rmsd, group, planarity, OR distance); the CG handles conf
     # here. This test originally excluded distance via include_distance=False (distance was
     # closed-form); with that flag gone, distance is dropped from the spec instead — its
     # reduced-mass centroid_eff rescale shifts the fixed-iteration CG minimum past this fuzzy
-    # tolerance (same reason groups/improper are excluded). Distance CG-convergence parity is
+    # tolerance (same reason groups/planarity are excluded). Distance CG-convergence parity is
     # covered directly in test_optim; group convergence parity likewise.
     spec = _make_spec(
-        include_groups=False, include_improper=False, include_distance=False
+        include_groups=False, include_planarity=False, include_distance=False
     )
     pos = _positions(0)
     prep_t = torch_energy.prepare_spec(spec, dtype=torch.float64)
@@ -982,10 +982,10 @@ def test_chiral_flat_bottom_zero_at_reference():
     assert abs(e_np - e_t) < 1e-6 and abs(e_np - e_j) < 1e-6
 
 
-def test_improper_flat_bottom_zero_at_reference():
-    """improper (planarity) reuses chiral_energy: a planar sp2 centre (vol0 ~ 0) has
+def test_planarity_flat_bottom_zero_at_reference():
+    """planarity reuses chiral_energy: a planar sp2 centre (vol0 ~ 0) has
     ZERO energy at the reference geometry, quadratic once it pyramidalises out of plane,
-    equal across backends. Proves improper is wired through _terms to chiral_energy."""
+    equal across backends. Proves planarity is wired through _terms to chiral_energy."""
     torch = pytest.importorskip("torch")
     jax = pytest.importorskip("jax")
     jax.config.update("jax_enable_x64", True)
@@ -1001,7 +1001,7 @@ def test_improper_flat_bottom_zero_at_reference():
     spec = RestraintSpec(
         n_active=4,
         active_sites=np.arange(4),
-        improper=ImproperArrays(
+        planarity=PlanarityArrays(
             idx=np.array([[0, 1, 2, 3]], dtype=np.int64),
             vol0=np.array([vol0]),
             slack=np.array([0.05]),
@@ -1015,9 +1015,9 @@ def test_improper_flat_bottom_zero_at_reference():
     assert float(numpy_energy.total_energy(pos, prep_np)) == pytest.approx(
         0.0, abs=1e-12
     )
-    # the energy_breakdown reports the term under the dedicated "improper" key
+    # the energy_breakdown reports the term under the dedicated "planarity" key
     bd = numpy_energy.energy_breakdown(pos, prep_np)
-    assert "improper" in bd
+    assert "planarity" in bd
 
     # pyramidalise the centre out of its neighbours' plane -> non-zero, parity-equal
     pos2 = pos.copy()

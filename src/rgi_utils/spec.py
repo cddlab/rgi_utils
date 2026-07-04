@@ -83,8 +83,8 @@ class ChiralArrays:
 
 
 @dataclass
-class ImproperArrays:
-    """Planarity (improper) restraints on sp2 double-bond centres (padded). Center
+class PlanarityArrays:
+    """Planarity restraints on sp2 double-bond centres (padded). Center
     atom is column 0; columns 1-3 are its three heavy-atom neighbours.
 
     Same scalar-triple-product (signed volume) maths and array layout as
@@ -95,11 +95,11 @@ class ImproperArrays:
     the backend ``chiral_energy`` leaf function via the ``_terms`` dispatch.
     """
 
-    idx: np.ndarray  # (n_improper, 4) int
-    vol0: np.ndarray  # (n_improper,) reference scalar triple product (~0 = planar)
-    slack: np.ndarray  # (n_improper,)
-    weight: np.ndarray  # (n_improper,)
-    mask: np.ndarray  # (n_improper,)
+    idx: np.ndarray  # (n_planarity, 4) int
+    vol0: np.ndarray  # (n_planarity,) reference scalar triple product (~0 = planar)
+    slack: np.ndarray  # (n_planarity,)
+    weight: np.ndarray  # (n_planarity,)
+    mask: np.ndarray  # (n_planarity,)
 
 
 @dataclass
@@ -309,9 +309,9 @@ class RestraintSpec:
     bond: BondArrays | None = None
     angle: AngleArrays | None = None
     chiral: ChiralArrays | None = None
-    # planarity (improper) of sp2 double-bond centres; same signed-volume maths as
-    # chiral, target ~0 (see ImproperArrays).
-    improper: ImproperArrays | None = None
+    # planarity of sp2 double-bond centres; same signed-volume maths as
+    # chiral, target ~0 (see PlanarityArrays).
+    planarity: PlanarityArrays | None = None
     cistrans: CisTransArrays | None = None
     vdw: VdwArrays | None = None
     vdw_config: VdwConfig | None = None
@@ -322,7 +322,7 @@ class RestraintSpec:
     # per-restraint start_sigma/stop_sigma like distance/rmsd.
     group_angle: GroupAngleArrays | None = None
     group_dihedral: GroupDihedralArrays | None = None
-    # one start_sigma for ALL conformer (bond/angle/chiral/improper/cistrans/vdw)
+    # one start_sigma for ALL conformer (bond/angle/chiral/planarity/cistrans/vdw)
     # restraints; each distance restraint carries its own in DistanceArrays.start_sigma.
     # NOTE: this internal spec-field default stays -1.0 (= conformer OFF) on purpose,
     # unlike the user-facing build_spec/config defaults (+inf = active every step):
@@ -344,7 +344,7 @@ class RestraintSpec:
     custom: list = field(default_factory=list)
 
     def has_conformer(self) -> bool:
-        """True if any conformer (bond/angle/chiral/improper/cistrans/vdw) restraint
+        """True if any conformer (bond/angle/chiral/planarity/cistrans/vdw) restraint
         exists."""
         if self.vdw_config is not None and self.vdw_config.weight > 0:
             return True
@@ -354,7 +354,7 @@ class RestraintSpec:
                 self.bond,
                 self.angle,
                 self.chiral,
-                self.improper,
+                self.planarity,
                 self.cistrans,
                 self.vdw,
             )

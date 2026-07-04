@@ -39,8 +39,8 @@ Design = **3 layers + autodiff + static shapes + GPU-complete optimization**:
 
 2. **Energy layer** (`energy/{numpy,torch,jax}_energy.py`, differentiable pure
    functions): identical flat-bottomed maths in all three backends —
-   `bond/angle/chiral/improper/cistrans/vdw/distance/rmsd/group_angle/group_dihedral`
-   (cistrans = periodicity-safe torsion for cis/trans; improper = sp2 double-bond
+   `bond/angle/chiral/planarity/cistrans/vdw/distance/rmsd/group_angle/group_dihedral`
+   (cistrans = periodicity-safe torsion for cis/trans; planarity = sp2 double-bond
    planarity, reusing `chiral_energy`'s signed volume with target ~0, opt-in/off by
    default; rmsd = Kabsch-superposed RMSD toward a target,
    fit/calc separable; `group_angle`/`group_dihedral` = the angle/dihedral of 3/4 atom
@@ -162,7 +162,7 @@ Supporting modules:
 
 VdW is **not a sixth restraint type** — it is the non-bonded term of the **conformer**
 restraint, configured under `conformer_restraints_config.vdw` (one of bond/angle/chiral/
-improper/cistrans/vdw). `mode` picks **two categories** (default `both` = both):
+planarity/cistrans/vdw). `mode` picks **two categories** (default `both` = both):
 
 - **Intramolecular** (`mode: intramolecular`): clashes WITHIN one ligand. Static
   non-bonded ligand-internal pairs (topo distance > 2, within `dmax`), built in

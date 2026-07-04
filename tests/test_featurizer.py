@@ -250,35 +250,35 @@ def _lig_heavy(smi: str) -> LigandConf:
     )
 
 
-def test_improper_perception():
-    """improper (sp2 planarity) fires on acyclic, non-aromatic double-bond endpoints
+def test_planarity_perception():
+    """planarity fires on acyclic, non-aromatic double-bond endpoints
     with exactly 3 heavy neighbours, reusing chiral's signed volume. Parity-safe scope:
     aromatic + in-ring double bonds are excluded (mirrors cistrans's bond filter), and
     the term is OFF unless explicitly opted in."""
-    cfg = {"improper": {"weight": 1.0}, "cistrans": {"weight": 1.0}}
+    cfg = {"planarity": {"weight": 1.0}, "cistrans": {"weight": 1.0}}
     nrow = lambda a: 0 if a is None else len(a.idx)  # noqa: E731
 
-    # fumarate: 2 carboxyl carbons (exocyclic C=O, 3 heavy neighbours) -> improper=2;
+    # fumarate: 2 carboxyl carbons (exocyclic C=O, 3 heavy neighbours) -> planarity=2;
     # the C=C alkene carbons have only 2 heavy neighbours each, so the bond's E/Z is held
-    # by cistrans (=1), not improper.
+    # by cistrans (=1), not planarity.
     spec = build_spec([_lig_heavy(r"OC(=O)/C=C/C(=O)O")], [], cfg)
-    assert nrow(spec.improper) == 2
+    assert nrow(spec.planarity) == 2
     assert nrow(spec.cistrans) == 1
-    assert int(spec.improper.idx.max()) < spec.n_active  # valid local indices
+    assert int(spec.planarity.idx.max()) < spec.n_active  # valid local indices
 
-    # acetamide carbonyl carbon (CH3-C, O, N = 3 heavy neighbours) -> improper=1
-    assert nrow(build_spec([_lig_heavy("CC(=O)N")], [], cfg).improper) == 1
+    # acetamide carbonyl carbon (CH3-C, O, N = 3 heavy neighbours) -> planarity=1
+    assert nrow(build_spec([_lig_heavy("CC(=O)N")], [], cfg).planarity) == 1
 
     # aromatic centres excluded (SanitizeMol is best-effort -> don't trust GetIsAromatic
     # alone; here it correctly perceives the ring as aromatic and the term stays empty)
-    assert build_spec([_lig_heavy("c1ccccc1")], [], cfg).improper is None
+    assert build_spec([_lig_heavy("c1ccccc1")], [], cfg).planarity is None
     # in-ring non-aromatic C=C excluded by the topological IsInRing guard (parity-safe)
-    assert build_spec([_lig_heavy("C1CCC=CC1")], [], cfg).improper is None
+    assert build_spec([_lig_heavy("C1CCC=CC1")], [], cfg).planarity is None
 
-    # OFF by default: no improper key -> no improper term even alongside other conformer
+    # OFF by default: no planarity key -> no planarity term even alongside other conformer
     # terms (preserves every existing conformer run).
     off = build_spec([_lig_heavy("CC(=O)N")], [], {"bond": {"weight": 0.05}})
-    assert off.improper is None and off.bond is not None
+    assert off.planarity is None and off.bond is not None
 
 
 def _lig_heavy_at(smi: str, base: int, seed: int = 1) -> tuple[LigandConf, int]:
@@ -373,14 +373,14 @@ def test_vdw_mode_ligand_protein_removed():
         build_spec([lcA], [], {"vdw": {"weight": 1.0, "mode": "ligand_protein"}})
 
 
-@pytest.mark.parametrize("term,default", [("bond", 0.0), ("improper", 0.05)])
+@pytest.mark.parametrize("term,default", [("bond", 0.0), ("planarity", 0.05)])
 def test_conf_slack_null_handling_uniform(term, default):
     """slack: omitted/null -> per-term default; explicit 0 -> 0.0 (the truthiness trap).
 
     Guards the consistency fix that routed all five conformer terms through _conf_slack so
-    the null/zero handling can't drift (it previously diverged: only cistrans/improper had
+    the null/zero handling can't drift (it previously diverged: only cistrans/planarity had
     an `or 0.0` guard, so `slack: null` crashed bond/angle/chiral and silently zeroed
-    improper's 0.05 default)."""
+    planarity's 0.05 default)."""
     from rgi_utils.featurizer import _conf_slack
 
     assert _conf_slack({}, term, default) == default  # key absent

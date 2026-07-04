@@ -1,13 +1,13 @@
 """Build a backend-agnostic ``RestraintSpec`` from ligand conformers + distances.
 
 This is the single place where conformer restraints (bond/angle/chiral/cistrans/
-improper) are derived from RDKit mols. Each ligand supplies its own
+planarity) are derived from RDKit mols. Each ligand supplies its own
 ``global_indices``, so multiple ligands produce non-colliding restraints — there is
 no per-batch state and no hard-coded ligand index (the multi-ligand bug in the old
 code).
 
 Flow:
-  1. extract bond/angle/chiral/cistrans/improper restraints per ligand in GLOBAL atom
+  1. extract bond/angle/chiral/cistrans/planarity restraints per ligand in GLOBAL atom
      indices,
   2. collect distance restraint atom groups (already resolved to global indices),
   3. active_sites = union of all referenced global atoms (sorted, unique),
@@ -33,7 +33,7 @@ from rgi_utils.spec import (
     DistanceArrays,
     GroupAngleArrays,
     GroupDihedralArrays,
-    ImproperArrays,
+    PlanarityArrays,
     RestraintSpec,
     RmsdArrays,
     VdwArrays,
@@ -91,13 +91,13 @@ def _cistrans_rad(crds: np.ndarray, i: int, j: int, k: int, ll: int) -> float:
 
 
 def _extract_conformer(ligand_confs: list[LigandConf]):
-    """Return bond/angle/chiral/cistrans/improper restraint tuples in GLOBAL atom
+    """Return bond/angle/chiral/cistrans/planarity restraint tuples in GLOBAL atom
     indices."""
     bonds = []  # (g0, g1, r0)
     angles = []  # (g0, g1, g2, th0)
     chirals = []  # (g0, g1, g2, g3, vol0)
     cistrans = []  # (g0, g1, g2, g3, phi0)
-    impropers = []  # (g0, g1, g2, g3, vol0) — sp2 planarity, center is g0
+    planarities = []  # (g0, g1, g2, g3, vol0) — sp2 planarity, center is g0
 
     for lc in ligand_confs:
         mol = lc.mol
@@ -191,15 +191,15 @@ def _extract_conformer(ligand_confs: list[LigandConf]):
                         )
                     )
 
-        # improper (planarity): hold each sp2 double-bond centre in its substituents'
+        # planarity: hold each sp2 double-bond centre in its substituents'
         # plane. Same bond filter as cistrans (acyclic, non-aromatic DOUBLE — the
         # topological `not IsInRing()` is parity-safe even if SanitizeMol failed to
         # perceive aromaticity, unlike GetIsAromatic() alone). A carbonyl C=O is an
         # EXOCYCLIC bond (`IsInRing()` is False), so carbonyl / amide / ester / carboxyl
         # centres are kept; only in-ring non-aromatic C=C are dropped. Each endpoint
-        # with exactly 3 heavy neighbours (mol is H-removed) gets one improper on
+        # with exactly 3 heavy neighbours (mol is H-removed) gets one planarity term on
         # (centre; its 3 neighbours); target vol0 = reference signed volume (~0).
-        seen_improper: set[int] = set()
+        seen_planarity: set[int] = set()
         for b in mol.GetBonds():
             if b.GetBondType() != Chem.BondType.DOUBLE:
                 continue
@@ -207,14 +207,14 @@ def _extract_conformer(ligand_confs: list[LigandConf]):
                 continue
             for atom in (b.GetBeginAtom(), b.GetEndAtom()):
                 ci = atom.GetIdx()
-                if ci in seen_improper:
+                if ci in seen_planarity:
                     continue
                 nei = [n.GetIdx() for n in atom.GetNeighbors()]
                 if len(nei) != 3:
                     continue  # not a 3-substituted sp2 centre (no signed volume)
-                seen_improper.add(ci)
+                seen_planarity.add(ci)
                 vol = _chiral_vol(crds, ci, nei[0], nei[1], nei[2])
-                impropers.append(
+                planarities.append(
                     (
                         int(gidx[ci]),
                         int(gidx[nei[0]]),
@@ -224,7 +224,7 @@ def _extract_conformer(ligand_confs: list[LigandConf]):
                     )
                 )
 
-    return bonds, angles, chirals, cistrans, impropers
+    return bonds, angles, chirals, cistrans, planarities
 
 
 def _pad_groups(restraints, n_groups, g2l):
@@ -313,7 +313,7 @@ def _vdw_radius(z: int) -> float:
 
 
 def _conf_weight(conformer_config: dict | None, key: str) -> float:
-    """Weight of a conformer sub-term (bond/angle/chiral/cistrans/vdw/improper).
+    """Weight of a conformer sub-term (bond/angle/chiral/cistrans/vdw/planarity).
 
     Uniform "default 1.0, off if not configured" rule, shared with every other
     restraint type (distance/rmsd/angle/dihedral/custom all default weight 1.0): a
@@ -332,7 +332,7 @@ def _conf_weight(conformer_config: dict | None, key: str) -> float:
 def _conf_slack(conformer_config: dict | None, key: str, default: float) -> float:
     """Slack (flat-bottom half-width) of a conformer sub-term, with uniform null handling.
 
-    Shared by all five conformer terms (bond/angle/chiral/cistrans/improper) so the
+    Shared by all five conformer terms (bond/angle/chiral/cistrans/planarity) so the
     omitted / explicit-0 / null cases can't drift between them: an OMITTED ``slack`` ->
     the per-term ``default``; an explicit ``slack: 0`` -> 0.0 (a hard, zero-width
     restraint, NOT the default); a ``slack: null`` -> the ``default`` (null is treated as
@@ -606,8 +606,8 @@ def build_spec(
     # rule (see _conf_weight): a sub-block PRESENT in the conformer config is active at
     # weight 1.0 (override with an explicit weight); an ABSENT sub-block is OFF. So a
     # ligand that opts in but lists e.g. only `bond:` gets ONLY bond — angle/chiral/
-    # cistrans/vdw/improper stay off until their own sub-block is added. slack defaults
-    # stay per-term (chiral/improper flat-bottom ~0.05 signed-volume; bond/angle/cistrans
+    # cistrans/vdw/planarity stay off until their own sub-block is added. slack defaults
+    # stay per-term (chiral/planarity flat-bottom ~0.05 signed-volume; bond/angle/cistrans
     # 0.0 = pure harmonic toward the reference; cistrans slack is in radians).
     bw = _conf_weight(cfg, "bond")
     bsl = _conf_slack(cfg, "bond", 0.0)
@@ -618,10 +618,10 @@ def build_spec(
     dw = _conf_weight(cfg, "cistrans")
     dsl = _conf_slack(cfg, "cistrans", 0.0)
     vdw_weight = _conf_weight(cfg, "vdw")
-    iw = _conf_weight(cfg, "improper")
-    isl = _conf_slack(cfg, "improper", 0.05)
+    pw = _conf_weight(cfg, "planarity")
+    psl = _conf_slack(cfg, "planarity", 0.05)
 
-    bonds, angles, chirals, cistrans, impropers = _extract_conformer(ligand_confs)
+    bonds, angles, chirals, cistrans, planarities = _extract_conformer(ligand_confs)
     # weight<=0 means "disable": drop the term BEFORE the active_sites union so its
     # atoms do not become optimisable and it is never iterated — uniform across all
     # conformer terms. weight<=0 now also covers an ABSENT sub-block (_conf_weight -> 0),
@@ -634,8 +634,8 @@ def build_spec(
         chirals = []
     if dw <= 0:
         cistrans = []
-    if iw <= 0:
-        impropers = []  # OFF by default (iw defaults to 0): opt-in planarity term
+    if pw <= 0:
+        planarities = []  # OFF by default (pw defaults to 0): opt-in planarity term
 
     # ---- collect every referenced global atom -> active_sites -----------------
     active: set[int] = set()
@@ -647,7 +647,7 @@ def build_spec(
         active.update((g0, g1, g2, g3))
     for g0, g1, g2, g3, _ in cistrans:
         active.update((g0, g1, g2, g3))
-    for g0, g1, g2, g3, _ in impropers:
+    for g0, g1, g2, g3, _ in planarities:
         active.update((g0, g1, g2, g3))
     for dr in distance_restraints:
         active.update(int(s) for s in dr.target_sites1)
@@ -767,18 +767,18 @@ def build_spec(
             weight=np.full(len(cistrans), dw),
             mask=np.ones(len(cistrans)),
         )
-    improper = None
-    if impropers:
+    planarity = None
+    if planarities:
         idx = np.array(
-            [[g2l[g0], g2l[g1], g2l[g2], g2l[g3]] for g0, g1, g2, g3, _ in impropers],
+            [[g2l[g0], g2l[g1], g2l[g2], g2l[g3]] for g0, g1, g2, g3, _ in planarities],
             dtype=np.int64,
         )
-        improper = ImproperArrays(
+        planarity = PlanarityArrays(
             idx=idx,
-            vol0=np.array([v for _, _, _, _, v in impropers]),
-            slack=np.full(len(impropers), isl),
-            weight=np.full(len(impropers), iw),
-            mask=np.ones(len(impropers)),
+            vol0=np.array([v for _, _, _, _, v in planarities]),
+            slack=np.full(len(planarities), psl),
+            weight=np.full(len(planarities), pw),
+            mask=np.ones(len(planarities)),
         )
 
     # ---- distance arrays (padded, local indices) ------------------------------
@@ -959,7 +959,7 @@ def build_spec(
         bond=bond,
         angle=angle,
         chiral=chiral,
-        improper=improper,
+        planarity=planarity,
         cistrans=cistrans_arr,
         distance=distance,
         rmsd=rmsd,
@@ -984,13 +984,13 @@ def build_spec(
         )
     vdw_desc = "+".join(vdw_parts) if vdw_parts else "off"
     logger.info(
-        "built spec: n_active=%d bonds=%d angles=%d chirals=%d impropers=%d cistrans=%d "
+        "built spec: n_active=%d bonds=%d angles=%d chirals=%d planarity=%d cistrans=%d "
         "distances=%d rmsd=%d group_angle=%d group_dihedral=%d vdw=%s custom=%d",
         spec.n_active,
         len(bonds),
         len(angles),
         len(chirals),
-        len(impropers),
+        len(planarities),
         len(cistrans),
         len(distance_restraints),
         len(rmsd_restraints),

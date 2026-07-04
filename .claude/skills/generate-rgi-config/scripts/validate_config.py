@@ -185,7 +185,7 @@ def _validate_one(location: str, cfg: dict, enclosing: dict) -> int:
         f"rmsd={len(rc.rmsd_data)} custom={len(rc.custom_data)}"
     )
     conf = cfg_for_schema.get("conformer_restraints_config") or {}
-    conf_terms = [t for t in ("bond", "angle", "chiral", "improper", "cistrans", "vdw")
+    conf_terms = [t for t in ("bond", "angle", "chiral", "planarity", "cistrans", "vdw")
                   if t in conf]
     if conf_terms:
         print(f"    conformer terms: {', '.join(conf_terms)}")

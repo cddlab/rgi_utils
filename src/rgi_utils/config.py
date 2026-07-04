@@ -106,6 +106,15 @@ class RestraintsConfig:
                 "conformer_restraints_config: 'dihedral' was renamed to 'cistrans' "
                 "(it restrains acyclic double bonds' cis/trans (E/Z) geometry)."
             )
+        # The conformer planarity term was renamed improper -> planarity. Reject the old
+        # key loudly (same policy as dihedral above) instead of silently ignoring it,
+        # which would leave the opt-in planarity term OFF without warning.
+        if "improper" in conformer_config:
+            raise ValueError(
+                "conformer_restraints_config: 'improper' was renamed to 'planarity' "
+                "(it restrains sp2 double-bond planarity; 'improper' was ambiguous — the "
+                "chiral term uses the same signed-volume / improper-dihedral maths)."
+            )
         # conformer terms share ONE gate window. Like every other restraint it is EITHER
         # a sigma window OR a step window (mutually exclusive); reuse the shared check.
         check_window_exclusive(conformer_config, "conformer_restraints_config")

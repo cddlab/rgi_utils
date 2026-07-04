@@ -28,7 +28,7 @@ See each tool's guide in [`doc/`](doc/) for install / run details, and
 
 Five **built-in** restraint types, all minimized during the denoising loop to guide coordinate optimization:
 
-- **conformer** — ligand bond / angle / chiral-volume / cistrans (E/Z) / improper
+- **conformer** — ligand bond / angle / chiral-volume / cistrans (E/Z) / planarity
   (sp2 double-bond planarity, opt-in) toward an ideal RDKit geometry, plus **VdW**
   non-bonded clash avoidance (intramolecular and/or intermolecular; `mode`
   defaults to `both`).
@@ -95,7 +95,7 @@ restraints_config = {
         "angle": {"weight": 1.0},
         "chiral": {"weight": 1.0},
         "cistrans": {"weight": 1.0},         # ligand cis/trans (acyclic C=C only)
-        "improper": {"weight": 1.0},         # sp2 double-bond planarity (off by default)
+        "planarity": {"weight": 1.0},         # sp2 double-bond planarity (off by default)
         "vdw": {"weight": 1.0},              # mode defaults to "both"
     },
     "custom_restraints_config": [            # define your OWN restraint as a formula (DSL)
