@@ -359,11 +359,42 @@ def rmsd_energy(
     return torch.sum(weight * delta**2 * mask)
 
 
+def _plane_normal(cov):
+    """Best-fit-plane unit normal per group = smallest-eigenvalue eigenvector of ``cov``
+    (..., 3, 3). Computed under ``no_grad`` and detached, so the gradient flows only
+    through the moving atoms in the caller — no eigh backward (unstable at degenerate
+    geometry). Mirrors ``numpy_energy._plane_normal`` + the ``_kabsch_R`` carve-out."""
+    with torch.no_grad():
+        _w, vecs = torch.linalg.eigh(cov)  # ascending eigenvalues; columns = vectors
+        normal = vecs[..., :, 0]
+    return normal.detach()
+
+
+def plane_energy(positions, idx, grp_mask, slack, weight, mask):
+    """Best-fit-plane restraint over padded atom groups (mirrors
+    ``numpy_energy.plane_energy``). Penalise each group's out-of-plane RMS deviation
+    beyond ``slack`` (target 0). The plane normal is detached, so autograd
+    differentiates only the moving atoms."""
+    grp_pos = positions[..., idx, :]  # (..., n_plane, max_atoms, 3)
+    m = grp_mask[..., None]
+    n_eff = torch.sum(grp_mask, dim=-1)
+    centroid = torch.sum(grp_pos * m, dim=-2) / (n_eff[..., None] + _EPS)
+    x0 = (grp_pos - centroid[..., None, :]) * m
+    cov = torch.swapaxes(x0, -1, -2) @ x0  # (..., n_plane, 3, 3)
+    normal = _plane_normal(cov)
+    dev = torch.sum(x0 * normal[..., None, :], dim=-1)
+    msd = torch.sum(dev**2 * grp_mask, dim=-1) / (n_eff + _EPS)
+    rms = torch.sqrt(msd + _EPS)
+    delta = torch.clamp(rms - slack, min=0.0)
+    return torch.sum(weight * delta**2 * mask)
+
+
 # leaf energy functions by name, for the shared term_energies dispatch
 _LEAF_FNS = {
     "bond_energy": bond_energy,
     "angle_energy": angle_energy,
     "chiral_energy": chiral_energy,
+    "plane_energy": plane_energy,
     "cistrans_energy": cistrans_energy,
     "vdw_energy": vdw_energy,
     "distance_energy": distance_energy,
@@ -425,7 +456,7 @@ def total_energy(positions, prepared, sigma=None, step=None):
 
 def energy_breakdown(positions, prepared, sigma=None, step=None):
     """Per-term restraint energies (same maths + gating as ``total_energy``), as a
-    ``{bond, angle, chiral, planarity, cistrans, vdw, distance, rmsd}`` python-float dict."""
+    ``{bond, angle, chiral, plane, cistrans, vdw, distance, rmsd}`` python-float dict."""
     cg, sigma_gate = _gates(prepared, sigma, step)
     out = dict.fromkeys(BREAKDOWN_KEYS, 0.0)
     for k, v in term_energies(_LEAF_FNS, prepared, positions, cg, sigma_gate).items():

@@ -106,14 +106,20 @@ class RestraintsConfig:
                 "conformer_restraints_config: 'dihedral' was renamed to 'cistrans' "
                 "(it restrains acyclic double bonds' cis/trans (E/Z) geometry)."
             )
-        # The conformer planarity term was renamed improper -> planarity. Reject the old
-        # key loudly (same policy as dihedral above) instead of silently ignoring it,
-        # which would leave the opt-in planarity term OFF without warning.
+        # The conformer plane term was renamed improper -> planarity -> plane. Reject both
+        # old keys loudly (same policy as dihedral above) instead of silently ignoring
+        # them, which would leave the opt-in plane term OFF without warning.
         if "improper" in conformer_config:
             raise ValueError(
-                "conformer_restraints_config: 'improper' was renamed to 'planarity' "
-                "(it restrains sp2 double-bond planarity; 'improper' was ambiguous — the "
-                "chiral term uses the same signed-volume / improper-dihedral maths)."
+                "conformer_restraints_config: 'improper' was renamed to 'plane' "
+                "(a best-fit-plane restraint over aromatic rings + sp2 groups)."
+            )
+        if "planarity" in conformer_config:
+            raise ValueError(
+                "conformer_restraints_config: 'planarity' was renamed to 'plane' "
+                "(it is now a servalcat-style best-fit-plane restraint over whole planar "
+                "atom groups — aromatic/conjugated rings + non-ring sp2 groups — not just "
+                "per-centre sp2 signed volume)."
             )
         # conformer terms share ONE gate window. Like every other restraint it is EITHER
         # a sigma window OR a step window (mutually exclusive); reuse the shared check.

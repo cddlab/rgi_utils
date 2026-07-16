@@ -332,11 +332,41 @@ def rmsd_energy(
     return jnp.sum(weight * delta**2 * mask)
 
 
+def _plane_normal(cov):
+    """Best-fit-plane unit normal per group = smallest-eigenvalue eigenvector of ``cov``
+    (..., 3, 3). ``stop_gradient``'d so ``jax.grad`` flows only through the moving atoms —
+    no eigh backward (unstable at degenerate geometry). Pure jnp so it stays JIT/scan-able.
+    Mirrors ``numpy_energy._plane_normal`` + the ``_kabsch_R`` carve-out."""
+    _w, vecs = jnp.linalg.eigh(
+        jax.lax.stop_gradient(cov)
+    )  # ascending; columns = vectors
+    return jax.lax.stop_gradient(vecs[..., :, 0])
+
+
+def plane_energy(positions, idx, grp_mask, slack, weight, mask):
+    """Best-fit-plane restraint over padded atom groups (mirrors
+    ``numpy_energy.plane_energy``). Penalise each group's out-of-plane RMS deviation
+    beyond ``slack`` (target 0). The plane normal is stop-gradient'd."""
+    grp_pos = positions[..., idx, :]  # (..., n_plane, max_atoms, 3)
+    m = grp_mask[..., None]
+    n_eff = jnp.sum(grp_mask, axis=-1)
+    centroid = jnp.sum(grp_pos * m, axis=-2) / (n_eff[..., None] + _EPS)
+    x0 = (grp_pos - centroid[..., None, :]) * m
+    cov = jnp.swapaxes(x0, -1, -2) @ x0  # (..., n_plane, 3, 3)
+    normal = _plane_normal(cov)
+    dev = jnp.sum(x0 * normal[..., None, :], axis=-1)
+    msd = jnp.sum(dev**2 * grp_mask, axis=-1) / (n_eff + _EPS)
+    rms = jnp.sqrt(msd + _EPS)
+    delta = jnp.maximum(0.0, rms - slack)
+    return jnp.sum(weight * delta**2 * mask)
+
+
 # leaf energy functions by name, for the shared term_energies dispatch
 _LEAF_FNS = {
     "bond_energy": bond_energy,
     "angle_energy": angle_energy,
     "chiral_energy": chiral_energy,
+    "plane_energy": plane_energy,
     "cistrans_energy": cistrans_energy,
     "vdw_energy": vdw_energy,
     "distance_energy": distance_energy,
@@ -397,7 +427,7 @@ def total_energy(positions, prepared, sigma=None, step=None):
 
 def energy_breakdown(positions, prepared, sigma=None, step=None):
     """Per-term restraint energies (same maths + gating as ``total_energy``), as a
-    ``{bond, angle, chiral, planarity, cistrans, vdw, distance, rmsd}`` python-float dict. Not
+    ``{bond, angle, chiral, plane, cistrans, vdw, distance, rmsd}`` python-float dict. Not
     for use inside JIT (the floats force a device->host sync); for diagnostics."""
     cg, sigma_gate = _gates(prepared, positions, sigma, step)
     out = dict.fromkeys(BREAKDOWN_KEYS, 0.0)

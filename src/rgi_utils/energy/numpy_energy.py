@@ -345,11 +345,46 @@ def rmsd_energy(
     return np.sum(weight * delta**2 * mask)
 
 
+def _plane_normal(cov):
+    """Best-fit-plane unit normal per group = eigenvector of the SMALLEST eigenvalue of
+    the (masked, centred) covariance ``cov`` (..., 3, 3). ``np.linalg.eigh`` returns
+    eigenvalues ascending with eigenvectors as columns, so column 0 is the normal. The
+    torch/jax mirrors STOP the gradient through this normal (numpy has no autodiff), so
+    the eigendecomposition is never differentiated — the ``_kabsch_R`` pattern."""
+    _w, vecs = np.linalg.eigh(cov)
+    return vecs[..., :, 0]
+
+
+def plane_energy(positions, idx, grp_mask, slack, weight, mask):
+    """Best-fit-plane restraint over padded atom groups: penalise each group's
+    out-of-plane RMS deviation (Angstrom) beyond ``slack`` (target 0 = planar). ``idx``
+    (..., n_plane, max_atoms) gathers each group's atoms; ``grp_mask`` zeroes padding
+    columns so variable group size is static-shape safe. The plane normal is the
+    smallest-eigenvalue eigenvector of the masked centred covariance, treated as
+    constant per evaluation (numpy: no autodiff; torch/jax: stop-gradient), so the
+    eigendecomposition is never differentiated and the gradient flows through the moving
+    atoms — same carve-out as ``rmsd_energy``'s Kabsch rotation. ``slack=0`` reduces to a
+    pure harmonic on the RMS out-of-plane distance."""
+    grp_pos = positions[..., idx, :]  # (..., n_plane, max_atoms, 3)
+    m = grp_mask[..., None]
+    n_eff = np.sum(grp_mask, axis=-1)  # (..., n_plane) real atoms per group
+    centroid = np.sum(grp_pos * m, axis=-2) / (n_eff[..., None] + _EPS)
+    x0 = (grp_pos - centroid[..., None, :]) * m  # centred, padding-zeroed
+    cov = np.swapaxes(x0, -1, -2) @ x0  # (..., n_plane, 3, 3) covariance sum
+    normal = _plane_normal(cov)  # (..., n_plane, 3); stop-grad in torch/jax
+    dev = np.sum(x0 * normal[..., None, :], axis=-1)  # signed out-of-plane distance
+    msd = np.sum(dev**2 * grp_mask, axis=-1) / (n_eff + _EPS)  # per-atom mean-square
+    rms = np.sqrt(msd + _EPS)
+    delta = np.maximum(0.0, rms - slack)  # one-sided flat-bottom (rms >= 0, target 0)
+    return np.sum(weight * delta**2 * mask)
+
+
 # leaf energy functions by name, for the shared term_energies dispatch
 _LEAF_FNS = {
     "bond_energy": bond_energy,
     "angle_energy": angle_energy,
     "chiral_energy": chiral_energy,
+    "plane_energy": plane_energy,
     "cistrans_energy": cistrans_energy,
     "vdw_energy": vdw_energy,
     "distance_energy": distance_energy,
@@ -410,7 +445,7 @@ def total_energy(positions, prepared, sigma=None, step=None):
 
 def energy_breakdown(positions, prepared, sigma=None, step=None):
     """Per-term restraint energies (same maths + gating as ``total_energy``), as a
-    ``{bond, angle, chiral, planarity, cistrans, vdw, distance, rmsd}`` float dict for callers
+    ``{bond, angle, chiral, plane, cistrans, vdw, distance, rmsd}`` float dict for callers
     that report each term's contribution (e.g. ``finalize`` logging)."""
     cg, sigma_gate = _gates(prepared, sigma, step)
     out = dict.fromkeys(BREAKDOWN_KEYS, 0.0)

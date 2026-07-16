@@ -505,7 +505,7 @@ class CombinedRestraints:
                 bd["bond"]
                 + bd["angle"]
                 + bd["chiral"]
-                + bd.get("planarity", 0.0)
+                + bd.get("plane", 0.0)
                 + bd["cistrans"]
                 + bd["vdw"]
                 + bd["distance"]
@@ -535,7 +535,7 @@ class CombinedRestraints:
             msg = (
                 f"[rgi_utils] finalize (step {istep}): "
                 f"bond={bd['bond']:.5f} angle={bd['angle']:.5f} "
-                f"chiral={bd['chiral']:.5f} planarity={bd.get('planarity', 0.0):.5f} "
+                f"chiral={bd['chiral']:.5f} plane={bd.get('plane', 0.0):.5f} "
                 f"cistrans={bd['cistrans']:.5f} "
                 f"vdw={bd['vdw']:.5f} "
                 f"distance={bd['distance']:.5f} rmsd={bd.get('rmsd', 0.0):.5f} "

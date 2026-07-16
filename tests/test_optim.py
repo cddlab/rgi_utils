@@ -975,6 +975,85 @@ def test_gpu_cg_converges_stiff_chiral():
     assert ch0 > 0.0 and ch1 < 0.1 * ch0, f"chiral not converged: {ch0} -> {ch1}"
 
 
+def _benzene_plane_spec():
+    """A benzene ligand + opt-in plane restraint (its single aromatic ring, 6 atoms)."""
+    m = Chem.MolFromSmiles("c1ccccc1")
+    mh = Chem.AddHs(m)
+    AllChem.EmbedMolecule(mh, randomSeed=1)
+    AllChem.UFFOptimizeMolecule(mh)
+    m = Chem.RemoveHs(mh)
+    c = np.asarray(m.GetConformer(0).GetPositions())
+    n = m.GetNumAtoms()
+    lc = LigandConf(
+        mol=m, conf_coords=c, global_indices=np.arange(n), conformer_restraints=True
+    )
+    spec = build_spec([lc], [], {"plane": {"weight": 1.0}}, conf_start_sigma=1e30)
+    assert spec.plane is not None and spec.plane.mask.sum() > 0, "no plane restraint"
+    return spec, c
+
+
+def _plane_rms_dev(p):
+    """RMS out-of-plane deviation of points ``p`` (n,3) from their best-fit plane —
+    the same quantity the plane energy penalises (sqrt(lambda_min / N))."""
+    x0 = p - p.mean(axis=0)
+    _w, v = np.linalg.eigh(x0.T @ x0)
+    return float(np.sqrt(np.mean((x0 @ v[:, 0]) ** 2)))
+
+
+def _pucker_ring(c, active_sites, out=0.6):
+    """Push atom 0 of the active (ring) set ~``out`` A along the ring normal -> a strongly
+    non-planar start, where lambda_min is least separated from lambda_mid (the plane normal
+    is worst-conditioned — the hardest case for the stop-gradient CG to converge from)."""
+    ring = c[active_sites].copy()
+    x0 = ring - ring.mean(axis=0)
+    _w, v = np.linalg.eigh(x0.T @ x0)
+    ring[0] = ring[0] + out * v[:, 0]
+    return ring
+
+
+def test_gpu_cg_flattens_plane_group():
+    """Convergence: the torch CG must FLATTEN a plane group despite the stop-gradient plane
+    normal (the same detached-decomposition + CG interaction that stalls jaxopt on RMSD; the
+    hand-rolled CG converges it). Pucker a benzene ring ~0.6 A out of plane, run the CG,
+    assert its out-of-plane RMS deviation collapses. CPU (same algorithm as the CUDA path)."""
+    torch = pytest.importorskip("torch")
+    from rgi_utils.energy import torch_energy
+    from rgi_utils.optim._torch_cg_gpu import gpu_cg
+
+    spec, c = _benzene_plane_spec()
+    prepared = torch_energy.prepare_spec(spec, dtype=torch.float64)
+    pos = _pucker_ring(c, spec.active_sites)
+    dev0 = _plane_rms_dev(pos)
+    assert dev0 > 0.1, f"start not puckered: {dev0}"
+    a1 = gpu_cg(prepared, torch.tensor(pos, dtype=torch.float64), 300)
+    dev1 = _plane_rms_dev(a1.numpy())
+    assert dev1 < 0.2 * dev0, f"plane not flattened: {dev0} -> {dev1}"
+
+
+def test_jax_cg_flattens_plane_group():
+    """Same plane-group flattening on the jax hand-rolled CG (the AF3 / lax.scan path),
+    confirming the stop-gradient plane normal does not stall it there either."""
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.energy import jax_energy
+    from rgi_utils.optim.jax_optim import _cg_minimize
+
+    spec, c = _benzene_plane_spec()
+    prep_j = jax_energy.prepare_spec(spec)
+    pos = _pucker_ring(c, spec.active_sites)
+    dev0 = _plane_rms_dev(pos)
+    assert dev0 > 0.1, f"start not puckered: {dev0}"
+
+    def ej(a):
+        return jax_energy.total_energy(a, prep_j, sigma=None)
+
+    a1 = _cg_minimize(ej, jnp.asarray(pos), 300)
+    dev1 = _plane_rms_dev(np.asarray(a1))
+    assert dev1 < 0.2 * dev0, f"plane not flattened: {dev0} -> {dev1}"
+
+
 def test_gated_prepared_matches_energy_gate():
     """The GPU pre-gated masks (_gated_prepared + total_energy(sigma=None)) reproduce the
     energy layer's own sigma gating for conf-on/off and rmsd-on/off, so the compiled GPU

@@ -26,7 +26,7 @@ boltz reads RGI from a **top-level `restraints_config:` key nested inside the in
 same YAML that lists the sequences). Two things turn restraints on:
 
 1. **Per ligand** — add `conformer_restraints: true` next to the ligand's `ccd`/`smiles` to enable
-   the bond/angle/chiral/planarity/cistrans/VdW conformer restraints for that ligand.
+   the bond/angle/chiral/plane/cistrans/VdW conformer restraints for that ligand.
 2. **The `restraints_config:` block** — the distance / angle / dihedral / conformer /
    RMSD restraints, plus config-only `custom` restraints (define your own — see config.md). The example below writes **every usable variable** with a concrete value; see
    [`config.md`](config.md) for what each does, the alternative restraint types (`flat-bottomed`
@@ -95,7 +95,7 @@ restraints_config:
     bond: {weight: 1.0, slack: 0.0}
     angle: {weight: 1.0, slack: 0.0}
     chiral: {weight: 1.0, slack: 0.05}
-    planarity: {weight: 1.0, slack: 0.05}   # sp2 planarity (opt-in); GLN's amide + carboxyl carbons -> planarity=2
+    plane: {weight: 1.0}   # best-fit-plane over rings + sp2 groups (opt-in); GLN's amide + carboxyl groups -> plane=2
     cistrans: {weight: 1.0, slack: 0.0}
     vdw: {weight: 1.0}
   rmsd_restraints_config:
@@ -145,7 +145,7 @@ boltz predict restr_example.yaml \
 ## Verify
 
 With `verbose: true`, the `setup` log prints `built spec: n_active=.. bonds=.. angles=.. chirals=..
-planarity=.. cistrans=.. distances=.. rmsd=.. group_angle=.. group_dihedral=.. ...` — confirm the counts are non-zero for
+plane=.. cistrans=.. distances=.. rmsd=.. group_angle=.. group_dihedral=.. ...` — confirm the counts are non-zero for
 what you requested (a `finalize` term reading `0.00000` because the spec has 0 of that restraint is
 a silent no-op, not "satisfied"). The workspace root carries helper scripts (run with any
 gemmi/rdkit-enabled venv):

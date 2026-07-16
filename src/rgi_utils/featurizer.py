@@ -1,13 +1,13 @@
 """Build a backend-agnostic ``RestraintSpec`` from ligand conformers + distances.
 
 This is the single place where conformer restraints (bond/angle/chiral/cistrans/
-planarity) are derived from RDKit mols. Each ligand supplies its own
+plane) are derived from RDKit mols. Each ligand supplies its own
 ``global_indices``, so multiple ligands produce non-colliding restraints — there is
 no per-batch state and no hard-coded ligand index (the multi-ligand bug in the old
 code).
 
 Flow:
-  1. extract bond/angle/chiral/cistrans/planarity restraints per ligand in GLOBAL atom
+  1. extract bond/angle/chiral/cistrans/plane restraints per ligand in GLOBAL atom
      indices,
   2. collect distance restraint atom groups (already resolved to global indices),
   3. active_sites = union of all referenced global atoms (sorted, unique),
@@ -33,7 +33,7 @@ from rgi_utils.spec import (
     DistanceArrays,
     GroupAngleArrays,
     GroupDihedralArrays,
-    PlanarityArrays,
+    PlaneArrays,
     RestraintSpec,
     RmsdArrays,
     VdwArrays,
@@ -47,6 +47,24 @@ _CHIRAL_TAGS = (
     Chem.ChiralType.CHI_TETRAHEDRAL_CW,
     Chem.ChiralType.CHI_TETRAHEDRAL_CCW,
 )
+# A candidate plane group (ring / sp2 functional group) is kept only if its reference
+# conformer is coplanar to within this max out-of-plane deviation (Angstrom). Aromatic /
+# conjugated rings are flat (<0.05 A); a puckered saturated ring (cyclohexane chair)
+# deviates ~0.25 A, so 0.1 A cleanly selects planar groups WITHOUT trusting the
+# (SanitizeMol-dependent, unreliable) RDKit aromaticity flag.
+_PLANE_TOL = 0.1
+
+
+def _max_plane_dev(crds, idxs):
+    """Max out-of-plane distance (Angstrom) of atoms ``idxs`` from their own best-fit
+    plane, in the reference conformer ``crds``. The plane normal is the smallest-
+    eigenvalue eigenvector of the centred covariance (build-time numpy, no autodiff)."""
+    pts = crds[list(idxs)]
+    x0 = pts - pts.mean(axis=0)
+    _w, vecs = np.linalg.eigh(
+        x0.T @ x0
+    )  # ascending eigenvalues; columns = eigenvectors
+    return float(np.max(np.abs(x0 @ vecs[:, 0])))
 
 
 def _bond_length(crds: np.ndarray, i: int, j: int) -> float:
@@ -91,13 +109,13 @@ def _cistrans_rad(crds: np.ndarray, i: int, j: int, k: int, ll: int) -> float:
 
 
 def _extract_conformer(ligand_confs: list[LigandConf]):
-    """Return bond/angle/chiral/cistrans/planarity restraint tuples in GLOBAL atom
+    """Return bond/angle/chiral/cistrans restraint tuples and plane groups in GLOBAL atom
     indices."""
     bonds = []  # (g0, g1, r0)
     angles = []  # (g0, g1, g2, th0)
     chirals = []  # (g0, g1, g2, g3, vol0)
     cistrans = []  # (g0, g1, g2, g3, phi0)
-    planarities = []  # (g0, g1, g2, g3, vol0) — sp2 planarity, center is g0
+    planes = []  # tuple(global idx, ...) — a planar atom group (ring or sp2 group)
 
     for lc in ligand_confs:
         mol = lc.mol
@@ -191,40 +209,42 @@ def _extract_conformer(ligand_confs: list[LigandConf]):
                         )
                     )
 
-        # planarity: hold each sp2 double-bond centre in its substituents'
-        # plane. Same bond filter as cistrans (acyclic, non-aromatic DOUBLE — the
-        # topological `not IsInRing()` is parity-safe even if SanitizeMol failed to
-        # perceive aromaticity, unlike GetIsAromatic() alone). A carbonyl C=O is an
-        # EXOCYCLIC bond (`IsInRing()` is False), so carbonyl / amide / ester / carboxyl
-        # centres are kept; only in-ring non-aromatic C=C are dropped. Each endpoint
-        # with exactly 3 heavy neighbours (mol is H-removed) gets one planarity term on
-        # (centre; its 3 neighbours); target vol0 = reference signed volume (~0).
-        seen_planarity: set[int] = set()
+        # plane: hold each planar atom GROUP coplanar (servalcat-style best-fit plane).
+        # Two group sources, each CONFIRMED planar in the reference conformer
+        # (_max_plane_dev < _PLANE_TOL) rather than trusting GetIsAromatic():
+        #   (a) rings — whole SSSR ring as one group (GetRingInfo). Aromatic/conjugated
+        #       rings are flat and kept; saturated (puckered) rings deviate and are
+        #       dropped. Ring topology is bond-order-independent, so this fires even for
+        #       tools whose mol lost bond orders (chai/esmfold2 geometry-perceived path).
+        #   (b) non-ring sp2 groups — each acyclic (`not IsInRing()`) non-aromatic DOUBLE
+        #       bond centre + its heavy neighbours (mol is H-removed): carbonyl / carboxyl
+        #       / amide / trisubstituted-alkene centres form a >=4-atom coplanar group. A
+        #       2-heavy-neighbour alkene centre gives only 3 atoms (trivially planar, no
+        #       restraint force) and is skipped by the len>=4 filter.
+        candidates = [tuple(r) for r in mol.GetRingInfo().AtomRings()]
         for b in mol.GetBonds():
-            if b.GetBondType() != Chem.BondType.DOUBLE:
-                continue
-            if b.GetIsAromatic() or b.IsInRing():
+            if (
+                b.GetBondType() != Chem.BondType.DOUBLE
+                or b.GetIsAromatic()
+                or b.IsInRing()
+            ):
                 continue
             for atom in (b.GetBeginAtom(), b.GetEndAtom()):
-                ci = atom.GetIdx()
-                if ci in seen_planarity:
-                    continue
-                nei = [n.GetIdx() for n in atom.GetNeighbors()]
-                if len(nei) != 3:
-                    continue  # not a 3-substituted sp2 centre (no signed volume)
-                seen_planarity.add(ci)
-                vol = _chiral_vol(crds, ci, nei[0], nei[1], nei[2])
-                planarities.append(
-                    (
-                        int(gidx[ci]),
-                        int(gidx[nei[0]]),
-                        int(gidx[nei[1]]),
-                        int(gidx[nei[2]]),
-                        vol,
-                    )
+                candidates.append(
+                    tuple([atom.GetIdx()] + [n.GetIdx() for n in atom.GetNeighbors()])
                 )
+        seen_planes: set[frozenset] = set()
+        for cand in candidates:
+            key = frozenset(cand)
+            if len(key) < 4 or key in seen_planes:
+                continue  # a plane needs >=4 atoms (3 are trivially coplanar)
+            local = sorted(key)
+            if _max_plane_dev(crds, local) >= _PLANE_TOL:
+                continue  # not coplanar in the reference (e.g. saturated ring)
+            seen_planes.add(key)
+            planes.append(tuple(int(gidx[i]) for i in local))
 
-    return bonds, angles, chirals, cistrans, planarities
+    return bonds, angles, chirals, cistrans, planes
 
 
 def _pad_groups(restraints, n_groups, g2l):
@@ -313,7 +333,7 @@ def _vdw_radius(z: int) -> float:
 
 
 def _conf_weight(conformer_config: dict | None, key: str) -> float:
-    """Weight of a conformer sub-term (bond/angle/chiral/cistrans/vdw/planarity).
+    """Weight of a conformer sub-term (bond/angle/chiral/cistrans/vdw/plane).
 
     Uniform "default 1.0, off if not configured" rule, shared with every other
     restraint type (distance/rmsd/angle/dihedral/custom all default weight 1.0): a
@@ -332,7 +352,7 @@ def _conf_weight(conformer_config: dict | None, key: str) -> float:
 def _conf_slack(conformer_config: dict | None, key: str, default: float) -> float:
     """Slack (flat-bottom half-width) of a conformer sub-term, with uniform null handling.
 
-    Shared by all five conformer terms (bond/angle/chiral/cistrans/planarity) so the
+    Shared by all five conformer terms (bond/angle/chiral/cistrans/plane) so the
     omitted / explicit-0 / null cases can't drift between them: an OMITTED ``slack`` ->
     the per-term ``default``; an explicit ``slack: 0`` -> 0.0 (a hard, zero-width
     restraint, NOT the default); a ``slack: null`` -> the ``default`` (null is treated as
@@ -606,9 +626,10 @@ def build_spec(
     # rule (see _conf_weight): a sub-block PRESENT in the conformer config is active at
     # weight 1.0 (override with an explicit weight); an ABSENT sub-block is OFF. So a
     # ligand that opts in but lists e.g. only `bond:` gets ONLY bond — angle/chiral/
-    # cistrans/vdw/planarity stay off until their own sub-block is added. slack defaults
-    # stay per-term (chiral/planarity flat-bottom ~0.05 signed-volume; bond/angle/cistrans
-    # 0.0 = pure harmonic toward the reference; cistrans slack is in radians).
+    # cistrans/vdw/plane stay off until their own sub-block is added. slack defaults
+    # stay per-term (chiral flat-bottom ~0.05 signed-volume; bond/angle/cistrans/plane
+    # 0.0 = pure harmonic toward the reference; cistrans slack is in radians, plane in
+    # Angstrom out-of-plane deviation).
     bw = _conf_weight(cfg, "bond")
     bsl = _conf_slack(cfg, "bond", 0.0)
     aw = _conf_weight(cfg, "angle")
@@ -618,10 +639,10 @@ def build_spec(
     dw = _conf_weight(cfg, "cistrans")
     dsl = _conf_slack(cfg, "cistrans", 0.0)
     vdw_weight = _conf_weight(cfg, "vdw")
-    pw = _conf_weight(cfg, "planarity")
-    psl = _conf_slack(cfg, "planarity", 0.05)
+    pw = _conf_weight(cfg, "plane")
+    psl = _conf_slack(cfg, "plane", 0.0)
 
-    bonds, angles, chirals, cistrans, planarities = _extract_conformer(ligand_confs)
+    bonds, angles, chirals, cistrans, planes = _extract_conformer(ligand_confs)
     # weight<=0 means "disable": drop the term BEFORE the active_sites union so its
     # atoms do not become optimisable and it is never iterated — uniform across all
     # conformer terms. weight<=0 now also covers an ABSENT sub-block (_conf_weight -> 0),
@@ -635,7 +656,7 @@ def build_spec(
     if dw <= 0:
         cistrans = []
     if pw <= 0:
-        planarities = []  # OFF by default (pw defaults to 0): opt-in planarity term
+        planes = []  # OFF by default (pw defaults to 0): opt-in plane term
 
     # ---- collect every referenced global atom -> active_sites -----------------
     active: set[int] = set()
@@ -647,8 +668,8 @@ def build_spec(
         active.update((g0, g1, g2, g3))
     for g0, g1, g2, g3, _ in cistrans:
         active.update((g0, g1, g2, g3))
-    for g0, g1, g2, g3, _ in planarities:
-        active.update((g0, g1, g2, g3))
+    for grp in planes:
+        active.update(grp)
     for dr in distance_restraints:
         active.update(int(s) for s in dr.target_sites1)
         active.update(int(s) for s in dr.target_sites2)
@@ -767,18 +788,24 @@ def build_spec(
             weight=np.full(len(cistrans), dw),
             mask=np.ones(len(cistrans)),
         )
-    planarity = None
-    if planarities:
-        idx = np.array(
-            [[g2l[g0], g2l[g1], g2l[g2], g2l[g3]] for g0, g1, g2, g3, _ in planarities],
-            dtype=np.int64,
-        )
-        planarity = PlanarityArrays(
+    plane = None
+    if planes:
+        # variable group size -> pad to the widest group; padding columns hold local
+        # index 0 (a valid atom) and are zeroed in grp_mask (same layout as distance).
+        n_plane = len(planes)
+        max_atoms = max(len(grp) for grp in planes)
+        idx = np.zeros((n_plane, max_atoms), dtype=np.int64)
+        grp_mask = np.zeros((n_plane, max_atoms), dtype=np.float64)
+        for r, grp in enumerate(planes):
+            for c, g in enumerate(grp):
+                idx[r, c] = g2l[g]
+                grp_mask[r, c] = 1.0
+        plane = PlaneArrays(
             idx=idx,
-            vol0=np.array([v for _, _, _, _, v in planarities]),
-            slack=np.full(len(planarities), psl),
-            weight=np.full(len(planarities), pw),
-            mask=np.ones(len(planarities)),
+            grp_mask=grp_mask,
+            slack=np.full(n_plane, psl),
+            weight=np.full(n_plane, pw),
+            mask=np.ones(n_plane),
         )
 
     # ---- distance arrays (padded, local indices) ------------------------------
@@ -959,7 +986,7 @@ def build_spec(
         bond=bond,
         angle=angle,
         chiral=chiral,
-        planarity=planarity,
+        plane=plane,
         cistrans=cistrans_arr,
         distance=distance,
         rmsd=rmsd,
@@ -984,13 +1011,13 @@ def build_spec(
         )
     vdw_desc = "+".join(vdw_parts) if vdw_parts else "off"
     logger.info(
-        "built spec: n_active=%d bonds=%d angles=%d chirals=%d planarity=%d cistrans=%d "
+        "built spec: n_active=%d bonds=%d angles=%d chirals=%d plane=%d cistrans=%d "
         "distances=%d rmsd=%d group_angle=%d group_dihedral=%d vdw=%s custom=%d",
         spec.n_active,
         len(bonds),
         len(angles),
         len(chirals),
-        len(planarities),
+        len(planes),
         len(cistrans),
         len(distance_restraints),
         len(rmsd_restraints),

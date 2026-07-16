@@ -84,8 +84,9 @@ an ill-defined gradient — see config.md).
 ## 3. Conformer — "keep the ligand chemically sensible"
 
 Holds a **ligand** near its ideal RDKit geometry while the pocket forms: bond lengths,
-bond angles, chirality (`chiral`), cis/trans of double bonds (`cistrans`), sp2 planarity
-(`planarity`, opt-in), and clash avoidance (`vdw`). It is a single dict (not a list).
+bond angles, chirality (`chiral`), cis/trans of double bonds (`cistrans`), best-fit-plane
+flatness of rings + sp2 groups (`plane`, opt-in), and clash avoidance (`vdw`). It is a single
+dict (not a list).
 
 > "Don't let the bound ATP distort into a weird shape."
 
@@ -97,7 +98,7 @@ conformer_restraints_config:
   chiral:   {weight: 1.0}
   cistrans: {weight: 1.0}
   vdw:      {weight: 1.0}   # mode defaults to "both"
-  # planarity: {weight: 1.0}  # OFF by default; add it to enforce sp2 double-bond planarity
+  # plane: {weight: 1.0}  # OFF by default; add it to flatten aromatic rings + sp2 groups (best-fit plane)
 ```
 
 Each sub-block is **off unless present** (a listed term defaults to `weight: 1.0`). Include
@@ -107,9 +108,11 @@ only the terms the user wants; `bond` + `angle` + `chiral` is a sensible default
 > differs per tool — see `tools.md`). This is the single most common silent no-op. Always
 > write the opt-in alongside the block.
 
-Notes worth telling the user: `cistrans` / `planarity` only fire on ligands that actually
-have acyclic non-aromatic double bonds (ATP/NAD/caffeine have none → those counts are 0,
-which is correct, not a bug). A glutamine/sugar CCD drops a leaving atom, changing counts.
+Notes worth telling the user: `cistrans` only fires on ligands that actually have acyclic
+non-aromatic double bonds (ATP/NAD/caffeine have none → `cistrans=0`, which is correct, not a
+bug). `plane` instead fires on planar GROUPS — aromatic/conjugated rings AND non-ring sp2
+groups — so ATP's adenine gives `plane=2` (its fused 6+5 rings) while a saturated/aliphatic
+ligand gives `plane=0`. A glutamine/sugar CCD drops a leaving atom, changing counts.
 
 ---
 

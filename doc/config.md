@@ -284,7 +284,7 @@ not configured" rule the other restraint types follow.
 | `bond` | `weight` (1.0), `slack` (0.0 Å) | bond lengths toward ideal; flat-bottomed by `slack` |
 | `angle` | `weight` (1.0), `slack` (0.0 rad) | bond angles toward ideal |
 | `chiral` | `weight` (1.0), `slack` (0.05) | chiral volume (stereochemistry) — holds each stereocentre's handedness |
-| `planarity` | `weight` (1.0), `slack` (0.05) | **planarity** of sp2 double-bond centres — signed volume toward ~0 (same maths as `chiral`). Fires on acyclic, non-aromatic double-bond endpoints with exactly 3 heavy neighbours (carbonyl / amide / ester / carboxyl / trisubstituted alkene); aromatic + in-ring excluded (parity-safe). Add a `planarity:` block to activate |
+| `plane` | `weight` (1.0), `slack` (0.0 Å) | **best-fit-plane** flatness of whole planar atom groups (servalcat-style) — penalises each group's out-of-plane RMS deviation toward 0. Fires on (a) aromatic/conjugated rings (whole ring) and (b) non-ring sp2 groups (an acyclic double-bond centre + its heavy neighbours: carbonyl / amide / ester / carboxyl / trisubstituted alkene). Group membership is confirmed by the reference conformer being coplanar (not the RDKit aromaticity flag). Add a `plane:` block to activate |
 | `cistrans` | `weight` (1.0), `slack` (0.0 rad) | **cis/trans (E/Z)** of acyclic, non-aromatic double bonds (needs real bond orders; detects 0 for ligands with none, e.g. ATP/NAD/GLN) |
 | `vdw` | `weight` (1.0), `mode` (`"both"`), `scale` (0.75), `dmax` (5.0 Å) | non-bonded clash avoidance |
 
@@ -297,7 +297,7 @@ quantity $x$:
 | `bond` | bond length $r$ | $r_0$ |
 | `angle` | bond angle $\theta$ (radians) | $\theta_0$ |
 | `chiral` | signed volume $V = (a_1 - a_0)\cdot\big((a_2 - a_0)\times(a_3 - a_0)\big)$ | $V_0$ (handedness) |
-| `planarity` | the same signed volume $V$ | $V_0 \approx 0$ (planarity) |
+| `plane` | group's out-of-plane RMS deviation $\sqrt{\lambda_{\min}/N}$ ($\lambda_{\min}$ = smallest eigenvalue of the centred covariance) | $0$ (planar) |
 | `cistrans` | double-bond torsion $\phi$ (deviation wrapped to $\pm 180^\circ$) | $\phi_0$ (E/Z) |
 
 `vdw` is one-sided (repulsion only),

@@ -38,12 +38,19 @@ _SPEC_SCHEMA = [
         "chiral",
         [("idx", "i"), ("vol0", "f"), ("slack", "f"), ("weight", "f"), ("mask", "f")],
     ),
-    # planarity of sp2 double-bond centres: same fields as chiral (it reuses
-    # chiral_energy), only target vol0 ~ 0 differs. See _TERMS / spec.PlanarityArrays.
+    # best-fit-plane over planar atom GROUPS (aromatic/conjugated rings + non-ring sp2
+    # groups): a padded (n_plane, max_atoms) idx + {0,1} grp_mask (variable group size,
+    # like distance's groups), out-of-plane RMS deviation toward 0. See spec.PlaneArrays.
     (
-        "planarity",
-        "planarity",
-        [("idx", "i"), ("vol0", "f"), ("slack", "f"), ("weight", "f"), ("mask", "f")],
+        "plane",
+        "plane",
+        [
+            ("idx", "i"),
+            ("grp_mask", "f"),
+            ("slack", "f"),
+            ("weight", "f"),
+            ("mask", "f"),
+        ],
     ),
     (
         "cistrans",
@@ -184,9 +191,9 @@ _TERMS = [
     ("bond", "bond_energy", ["idx", "r0", "slack", "weight", "half"], "conf"),
     ("angle", "angle_energy", ["idx", "th0", "slack", "weight"], "conf"),
     ("chiral", "chiral_energy", ["idx", "vol0", "slack", "weight"], "conf"),
-    # planarity REUSES the chiral signed-volume leaf fn (target vol0 ~ 0); its
-    # own prepared key keeps it a separate, independently-weighted/reported term.
-    ("planarity", "chiral_energy", ["idx", "vol0", "slack", "weight"], "conf"),
+    # plane: best-fit-plane over groups; own leaf fn (variable-size padded groups +
+    # stop-gradient plane normal), conformer-gated + independently weighted/reported.
+    ("plane", "plane_energy", ["idx", "grp_mask", "slack", "weight"], "conf"),
     ("cistrans", "cistrans_energy", ["idx", "phi0", "slack", "weight"], "conf"),
     ("vdw", "vdw_energy", ["idx", "r_min", "weight"], "conf"),
     (
@@ -306,7 +313,7 @@ BREAKDOWN_KEYS = (
     "bond",
     "angle",
     "chiral",
-    "planarity",
+    "plane",
     "cistrans",
     "vdw",
     "distance",

@@ -33,10 +33,10 @@ separate FASTA (the ligand is a SMILES string).
 chai's FASTA can't carry a per-ligand flag (the header parser accepts only `name=`), so chai's
 conformer opt-in lives **in the sidecar** as a `conformer_restraints` map keyed by ligand chain id
 (the same chain id you use in `atom_selection`, e.g. `B`): set it `true` to enable that ligand's
-bond/angle/chiral/planarity/cistrans/VdW conformer restraints. A ligand absent from the map (or set `false`)
+bond/angle/chiral/plane/cistrans/VdW conformer restraints. A ligand absent from the map (or set `false`)
 is left unrestrained even when a `conformer_restraints_config` block is present. chai drops
 intra-ligand bond orders at every layer, so the adapter rebuilds the molecule from the source SMILES
-(Kekulized → correct valence + aromaticity + stereo) — bond/angle/chiral/planarity/cistrans all apply.
+(Kekulized → correct valence + aromaticity + stereo) — bond/angle/chiral/plane/cistrans all apply.
 
 The sidecar below writes **every usable variable** with a concrete value; see
 [`config.md`](config.md) for the alternatives (restraint types, config-only `custom`
@@ -102,7 +102,7 @@ conformer_restraints_config:
   bond: {weight: 1.0, slack: 0.0}
   angle: {weight: 1.0, slack: 0.0}
   chiral: {weight: 1.0, slack: 0.05}
-  planarity: {weight: 1.0, slack: 0.05}   # sp2 planarity (opt-in); GLN's amide + carboxyl carbons -> planarity=2
+  plane: {weight: 1.0}   # best-fit-plane over rings + sp2 groups (opt-in); GLN's amide + carboxyl groups -> plane=2
   cistrans: {weight: 1.0, slack: 0.0}
   vdw: {weight: 1.0}
 rmsd_restraints_config:
@@ -162,7 +162,7 @@ python -m chai_lab.main fold \
 ## Verify
 
 With `verbose: true`, `setup` logs `built spec: n_active=.. bonds=.. angles=.. chirals=..
-planarity=.. cistrans=.. distances=.. rmsd=.. group_angle=.. group_dihedral=..` — confirm the counts are non-zero for what
+plane=.. cistrans=.. distances=.. rmsd=.. group_angle=.. group_dihedral=..` — confirm the counts are non-zero for what
 you requested. Cross-check with the workspace helpers (chai's venv has gemmi/rdkit):
 `../check_dist.py <pred.cif>` (centroid distance vs 25 Å) and `../check_conf.py <pred.cif> GLN`
 (ligand geometry).

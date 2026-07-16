@@ -83,23 +83,26 @@ class ChiralArrays:
 
 
 @dataclass
-class PlanarityArrays:
-    """Planarity restraints on sp2 double-bond centres (padded). Center
-    atom is column 0; columns 1-3 are its three heavy-atom neighbours.
+class PlaneArrays:
+    """Best-fit-plane restraints over arbitrary-size planar atom GROUPS (padded).
 
-    Same scalar-triple-product (signed volume) maths and array layout as
-    ``ChiralArrays`` — the only difference is intent: ``vol0`` is the reference
-    conformer's volume of the four atoms, which is ~0 for a planar sp2 centre, so the
-    restraint penalises the centre pyramidalising out of its substituents' plane
-    (carbonyl / amide / ester / carboxyl / trisubstituted-alkene centres). It reuses
-    the backend ``chiral_energy`` leaf function via the ``_terms`` dispatch.
+    Servalcat-style: each row is a set of atoms the reference conformer holds
+    coplanar (an aromatic / conjugated ring, or a non-ring sp2 functional group =
+    an sp2 centre with its heavy neighbours). The energy is the group's out-of-plane
+    RMS deviation from its own best-fit plane (target 0 = planar), so it flattens
+    aromatic rings the old per-centre signed-volume term could not (a ring CH has
+    only 2 heavy neighbours in the H-removed mol). Variable group size ``A`` is
+    encoded purely by ``grp_mask`` (padding columns zeroed), the same layout as
+    ``DistanceArrays``' groups. The backend ``plane_energy`` leaf builds each group's
+    masked centroid + covariance, takes the smallest-eigenvalue plane normal
+    (stop-gradient, like ``rmsd_energy``'s Kabsch rotation) and penalises the residual.
     """
 
-    idx: np.ndarray  # (n_planarity, 4) int
-    vol0: np.ndarray  # (n_planarity,) reference scalar triple product (~0 = planar)
-    slack: np.ndarray  # (n_planarity,)
-    weight: np.ndarray  # (n_planarity,)
-    mask: np.ndarray  # (n_planarity,)
+    idx: np.ndarray  # (n_plane, max_atoms) int local indices
+    grp_mask: np.ndarray  # (n_plane, max_atoms) float {0,1}: 1 = real atom, 0 = padding
+    slack: np.ndarray  # (n_plane,) Angstrom flat-bottom tolerance (0 = pure harmonic)
+    weight: np.ndarray  # (n_plane,)
+    mask: np.ndarray  # (n_plane,) float {0,1}: 1 = valid restraint, 0 = padding
 
 
 @dataclass
@@ -309,9 +312,9 @@ class RestraintSpec:
     bond: BondArrays | None = None
     angle: AngleArrays | None = None
     chiral: ChiralArrays | None = None
-    # planarity of sp2 double-bond centres; same signed-volume maths as
-    # chiral, target ~0 (see PlanarityArrays).
-    planarity: PlanarityArrays | None = None
+    # best-fit-plane restraints over planar atom groups (aromatic/conjugated rings +
+    # non-ring sp2 groups); out-of-plane RMS deviation, target 0 (see PlaneArrays).
+    plane: PlaneArrays | None = None
     cistrans: CisTransArrays | None = None
     vdw: VdwArrays | None = None
     vdw_config: VdwConfig | None = None
@@ -322,7 +325,7 @@ class RestraintSpec:
     # per-restraint start_sigma/stop_sigma like distance/rmsd.
     group_angle: GroupAngleArrays | None = None
     group_dihedral: GroupDihedralArrays | None = None
-    # one start_sigma for ALL conformer (bond/angle/chiral/planarity/cistrans/vdw)
+    # one start_sigma for ALL conformer (bond/angle/chiral/plane/cistrans/vdw)
     # restraints; each distance restraint carries its own in DistanceArrays.start_sigma.
     # NOTE: this internal spec-field default stays -1.0 (= conformer OFF) on purpose,
     # unlike the user-facing build_spec/config defaults (+inf = active every step):
@@ -344,7 +347,7 @@ class RestraintSpec:
     custom: list = field(default_factory=list)
 
     def has_conformer(self) -> bool:
-        """True if any conformer (bond/angle/chiral/planarity/cistrans/vdw) restraint
+        """True if any conformer (bond/angle/chiral/plane/cistrans/vdw) restraint
         exists."""
         if self.vdw_config is not None and self.vdw_config.weight > 0:
             return True
@@ -354,7 +357,7 @@ class RestraintSpec:
                 self.bond,
                 self.angle,
                 self.chiral,
-                self.planarity,
+                self.plane,
                 self.cistrans,
                 self.vdw,
             )

@@ -250,35 +250,52 @@ def _lig_heavy(smi: str) -> LigandConf:
     )
 
 
-def test_planarity_perception():
-    """planarity fires on acyclic, non-aromatic double-bond endpoints
-    with exactly 3 heavy neighbours, reusing chiral's signed volume. Parity-safe scope:
-    aromatic + in-ring double bonds are excluded (mirrors cistrans's bond filter), and
-    the term is OFF unless explicitly opted in."""
-    cfg = {"planarity": {"weight": 1.0}, "cistrans": {"weight": 1.0}}
+def test_plane_perception():
+    """plane fires on whole planar atom GROUPS (servalcat-style best-fit plane):
+    aromatic/conjugated rings + non-ring sp2 groups, each CONFIRMED coplanar in the
+    reference conformer (so aromaticity flags are never trusted). Variable group size is
+    a padded (n_plane, max_atoms) idx + grp_mask. OFF unless explicitly opted in."""
+    cfg = {"plane": {"weight": 1.0}, "cistrans": {"weight": 1.0}}
     nrow = lambda a: 0 if a is None else len(a.idx)  # noqa: E731
 
-    # fumarate: 2 carboxyl carbons (exocyclic C=O, 3 heavy neighbours) -> planarity=2;
-    # the C=C alkene carbons have only 2 heavy neighbours each, so the bond's E/Z is held
-    # by cistrans (=1), not planarity.
+    # fumarate: 2 carboxyl groups (each carboxyl C + O + O + alkene C = 4 coplanar atoms)
+    # -> plane=2; no ring. The C=C alkene centre has only 2 heavy neighbours (a 3-atom,
+    # trivially-planar group, skipped) so the bond's E/Z is held by cistrans (=1).
     spec = build_spec([_lig_heavy(r"OC(=O)/C=C/C(=O)O")], [], cfg)
-    assert nrow(spec.planarity) == 2
+    assert nrow(spec.plane) == 2
     assert nrow(spec.cistrans) == 1
-    assert int(spec.planarity.idx.max()) < spec.n_active  # valid local indices
+    assert spec.plane.idx.shape == (2, 4)  # two 4-atom groups
+    assert (spec.plane.grp_mask.sum(axis=1) == 4).all()  # no padding for 4-atom groups
+    assert int(spec.plane.idx.max()) < spec.n_active  # valid local indices
 
-    # acetamide carbonyl carbon (CH3-C, O, N = 3 heavy neighbours) -> planarity=1
-    assert nrow(build_spec([_lig_heavy("CC(=O)N")], [], cfg).planarity) == 1
+    # acetamide amide group (carbonyl C + methyl C + O + N = 4 coplanar atoms) -> plane=1
+    assert nrow(build_spec([_lig_heavy("CC(=O)N")], [], cfg).plane) == 1
 
-    # aromatic centres excluded (SanitizeMol is best-effort -> don't trust GetIsAromatic
-    # alone; here it correctly perceives the ring as aromatic and the term stays empty)
-    assert build_spec([_lig_heavy("c1ccccc1")], [], cfg).planarity is None
-    # in-ring non-aromatic C=C excluded by the topological IsInRing guard (parity-safe)
-    assert build_spec([_lig_heavy("C1CCC=CC1")], [], cfg).planarity is None
+    # aromatic ring: NOW restrained (the whole 6-membered ring is one plane group). This
+    # is the servalcat behaviour the old per-centre signed-volume term could not do (a
+    # ring CH has only 2 heavy neighbours). Detected via ring topology + reference
+    # coplanarity, NOT GetIsAromatic (benzene here even fails to kekulize, yet is caught).
+    bz = build_spec([_lig_heavy("c1ccccc1")], [], cfg).plane
+    assert nrow(bz) == 1 and int(bz.grp_mask.sum()) == 6  # one 6-atom ring group
 
-    # OFF by default: no planarity key -> no planarity term even alongside other conformer
-    # terms (preserves every existing conformer run).
+    # fused rings: ATP's adenine is a 6+5 fused bicyclic -> two ring plane groups; the
+    # puckered ribose + tetrahedral phosphate are NOT coplanar so contribute nothing.
+    atp = build_spec(
+        [_lig_heavy("Nc1ncnc2n(cnc12)C3OC(COP(=O)(O)OP(=O)(O)OP(=O)(O)O)C(O)C3O")],
+        [],
+        cfg,
+    ).plane
+    assert nrow(atp) == 2
+    assert sorted(int(m.sum()) for m in atp.grp_mask) == [5, 6]
+
+    # saturated ring dropped: cyclohexane is puckered (chair), so its reference is NOT
+    # coplanar (max out-of-plane deviation > _PLANE_TOL) and no plane fires.
+    assert build_spec([_lig_heavy("C1CCCCC1")], [], cfg).plane is None
+
+    # OFF by default: no plane key -> no plane term even alongside other conformer terms
+    # (preserves every existing conformer run).
     off = build_spec([_lig_heavy("CC(=O)N")], [], {"bond": {"weight": 0.05}})
-    assert off.planarity is None and off.bond is not None
+    assert off.plane is None and off.bond is not None
 
 
 def _lig_heavy_at(smi: str, base: int, seed: int = 1) -> tuple[LigandConf, int]:
@@ -373,14 +390,14 @@ def test_vdw_mode_ligand_protein_removed():
         build_spec([lcA], [], {"vdw": {"weight": 1.0, "mode": "ligand_protein"}})
 
 
-@pytest.mark.parametrize("term,default", [("bond", 0.0), ("planarity", 0.05)])
+@pytest.mark.parametrize("term,default", [("bond", 0.0), ("chiral", 0.05)])
 def test_conf_slack_null_handling_uniform(term, default):
     """slack: omitted/null -> per-term default; explicit 0 -> 0.0 (the truthiness trap).
 
-    Guards the consistency fix that routed all five conformer terms through _conf_slack so
-    the null/zero handling can't drift (it previously diverged: only cistrans/planarity had
-    an `or 0.0` guard, so `slack: null` crashed bond/angle/chiral and silently zeroed
-    planarity's 0.05 default)."""
+    Guards the consistency fix that routed all conformer terms through _conf_slack so the
+    null/zero handling can't drift (it previously diverged: only some terms had an `or 0.0`
+    guard, so `slack: null` crashed bond/angle and silently zeroed a non-zero default). The
+    chiral case (default 0.05) exercises the trap that a zero default cannot."""
     from rgi_utils.featurizer import _conf_slack
 
     assert _conf_slack({}, term, default) == default  # key absent

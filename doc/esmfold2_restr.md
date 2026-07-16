@@ -52,12 +52,14 @@ ESMFold2's API is **Pythonic**: `restraints_config` is a plain **Python dict** p
 schema is identical to the other tools.
 
 Conformer restraints are **per-ligand opt-in**: set `conformer_restraints=True` on a `LigandInput`
-to enable its bond/angle/chiral/planarity/cistrans/VdW restraints. A ligand left at the default (`False`) is
+to enable its bond/angle/chiral/plane/cistrans/VdW restraints. A ligand left at the default (`False`) is
 unrestrained even when a `conformer_restraints_config` block is present.
 
 A ligand = one token/atom, so `token_bonds` carries intra-ligand connectivity and bond ORDERS ride
 on `ChainInfo.ligand_bond_orders` (CCD via `get_ligand_ccd_bonds`, SMILES via Kekulized 3-tuples) —
-so the conformer cistrans and planarity terms (same bond-order path) work for both CCD and SMILES ligands.
+so the conformer cistrans term (and the non-ring sp2 half of `plane`) work for both CCD and SMILES
+ligands. `plane`'s ring half needs only ring topology + reference coplanarity, so it fires even without
+bond orders.
 
 The `RESTRAINTS_CONFIG` dict below writes **every usable variable** with a concrete value (distance
 / angle / dihedral / conformer / RMSD, plus config-only `custom`); see [`config.md`](config.md) for the
@@ -138,7 +140,7 @@ RESTRAINTS_CONFIG = {
         "bond": {"weight": 1.0, "slack": 0.0},
         "angle": {"weight": 1.0, "slack": 0.0},
         "chiral": {"weight": 1.0, "slack": 0.05},
-        "planarity": {"weight": 1.0, "slack": 0.05},  # sp2 planarity (opt-in); GLN -> planarity=2
+        "plane": {"weight": 1.0},  # best-fit-plane, rings + sp2 groups (opt-in); GLN -> plane=2
         "cistrans": {"weight": 1.0, "slack": 0.0},
         "vdw": {"weight": 1.0},
     },

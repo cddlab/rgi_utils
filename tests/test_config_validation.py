@@ -55,19 +55,23 @@ def test_backend_key_rejected_with_hint():
         RestraintsConfig.from_dict({"backend": "torch"})
 
 
-def test_improper_conformer_key_renamed_to_planarity():
-    """The conformer planarity term was renamed improper -> planarity. The old key must
-    raise a migration hint (like dihedral -> cistrans), not silently leave the opt-in term
-    OFF; the new key parses cleanly."""
-    with pytest.raises(ValueError, match="'improper' was renamed to 'planarity'"):
+def test_plane_conformer_key_migrations():
+    """The conformer plane term was renamed improper -> planarity -> plane. BOTH old keys
+    must raise a migration hint (like dihedral -> cistrans), not silently leave the opt-in
+    term OFF; the new `plane` key parses cleanly."""
+    with pytest.raises(ValueError, match="'improper' was renamed to 'plane'"):
         RestraintsConfig.from_dict(
             {"conformer_restraints_config": {"improper": {"weight": 1.0}}}
         )
+    with pytest.raises(ValueError, match="'planarity' was renamed to 'plane'"):
+        RestraintsConfig.from_dict(
+            {"conformer_restraints_config": {"planarity": {"weight": 1.0}}}
+        )
     # new key is accepted (conformer_config is passed through verbatim)
     cfg = RestraintsConfig.from_dict(
-        {"conformer_restraints_config": {"planarity": {"weight": 1.0}}}
+        {"conformer_restraints_config": {"plane": {"weight": 1.0}}}
     )
-    assert cfg.conformer_config == {"planarity": {"weight": 1.0}}
+    assert cfg.conformer_config == {"plane": {"weight": 1.0}}
 
 
 def test_empty_config_is_vanilla():

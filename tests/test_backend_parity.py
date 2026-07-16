@@ -19,7 +19,7 @@ from rgi_utils.spec import (
     DistanceArrays,
     GroupAngleArrays,
     GroupDihedralArrays,
-    PlanarityArrays,
+    PlaneArrays,
     RestraintSpec,
     VdwArrays,
 )
@@ -29,7 +29,7 @@ N_ACTIVE = 12
 
 def _make_spec(
     include_groups: bool = True,
-    include_planarity: bool = True,
+    include_plane: bool = True,
     include_distance: bool = True,
 ) -> RestraintSpec:
     """A small spec exercising every restraint type with non-zero energy.
@@ -38,10 +38,11 @@ def _make_spec(
     torch-vs-jax CG-convergence test opts out (``include_groups=False``) so its
     calibrated tolerance keeps its original group-free landscape — the periodic group
     dihedral makes the two backends' CG minima diverge a touch more than that tolerance
-    (group CG convergence is covered directly in test_optim.py). ``include_planarity``
-    (default on) adds the planarity term; the same fuzzy CG-convergence test
-    opts out of it too (its stiff near-zero-volume target shifts the fixed-iteration
-    minimum a touch — planarity energy/grad parity is covered by the other tests)."""
+    (group CG convergence is covered directly in test_optim.py). ``include_plane``
+    (default on) adds the best-fit-plane term; like the group/rmsd terms its plane normal
+    is stop-gradient'd, so its gradient does NOT match a numpy finite-difference — the
+    numpy-FD grad test opts out and its grad parity is checked torch-vs-jax
+    (test_plane_grad_parity_torch_jax)."""
     bond = BondArrays(
         idx=np.array([[0, 1], [2, 3], [4, 5]], dtype=np.int64),
         r0=np.array([1.0, 1.5, 1.2]),
@@ -64,19 +65,27 @@ def _make_spec(
         weight=np.array([0.1, 0.1]),
         mask=np.array([1.0, 1.0]),
     )
-    # planarity: same signed-volume maths as chiral but target vol0 ~ 0 (a
-    # planar sp2 centre). Random positions give a non-zero volume so energy > 0; the
-    # second entry is masked-out padding. Reuses chiral_energy via the _terms dispatch,
-    # so this row is what proves planarity is wired + parity-correct across backends.
-    planarity = (
+    # plane: best-fit-plane over padded atom GROUPS (variable size). Random positions
+    # make each group non-planar so energy > 0. Three rows exercise every path: a 5-atom
+    # group, a 4-atom group padded to width 5 (col idx 0 / grp_mask 0), and a masked-out
+    # padding restraint (mask 0). Its plane normal is stop-gradient'd (like rmsd/group).
+    plane = (
         None
-        if not include_planarity
-        else PlanarityArrays(
-            idx=np.array([[8, 9, 10, 11], [0, 2, 4, 6]], dtype=np.int64),
-            vol0=np.array([0.0, 0.0]),
-            slack=np.array([0.0, 0.05]),
-            weight=np.array([0.1, 0.1]),
-            mask=np.array([1.0, 0.0]),
+        if not include_plane
+        else PlaneArrays(
+            idx=np.array(
+                [[0, 1, 2, 3, 4], [5, 6, 7, 8, 0], [8, 9, 10, 11, 0]], dtype=np.int64
+            ),
+            grp_mask=np.array(
+                [
+                    [1.0, 1.0, 1.0, 1.0, 1.0],
+                    [1.0, 1.0, 1.0, 1.0, 0.0],
+                    [1.0, 1.0, 1.0, 1.0, 0.0],
+                ]
+            ),
+            slack=np.array([0.0, 0.05, 0.0]),
+            weight=np.array([0.1, 0.1, 0.1]),
+            mask=np.array([1.0, 1.0, 0.0]),
         )
     )
     # non-trivial phi0 so the random positions violate the torsion (energy > 0);
@@ -173,7 +182,7 @@ def _make_spec(
         bond=bond,
         angle=angle,
         chiral=chiral,
-        planarity=planarity,
+        plane=plane,
         cistrans=cistrans,
         vdw=vdw,
         distance=distance if include_distance else None,
@@ -239,12 +248,13 @@ def test_grad_parity():
 
     from rgi_utils.energy import jax_energy, torch_energy
 
-    # group AND distance terms excluded: both have an intentionally N x-rescaled centroid
-    # gradient (centroid_eff, so the group/centroid moves rigidly at weight=1) — distance now
-    # uses the reduced-mass scale mu=N1*N2/(N1+N2) — so neither matches a numpy finite-
-    # difference of the true energy. Group grad parity is checked torch-vs-jax in test_optim;
-    # distance grad parity torch-vs-jax is test_distance_grad_parity_torch_jax below.
-    spec = _make_spec(include_groups=False, include_distance=False)
+    # group, distance AND plane terms excluded: group/distance have an intentionally
+    # N x-rescaled centroid gradient (centroid_eff — distance uses reduced-mass scale
+    # mu=N1*N2/(N1+N2)); plane stop-gradients its best-fit-plane normal. None match a numpy
+    # finite-difference of the true energy. Group grad parity is checked torch-vs-jax in
+    # test_optim; distance in test_distance_grad_parity_torch_jax; plane in
+    # test_plane_grad_parity_torch_jax below.
+    spec = _make_spec(include_groups=False, include_distance=False, include_plane=False)
     pos = _positions()
 
     # numpy finite-difference gradient (ground truth for autodiff)
@@ -488,6 +498,71 @@ def test_distance_grad_parity_torch_jax():
     assert np.allclose(g_t, g_j, atol=1e-6), f"max|d|={np.abs(g_t - g_j).max()}"
 
 
+def test_plane_grad_parity_torch_jax():
+    """plane stop-gradients its best-fit-plane normal (like rmsd/group), so its autodiff
+    gradient does NOT match a numpy finite-difference of the true energy — but the energy
+    VALUE agrees across numpy/torch/jax (the detached normal is value-preserving) and the
+    autodiff GRADIENT agrees torch-vs-jax (what the CG optimizers rely on)."""
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.energy import jax_energy, torch_energy
+
+    # two nearly-planar groups (mostly z=0 with small out-of-plane lifts) so each group's
+    # smallest-eigenvalue normal is well-separated (stable) yet the energy is non-zero: a
+    # 5-atom group and a 4-atom group padded to width 5.
+    pos = np.array(
+        [
+            [0, 0, 0.0],
+            [1, 0, 0],
+            [0, 1, 0],
+            [1, 1, 0.3],
+            [0.5, 0.5, 0.2],
+            [3, 0, 0],
+            [4, 0, 0.2],
+            [3, 1, 0],
+            [4, 1, 0.25],
+        ],
+        dtype=np.float64,
+    )
+    spec = RestraintSpec(
+        n_active=9,
+        active_sites=np.arange(9),
+        plane=PlaneArrays(
+            idx=np.array([[0, 1, 2, 3, 4], [5, 6, 7, 8, 0]], dtype=np.int64),
+            grp_mask=np.array([[1.0, 1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0, 0.0]]),
+            slack=np.array([0.0, 0.0]),
+            weight=np.array([1.0, 1.0]),
+            mask=np.array([1.0, 1.0]),
+        ),
+        conf_start_sigma=-1.0,
+    )
+    prep_np = numpy_energy.prepare_spec(spec)
+    prep_t = torch_energy.prepare_spec(spec, dtype=torch.float64)
+    prep_j = jax_energy.prepare_spec(spec)
+
+    # energy value parity across the three backends (the normal is value-preserving)
+    e_np = float(numpy_energy.total_energy(pos, prep_np))
+    e_t = float(
+        torch_energy.total_energy(torch.tensor(pos, dtype=torch.float64), prep_t)
+    )
+    e_j = float(jax_energy.total_energy(jnp.asarray(pos), prep_j))
+    assert e_np > 0.0
+    assert abs(e_np - e_t) < 1e-6 and abs(e_np - e_j) < 1e-6
+
+    # gradient parity: torch vs jax (both stop-gradient the normal; a numpy-FD would not
+    # match because the normal's dependence on positions is dropped).
+    pt = torch.tensor(pos, dtype=torch.float64, requires_grad=True)
+    torch_energy.total_energy(pt, prep_t).backward()
+    g_t = pt.grad.numpy()
+    g_j = np.asarray(
+        jax.grad(lambda x: jax_energy.total_energy(x, prep_j))(jnp.asarray(pos))
+    )
+    assert np.allclose(g_t, g_j, atol=1e-6), f"max|d|={np.abs(g_t - g_j).max()}"
+
+
 def _rmsd_case(seed=3, n=6):
     """One RMSD restraint over n atoms: reference + a rotated/translated/noised target."""
     rng = np.random.default_rng(seed)
@@ -685,15 +760,14 @@ def test_jax_torch_cg_same_minimum_at_default_iters():
     from rgi_utils.optim._torch_cg_gpu import _cg_minimize_torch
     from rgi_utils.optim.jax_optim import _cg_minimize
 
-    # conformer + vdw only (no rmsd, group, planarity, OR distance); the CG handles conf
+    # conformer + vdw only (no rmsd, group, plane, OR distance); the CG handles conf
     # here. This test originally excluded distance via include_distance=False (distance was
     # closed-form); with that flag gone, distance is dropped from the spec instead — its
     # reduced-mass centroid_eff rescale shifts the fixed-iteration CG minimum past this fuzzy
-    # tolerance (same reason groups/planarity are excluded). Distance CG-convergence parity is
-    # covered directly in test_optim; group convergence parity likewise.
-    spec = _make_spec(
-        include_groups=False, include_planarity=False, include_distance=False
-    )
+    # tolerance (same reason groups/plane are excluded — plane's stop-gradient normal
+    # likewise). Distance CG-convergence parity is covered directly in test_optim; group
+    # convergence parity likewise.
+    spec = _make_spec(include_groups=False, include_plane=False, include_distance=False)
     pos = _positions(0)
     prep_t = torch_energy.prepare_spec(spec, dtype=torch.float64)
     prep_j = jax_energy.prepare_spec(spec)
@@ -982,10 +1056,10 @@ def test_chiral_flat_bottom_zero_at_reference():
     assert abs(e_np - e_t) < 1e-6 and abs(e_np - e_j) < 1e-6
 
 
-def test_planarity_flat_bottom_zero_at_reference():
-    """planarity reuses chiral_energy: a planar sp2 centre (vol0 ~ 0) has
-    ZERO energy at the reference geometry, quadratic once it pyramidalises out of plane,
-    equal across backends. Proves planarity is wired through _terms to chiral_energy."""
+def test_plane_zero_at_planar_reference():
+    """plane: a coplanar atom GROUP has ZERO out-of-plane deviation -> zero energy,
+    quadratic once an atom lifts out of the best-fit plane, equal across backends. Proves
+    plane is wired through _terms to plane_energy (best-fit-plane RMS deviation)."""
     torch = pytest.importorskip("torch")
     jax = pytest.importorskip("jax")
     jax.config.update("jax_enable_x64", True)
@@ -993,35 +1067,35 @@ def test_planarity_flat_bottom_zero_at_reference():
 
     from rgi_utils.energy import jax_energy, torch_energy
 
-    # atom 0 is the sp2 centre; 1/2/3 its three neighbours, all coplanar -> vol0 = 0
-    pos = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], dtype=np.float64)
-    v1, v2, v3 = pos[1] - pos[0], pos[2] - pos[0], pos[3] - pos[0]
-    vol0 = float(np.dot(v1, np.cross(v2, v3)))  # = 0.0 (planar)
-    assert vol0 == pytest.approx(0.0, abs=1e-12)
+    # a flat 5-atom group in the z=0 plane -> out-of-plane deviation 0 (like an aromatic
+    # ring / carboxyl group in its ideal geometry)
+    pos = np.array(
+        [[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0], [0.5, 0.5, 0]], dtype=np.float64
+    )
     spec = RestraintSpec(
-        n_active=4,
-        active_sites=np.arange(4),
-        planarity=PlanarityArrays(
-            idx=np.array([[0, 1, 2, 3]], dtype=np.int64),
-            vol0=np.array([vol0]),
-            slack=np.array([0.05]),
+        n_active=5,
+        active_sites=np.arange(5),
+        plane=PlaneArrays(
+            idx=np.array([[0, 1, 2, 3, 4]], dtype=np.int64),
+            grp_mask=np.ones((1, 5)),
+            slack=np.array([0.0]),
             weight=np.array([0.1]),
             mask=np.array([1.0]),
         ),
         conf_start_sigma=10.0,
     )
     prep_np = numpy_energy.prepare_spec(spec)
-    # at the planar reference the volume is 0 == vol0 -> inside the band -> ZERO
+    # planar reference -> deviation 0 -> ~ZERO (only the _EPS sqrt-floor remains)
     assert float(numpy_energy.total_energy(pos, prep_np)) == pytest.approx(
-        0.0, abs=1e-12
+        0.0, abs=1e-8
     )
-    # the energy_breakdown reports the term under the dedicated "planarity" key
+    # the energy_breakdown reports the term under the dedicated "plane" key
     bd = numpy_energy.energy_breakdown(pos, prep_np)
-    assert "planarity" in bd
+    assert "plane" in bd
 
-    # pyramidalise the centre out of its neighbours' plane -> non-zero, parity-equal
+    # lift atom 4 out of the z=0 plane -> non-zero, parity-equal across backends
     pos2 = pos.copy()
-    pos2[3, 2] = 1.0  # lift atom 3 out of the z=0 plane
+    pos2[4, 2] = 0.5
     prep_t = torch_energy.prepare_spec(spec, dtype=torch.float64)
     prep_j = jax_energy.prepare_spec(spec)
     e_np = float(numpy_energy.total_energy(pos2, prep_np))
