@@ -40,7 +40,7 @@ Design = **3 layers + autodiff + static shapes + GPU-complete optimization**:
 2. **Energy layer** (`energy/{numpy,torch,jax}_energy.py`, differentiable pure
    functions): identical flat-bottomed maths in all three backends —
    `bond/angle/chiral/plane/cistrans/vdw/distance/rmsd/group_angle/group_dihedral`
-   (cistrans = periodicity-safe torsion for cis/trans; plane = servalcat-style best-fit
+   (cistrans = periodicity-safe torsion for cis/trans; plane = [servalcat](https://github.com/keitaroyam/servalcat)-style best-fit
    plane over whole planar atom GROUPS (aromatic/conjugated rings + non-ring sp2 groups),
    penalising each group's out-of-plane RMS deviation via the smallest-eigenvalue plane
    normal (stop-gradient like `rmsd`'s Kabsch rotation), opt-in/off by

@@ -29,7 +29,7 @@ See each tool's guide in [`doc/`](doc/) for install / run details, and
 Five **built-in** restraint types, all minimized during the denoising loop to guide coordinate optimization:
 
 - **conformer** — ligand bond / angle / chiral-volume / cistrans (E/Z) / plane
-  (servalcat-style best-fit-plane flatness of aromatic rings + sp2 groups, opt-in)
+  ([servalcat](https://github.com/keitaroyam/servalcat)-style best-fit-plane flatness of aromatic rings + sp2 groups, opt-in)
   toward an ideal RDKit geometry, plus **VdW**
   non-bonded clash avoidance (intramolecular and/or intermolecular; `mode`
   defaults to `both`).
