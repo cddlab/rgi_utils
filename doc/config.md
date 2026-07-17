@@ -95,7 +95,7 @@ Available on the same entries as the sigma window (`distance` / `angle` / `dihed
 
 > **A restraint uses EITHER the sigma window OR the step window — never both.** Setting any of
 > `start_sigma` / `stop_sigma` together with any of `start_step` / `stop_step` on one entry **raises**
-> (mutually exclusive — 排他選択). The unused axis stays always-on.
+> (mutually exclusive). The unused axis stays always-on.
 
 > ⚠️ **Step windows are NOT portable across tools.** The number of denoising steps differs per tool
 > (e.g. boltz vs AF3 vs protenix), so `start_step: 50` means a *different point in the trajectory* in

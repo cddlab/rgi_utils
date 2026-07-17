@@ -5,10 +5,11 @@ description: >-
   interviewing the user about what they want, then writing a validated config placed
   correctly for their structure-prediction tool (boltz / protenix / chai-lab /
   alphafold3 / openfold-3 / esmfold2). Use this whenever someone wants to add or set up
-  restraints / 拘束 for a structure prediction — "keep these two domains ~25 Å apart",
+  restraints for a structure prediction — "keep these two domains ~25 Å apart",
   "hold the ligand at a sensible geometry", "pin this loop to a reference structure",
-  "make an RGI config", "restraints_config を作りたい", "RGI を実行したい", "拘束ファイルを
-  作って", "add a distance / angle / dihedral / conformer / RMSD / custom restraint" — even
+  "make an RGI config", "I want to build a restraints_config", "I want to run RGI",
+  "write me a restraint file",
+  "add a distance / angle / dihedral / conformer / RMSD / custom restraint" — even
   when they don't name the file format or the exact restraint type. Translate the goal
   into the right restraint type, atom-selection DSL, target, and sigma window, then
   validate it. This is for AUTHORING a config for an ALREADY-INTEGRATED tool; it is NOT

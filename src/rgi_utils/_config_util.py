@@ -61,7 +61,7 @@ def check_window_exclusive(config: dict, label: str = "restraint entry") -> None
 
     A restraint is gated on EITHER the noise level (``start_sigma`` / ``stop_sigma``) OR
     the diffusion step index (``start_step`` / ``stop_step``) — the two are mutually
-    exclusive (排他選択). Mixing them is a config error, not a silent precedence rule,
+    exclusive. Mixing them is a config error, not a silent precedence rule,
     so this raises rather than warning. Shared by every restraint type so the rule (and
     its message) can't diverge across distance / rmsd / angle / dihedral / conformer /
     custom.

@@ -9,7 +9,7 @@ description: >-
   samplers). The shared engine `rgi_utils` does all the heavy lifting;
   the tool only needs a small adapter, a few hook lines in its sampling loop,
   and to pass one `restraints_config` dict through. Use this skill whenever
-  someone wants to add restraints / 拘束 / RGI / guided sampling to a structure
+  someone wants to add restraints / RGI / guided sampling to a structure
   predictor, inject distance or conformer constraints into a diffusion model,
   port restraints from one predictor to another, or asks "how do I constrain
   ligand geometry / inter-domain distance during sampling". Do NOT reinvent
