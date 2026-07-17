@@ -169,7 +169,23 @@ protenix's RGI hook coexists with protenix's own Training-Free Guidance: the com
 order is TFG first, then RGI. If upstream restructures `tfg/engine.py`, preserve that
 ordering when re-installing the hook — swapping it changes what the restraint acts on.
 
-### chai / openfold-3 — no `upstream` remote *and* no upstream-side RGI awareness
+### chai / openfold-3 — the smallest RGI patches
 
-Both were synced by hand before, so their `upstream` remote is missing entirely. Nothing
-else is special about them; their RGI patch is the smallest of the seven (chai: 5 files).
+Nothing structural is special about them; chai's RGI patch is the smallest of the seven
+(5 files) and openfold-3's is 9.
+
+One practical trap, hit on the 2026-07-17 sync: **an upstream sync can raise the tool's own
+toolchain floor**, and that surfaces only when you try to run it, well after the merge
+verified clean. openfold-3's 124-commit catch-up bumped `requires-pixi` in `pixi.toml` to
+`>=0.72.0`, so the workspace's pinned `.pixi-bin/pixi` (0.70.0) refused to start with
+`× this project requires pixi '>=0.72.0'`. That is not an RGI regression — the merge was
+clean and the probe was clean. Re-read `requires-pixi` after any openfold-3 sync and refresh
+the binary if it moved:
+
+```bash
+curl -fsSL -o .pixi-bin/pixi \
+  https://github.com/prefix-dev/pixi/releases/download/v0.72.0/pixi-x86_64-unknown-linux-musl
+chmod +x .pixi-bin/pixi
+```
+
+(Do the download in an `sbatch` job, like every other fetch on this cluster.)

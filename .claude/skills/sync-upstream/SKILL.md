@@ -7,9 +7,10 @@ description: >-
   then propagate that update into its `rgi-integration` branch by merging, resolving the
   conflicts that land on the RGI hook points, and verifying the RGI wiring survived. Use
   this skill whenever someone wants to sync / update / catch up a `*_restr` fork with its
-  fork source — "upstream の更新を取り込んで", "fork元の変更を main に入れて rgi-integration
-  に反映", "boltz を最新に追従させて", "update the fork", "merge upstream into rgi-integration",
-  "本家の更新に追いつきたい" — even when they don't name the branches or the upstream repo.
+  fork source — "pull in the upstream updates", "merge the fork source's changes into main
+  and propagate them to rgi-integration", "catch boltz up with the latest", "update the
+  fork", "merge upstream into rgi-integration", "I want to keep up with the original repo"
+  — even when they don't name the branches or the upstream repo.
   It carries the verified upstream URL table (4 of the 7 forks have no `upstream` remote
   yet, and transformers' upstream is Biohub, NOT huggingface), so do not guess remotes. A
   conflict-free merge is NOT proof of success — upstream rewrites silently drop RGI
@@ -195,6 +196,25 @@ Full E2E confirmation is a GPU job and **must go through `sbatch`, never the log
 (see the workspace `CLAUDE.md` for the recipe and the per-tool partition constraints —
 protenix must run on sm_89). Don't launch one unprompted; instead tell the user which E2E
 fixture would confirm the hook still fires, and offer to submit it.
+
+The cheapest fixture that proves the hook actually fires is the **fumarate plane run**
+(`sbatch_{af3,chai,of3,esm}_plane.sh` + `input_*_plane.*`). One decisive line:
+
+```
+built spec: n_active=8 bonds=7 angles=8 chirals=0 plane=2 cistrans=1 ...
+[rgi_utils] finalize (step N): ... plane=0.00000 ... total=0.00000
+```
+
+`n_active=8` / `plane=2` / `cistrans=1` is the documented fumarate expectation, and it is
+**identical across tools and backends** — verified 2026-07-17 on af3 (jax), chai and
+openfold-3 (torch) after this sync. `n_active=0` is the silent-drop signature: the config
+parses, the run succeeds, and nothing is restrained. Note `finalize plane=0.00000` only
+means "satisfied" when the spec reports `plane>0` — with `plane=0` the same line is a no-op,
+so always read the two together.
+
+If a partition is busy, move the job rather than wait: af3/chai/openfold-3 all run fine on
+`q1`/`q3` (sm_89), and `sbatch -p q3 -o <new>.out <script>` overrides the script's own
+`#SBATCH` lines without editing the fixture.
 
 ## Step 8 — Report, then push after confirmation
 
