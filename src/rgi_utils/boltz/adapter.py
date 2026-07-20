@@ -162,6 +162,16 @@ class BoltzFeatsAdapter:
             elem0 = elem0.argmax(dim=-1)
         return elem0.detach().cpu().numpy()
 
+    def get_reference_positions(self) -> np.ndarray:
+        pos = self.feats["ref_pos"]
+        pos0 = pos[0] if pos.dim() > 2 else pos
+        return pos0.detach().float().cpu().numpy()
+
+    def get_reference_space_uid(self) -> np.ndarray:
+        uid = self.feats["ref_space_uid"]
+        uid0 = uid[0] if uid.dim() > 1 else uid
+        return uid0.detach().cpu().numpy()
+
     def iter_ligand_confs(self) -> Iterator[LigandConf]:
         """Yield one LigandConf per non-polymer (ligand) chain (conformer restr).
 

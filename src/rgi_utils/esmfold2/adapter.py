@@ -96,6 +96,10 @@ class ESMFold2Adapter:
             bool
         )  # (n_atom,)
         self._ref_pos = _batch0(features["ref_pos"]).astype(np.float64)  # (n_atom, 3)
+        ref_uid = features.get("ref_space_uid")
+        self._ref_space_uid = (
+            _batch0(ref_uid).astype(np.int64) if ref_uid is not None else None
+        )
         self._ref_element = _batch0(features["ref_element"]).astype(
             np.int64
         )  # (n_atom,)
@@ -195,6 +199,20 @@ class ESMFold2Adapter:
         n = min(len(self._ref_element), self._n_atom)
         elements[:n] = np.where(self._exists[:n], self._ref_element[:n], 0)
         return elements
+
+    def get_reference_positions(self) -> np.ndarray:
+        positions = np.zeros((self._n_atom, 3), dtype=np.float64)
+        n = min(len(self._ref_pos), self._n_atom)
+        positions[:n] = self._ref_pos[:n]
+        return positions
+
+    def get_reference_space_uid(self) -> np.ndarray:
+        if self._ref_space_uid is None:
+            raise AttributeError("ESMFold2 features do not contain ref_space_uid")
+        uid = np.full(self._n_atom, -1, dtype=np.int64)
+        n = min(len(self._ref_space_uid), self._n_atom)
+        uid[:n] = self._ref_space_uid[:n]
+        return uid
 
     def iter_ligand_confs(self) -> Iterator[LigandConf]:
         a2t = self._atom_to_token

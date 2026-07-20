@@ -114,6 +114,10 @@ class ConformerAdapter(Protocol):
         """(num_atoms,) atomic numbers; 0 marks padding. Used for VdW radii."""
         ...
 
+    def get_reference_positions(self) -> "np.ndarray":
+        """(num_atoms, 3) residue-local ideal coordinates for polymer geometry."""
+        ...
+
     def iter_ligand_confs(self) -> Iterator[LigandConf]:
         """Yield one LigandConf per ligand that should get conformer restraints."""
         ...

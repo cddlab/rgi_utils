@@ -140,6 +140,16 @@ class Openfold3Adapter:
         """(num_atoms,) atomic numbers; padding atoms (beyond the AtomArray) are 0."""
         return biotite_get_elements(self.atom_array, self._n_atom)
 
+    def get_reference_positions(self) -> np.ndarray:
+        positions = np.zeros((self._n_atom, 3), dtype=np.float64)
+        source = self._ref_coords
+        if source is None and self.atom_array is not None:
+            source = np.asarray(self.atom_array.coord, dtype=np.float64)
+        if source is not None:
+            n = min(len(source), self._n_atom)
+            positions[:n] = source[:n]
+        return positions
+
     def iter_ligand_confs(self) -> Iterator[LigandConf]:
         aa = self.atom_array
         if aa is None:

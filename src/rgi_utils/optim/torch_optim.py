@@ -49,6 +49,7 @@ class TorchRestraintOptimizer:
         self._active_idx = None
         self._device = None
         self._vdw = None  # dict of device tensors for the fixed-background VdW term
+        self._active_vdw = None  # dynamic active-active polymer neighbour metadata
         # custom restraints -> torch closures, built lazily in _ensure UNDER
         # inference_mode(False) and on the coords' device, so the baked selection-index
         # tensors are normal + on-device (an inference tensor used in the autograd gather
@@ -245,22 +246,39 @@ class TorchRestraintOptimizer:
         vc = getattr(self.spec, "vdw_config", None)
         if vc is None or vc.weight <= 0:
             self._vdw = None
-            return
-        self._vdw = {
-            "lig_local": torch.as_tensor(
-                vc.ligand_local, dtype=torch.long, device=device
-            ),
-            "lig_r": torch.as_tensor(vc.ligand_radii, dtype=dtype, device=device),
-            "bg_global": torch.as_tensor(
-                vc.background_global, dtype=torch.long, device=device
-            ),
-            "bg_r": torch.as_tensor(vc.background_radii, dtype=dtype, device=device),
-            # 0-dim tensors (NOT python floats): passed into the compiled VdW energy, where
-            # a python-float arg would make dynamo guard on its value and recompile per
-            # distinct scale/weight across structures in a batch.
-            "weight": torch.as_tensor(float(vc.weight), dtype=dtype, device=device),
-            "scale": torch.as_tensor(float(vc.scale), dtype=dtype, device=device),
-        }
+        else:
+            self._vdw = {
+                "lig_local": torch.as_tensor(
+                    vc.ligand_local, dtype=torch.long, device=device
+                ),
+                "lig_r": torch.as_tensor(vc.ligand_radii, dtype=dtype, device=device),
+                "bg_global": torch.as_tensor(
+                    vc.background_global, dtype=torch.long, device=device
+                ),
+                "bg_r": torch.as_tensor(
+                    vc.background_radii, dtype=dtype, device=device
+                ),
+                "weight": torch.as_tensor(float(vc.weight), dtype=dtype, device=device),
+                "scale": torch.as_tensor(float(vc.scale), dtype=dtype, device=device),
+            }
+
+        ac = getattr(self.spec, "active_vdw_config", None)
+        if ac is None or ac.weight <= 0:
+            self._active_vdw = None
+        else:
+            self._active_vdw = {
+                "radii": torch.as_tensor(ac.radii, dtype=dtype, device=device),
+                "polymer_mask": torch.as_tensor(
+                    ac.polymer_mask, dtype=torch.bool, device=device
+                ),
+                "excluded_codes": torch.as_tensor(
+                    ac.excluded_codes, dtype=torch.long, device=device
+                ),
+                "weight": torch.as_tensor(float(ac.weight), dtype=dtype, device=device),
+                "scale": torch.as_tensor(float(ac.scale), dtype=dtype, device=device),
+                "dmax": torch.as_tensor(float(ac.dmax), dtype=dtype, device=device),
+                "max_neighbors": int(ac.max_neighbors),
+            }
 
     def _vdw_energy(self, active, bg_pos):
         """Fixed-background VdW repulsion (delegates to the pure ``_vdw_pair_energy`` so the
@@ -333,6 +351,23 @@ class TorchRestraintOptimizer:
                 )
             )
         )
+        active_vdw_active = (
+            self._active_vdw is not None
+            and (
+                sigma is None
+                or (
+                    sigma <= float(self.spec.conf_start_sigma)
+                    and sigma >= float(self.spec.conf_stop_sigma)
+                )
+            )
+            and (
+                step is None
+                or (
+                    step >= float(self.spec.conf_start_step)
+                    and step <= float(self.spec.conf_stop_step)
+                )
+            )
+        )
 
         has_dist = self.spec.has_distance()
         has_conf = self.spec.has_conformer()
@@ -370,17 +405,49 @@ class TorchRestraintOptimizer:
                         device=coords.device,
                     )
                     bg_pos.copy_(coords[..., self._vdw["bg_global"], :])
+                active_vdw = None
+                if active_vdw_active:
+                    from rgi_utils.optim._torch_cg_gpu import build_active_vdw_pairs
+
+                    av = self._active_vdw
+                    neighbours, pair_factor = build_active_vdw_pairs(
+                        active,
+                        av["radii"],
+                        av["polymer_mask"],
+                        av["excluded_codes"],
+                        av["dmax"],
+                        av["max_neighbors"],
+                    )
+                    active_vdw = (neighbours, pair_factor)
 
                 def energy_fn():
                     e = torch_energy.total_energy(active, prepared, sigma, step)
                     if bg_pos is not None:
                         e = e + self._vdw_energy(active, bg_pos)
+                    if active_vdw is not None:
+                        from rgi_utils.optim._torch_cg_gpu import active_vdw_pair_energy
+
+                        av = self._active_vdw
+                        e = e + active_vdw_pair_energy(
+                            active,
+                            active_vdw[0],
+                            active_vdw[1],
+                            av["radii"],
+                            av["scale"],
+                            av["weight"],
+                        )
                     ce = self._custom_energy(active, sigma, step)
                     if ce is not None:
                         e = e + ce
                     return e
 
-                if self._is_cg() and active.is_cuda and has_custom and bg_pos is None:
+                if (
+                    self._is_cg()
+                    and active.is_cuda
+                    and has_custom
+                    and bg_pos is None
+                    and active_vdw is None
+                ):
                     # GPU + custom (no dynamic fixed-background VdW): a per-optimizer
                     # torch.compile'd energy that INCLUDES the custom closures (gpu_cg's
                     # module-global energy can't see them). Falls back to the eager CG if
@@ -410,8 +477,24 @@ class TorchRestraintOptimizer:
                             v["scale"],
                             v["weight"],
                         )
+                    active_vdw_args = None
+                    if active_vdw is not None:
+                        av = self._active_vdw
+                        active_vdw_args = (
+                            active_vdw[0],
+                            active_vdw[1],
+                            av["radii"],
+                            av["scale"],
+                            av["weight"],
+                        )
                     prepared_g = self._gated_prepared(sigma, step)
-                    opt = gpu_cg(prepared_g, active.detach(), mi, vdw=vdw)
+                    opt = gpu_cg(
+                        prepared_g,
+                        active.detach(),
+                        mi,
+                        vdw=vdw,
+                        active_vdw=active_vdw_args,
+                    )
                     with torch.no_grad():
                         active.copy_(opt)
                 elif self._is_cg():

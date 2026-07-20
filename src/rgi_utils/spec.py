@@ -162,6 +162,24 @@ class VdwConfig:
 
 
 @dataclass
+class ActiveVdwConfig:
+    """Dynamic active-active VdW neighbours involving restrained polymer atoms.
+
+    A fixed-width nearest-neighbour list is rebuilt from the current coordinates once
+    per diffusion step and held fixed during CG.  This keeps each energy evaluation
+    O(N*K), while 1-2/1-3 covalent pairs are removed through ``excluded_codes``.
+    """
+
+    weight: float
+    radii: np.ndarray  # (n_active,) VdW radius for every active atom
+    polymer_mask: np.ndarray  # (n_active,) bool; pair needs at least one True endpoint
+    excluded_codes: np.ndarray  # sorted canonical pair codes min(i,j)*N+max(i,j)
+    scale: float = 0.75
+    dmax: float = 5.0
+    max_neighbors: int = 32
+
+
+@dataclass
 class DistanceArrays:
     """Centroid distance restraints between two atom groups (padded)."""
 
@@ -318,6 +336,7 @@ class RestraintSpec:
     cistrans: CisTransArrays | None = None
     vdw: VdwArrays | None = None
     vdw_config: VdwConfig | None = None
+    active_vdw_config: ActiveVdwConfig | None = None
     distance: DistanceArrays | None = None
     rmsd: RmsdArrays | None = None
     # centroid angle/dihedral restraints between atom GROUPS (distinct from the conformer
@@ -350,6 +369,8 @@ class RestraintSpec:
         """True if any conformer (bond/angle/chiral/plane/cistrans/vdw) restraint
         exists."""
         if self.vdw_config is not None and self.vdw_config.weight > 0:
+            return True
+        if self.active_vdw_config is not None and self.active_vdw_config.weight > 0:
             return True
         return any(
             arr is not None and arr.mask.sum() > 0

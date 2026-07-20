@@ -28,7 +28,8 @@ See each tool's guide in [`doc/`](doc/) for install / run details, and
 
 Five **built-in** restraint types, all minimized during the denoising loop to guide coordinate optimization:
 
-- **conformer** — ligand bond / angle / chiral-volume / cistrans (E/Z) / plane
+- **conformer** — ligand and polymer-local bond / angle / chiral-volume / VdW;
+  ligand-only cistrans (E/Z) / plane
   ([servalcat](https://github.com/keitaroyam/servalcat)-style best-fit-plane flatness of aromatic rings + sp2 groups, opt-in)
   toward an ideal RDKit geometry, plus **VdW**
   non-bonded clash avoidance (intramolecular and/or intermolecular; `mode`
@@ -91,13 +92,14 @@ restraints_config = {
         }
     ],
     "conformer_restraints_config": {
-        "start_sigma": 1.0,                  # one value for all conformer terms (optional)
+        # Optional polymer local-chemistry repair. Omit start_sigma to enable it from step 0.
+        "polymer_types": ["protein", "dna", "rna"],
         "bond": {"weight": 1.0},
         "angle": {"weight": 1.0},
         "chiral": {"weight": 1.0},
         "cistrans": {"weight": 1.0},         # ligand cis/trans (acyclic C=C only)
         "plane": {"weight": 1.0},            # best-fit plane: rings + sp2 groups (off by default)
-        "vdw": {"weight": 1.0},              # mode defaults to "both"
+        "vdw": {"weight": 1.0, "max_neighbors": 32},  # mode defaults to "both"
     },
     "custom_restraints_config": [            # define your OWN restraint as a formula (DSL)
         {"name": "symmetric",               # keep two inter-domain distances equal

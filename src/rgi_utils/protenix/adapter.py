@@ -99,6 +99,21 @@ class ProtenixAdapter:
         """(N_atom,) atomic numbers; padding atoms (beyond the atom_array) are 0."""
         return biotite_get_elements(self.atom_array, self._n_atom)
 
+    def _feature_numpy(self, name: str) -> np.ndarray:
+        value = self.feats[name]
+        if hasattr(value, "detach"):
+            value = value.detach().cpu().numpy()
+        value = np.asarray(value)
+        while value.ndim > (2 if name == "ref_pos" else 1):
+            value = value[0]
+        return value
+
+    def get_reference_positions(self) -> np.ndarray:
+        return self._feature_numpy("ref_pos").astype(np.float64)
+
+    def get_reference_space_uid(self) -> np.ndarray:
+        return self._feature_numpy("ref_space_uid").astype(np.int64)
+
     def iter_ligand_confs(self) -> Iterator[LigandConf]:
         aa = self.atom_array
         if aa is None:

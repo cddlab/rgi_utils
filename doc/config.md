@@ -28,7 +28,7 @@ restraints_config:
   distance_restraints_config: [ ... ]   # list
   angle_restraints_config:    [ ... ]   # list  (group-centroid angle)
   dihedral_restraints_config: [ ... ]   # list  (group-centroid dihedral)
-  conformer_restraints_config: { ... }  # single dict (ligand geometry)
+  conformer_restraints_config: { ... }  # single dict (ligand/polymer local geometry)
   rmsd_restraints_config:     [ ... ]   # list
   custom_restraints_config:   [ ... ]   # list  (define your OWN restraint — see below)
 ```
@@ -264,12 +264,33 @@ Targets in **degrees** by default (`unit: radians` to override).
 
 ## `conformer_restraints_config` (single dict)
 
-Holds a **ligand** at ideal RDKit geometry. It is a single dict (not a list). Conformer restraints
-are **per-ligand opt-in in every tool** — a ligand is restrained only when it is flagged, even with
-this block present. The flag's placement differs by input format: boltz / protenix / AF3 / openfold
-set `conformer_restraints: true` on the ligand object; esmfold2 sets `conformer_restraints=True` on
-the `LigandInput`; chai (whose FASTA can't carry it) uses a sidecar `conformer_restraints` map keyed
-by ligand chain id (e.g. `{B: true}`).
+Repairs local geometry in ligands and selected polymers. It is a single dict (not a list).
+Ligands remain **per-ligand opt-in in every tool** — a ligand is restrained only when it is flagged,
+even with this block present. The flag's placement differs by input format: boltz / protenix / AF3 /
+openfold set `conformer_restraints: true` on the ligand object; esmfold2 sets
+`conformer_restraints=True` on the `LigandInput`; chai (whose FASTA cannot carry it) uses a sidecar
+`conformer_restraints` map keyed by ligand chain id (e.g. `{B: true}`).
+
+Polymers opt in once through `polymer_types`, accepting any subset of `protein`, `dna`, and `rna`:
+
+```yaml
+conformer_restraints_config:
+  polymer_types: [protein, dna, rna]
+  # No start_sigma: all four terms, including VdW, are active from the first step.
+  bond: {}
+  angle: {}
+  chiral: {}
+  vdw:
+    max_neighbors: 32
+```
+
+Intra-residue bond, angle, and chiral targets come from each predictor's residue-local ideal
+reference conformer. Canonical inter-residue geometry is added explicitly: peptide `C-N` bonds plus
+`CA-C-N`, `O-C-N`, and `C-N-CA` angles; and DNA/RNA `O3'-P` phosphodiester bonds plus
+`C3'-O3'-P` and `O3'-P-O5'` angles. The adjacent `P-O5'-C5'` angle comes from the current residue's
+reference conformer. Peptide-plane zero-volume impropers are carried by the `chiral` term. Together
+these prevent an RMSD restraint from repairing a selected residue while breaking the covalent link
+to its neighbour. Polymer `plane` and `cistrans` are not built; those remain ligand-only terms.
 
 Top-level (shared by all terms): `start_sigma` (`+inf`), `stop_sigma` (`-1`) — or the step-window
 alternative `start_step` (`-inf`) / `stop_step` (`+inf`) (mutually exclusive with the sigma window).
@@ -287,7 +308,7 @@ not configured" rule the other restraint types follow.
 | `chiral` | `weight` (1.0), `slack` (0.05) | chiral volume (stereochemistry) — holds each stereocentre's handedness |
 | `plane` | `weight` (1.0), `slack` (0.0 Å) | **best-fit-plane** flatness of whole planar atom groups ([servalcat](https://github.com/keitaroyam/servalcat)-style) — penalises each group's out-of-plane RMS deviation toward 0. Fires on (a) aromatic/conjugated rings (whole ring) and (b) non-ring sp2 groups (an acyclic double-bond centre + its heavy neighbours: carbonyl / amide / ester / carboxyl / trisubstituted alkene). Group membership is confirmed by the reference conformer being coplanar (not the RDKit aromaticity flag). Add a `plane:` block to activate |
 | `cistrans` | `weight` (1.0), `slack` (0.0 rad) | **cis/trans (E/Z)** of acyclic, non-aromatic double bonds (needs real bond orders; detects 0 for ligands with none, e.g. ATP/NAD/GLN) |
-| `vdw` | `weight` (1.0), `mode` (`"both"`), `scale` (0.75), `dmax` (5.0 Å) | non-bonded clash avoidance |
+| `vdw` | `weight` (1.0), `mode` (`"both"`), `scale` (0.75), `dmax` (5.0 Å), `max_neighbors` (32) | non-bonded clash avoidance |
 
 **Energy.** Each term applies the shared flat-bottomed squared penalty ($\delta = 0$ within
 $\pm$`slack` of the RDKit-ideal value, quadratic outside — see Penalty shapes) to a per-tuple
@@ -328,6 +349,13 @@ clamp zeroes non-contacts). Like every conformer term, `vdw` is built only when 
 present (then `weight` defaults to 1.0); omit the block to leave it off. **The old
 `mode: ligand_protein` was removed** (it was only the fixed-background half) — it now raises a
 migration error pointing to `intermolecular`.
+
+For selected polymers, a fixed-width active-active neighbour list is rebuilt once from the current
+coordinates at each diffusion step and held fixed during CG. Energy evaluation is therefore
+`O(N * max_neighbors)` rather than all-pairs on every CG iteration. Covalent 1-2 and 1-3 pairs,
+including peptide and phosphodiester links, are excluded. Polymer atoms are also checked against
+non-active fixed-background atoms on torch and JAX. Omit `start_sigma` (the default `+inf`) to keep
+VdW active from the first denoising step; setting `start_sigma` delays all conformer terms together.
 
 ## `rmsd_restraints_config` (list)
 

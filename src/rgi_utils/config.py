@@ -98,6 +98,9 @@ class RestraintsConfig:
             )
         _ALWAYS_ON = float("inf")  # omitted start_sigma -> active at every step
         conformer_config = config.get("conformer_restraints_config", {}) or {}
+        from rgi_utils.polymer import parse_polymer_types
+
+        parse_polymer_types(conformer_config)
         # The conformer cis/trans term was renamed dihedral -> cistrans. Reject the old
         # key loudly (like the start_sigma / backend:numpy guards) rather than silently
         # falling back to the default weight, which would weaken or re-enable the term.

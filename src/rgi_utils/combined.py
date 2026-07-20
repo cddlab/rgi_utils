@@ -27,6 +27,7 @@ import logging
 
 from rgi_utils.config import RestraintsConfig
 from rgi_utils.featurizer import _conf_weight, build_spec
+from rgi_utils.polymer import build_polymer_geometry
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +171,8 @@ class CombinedRestraints:
                     raise
                 logger.warning("get_elements failed, VdW disabled: %s", exc)
 
+        polymer_geometry = build_polymer_geometry(adapter, cfg.conformer_config)
+
         self.spec = build_spec(
             ligand_confs,
             cfg.distance_data,
@@ -183,6 +186,7 @@ class CombinedRestraints:
             angle_restraints=cfg.angle_data,
             dihedral_restraints=cfg.dihedral_data,
             custom_restraints=custom_data,
+            polymer_geometry=polymer_geometry,
         )
         # backend is inferred lazily (get_minimizer() -> jax; minimize(coords) -> from
         # the coords type) and the matching optimizer built on first use; reset here so a
@@ -208,6 +212,7 @@ class CombinedRestraints:
             gd = self.spec.group_dihedral
             n_grp_dihedral = 0 if gd is None else int(gd.mask.sum())
             vc = self.spec.vdw_config
+            avc = self.spec.active_vdw_config
             sv = self.spec.vdw  # static intra + inter-ligand pairs (energy layer)
             vdw_bits = []
             if sv is not None:
@@ -215,6 +220,10 @@ class CombinedRestraints:
             if vc is not None:
                 vdw_bits.append(
                     f"{len(vc.ligand_local)}lig/{len(vc.background_global)}bg"
+                )
+            if avc is not None:
+                vdw_bits.append(
+                    f"{int(avc.polymer_mask.sum())}poly/{avc.max_neighbors}nn"
                 )
             vdw_s = "+".join(vdw_bits) if vdw_bits else "off"
             # Per-restraint start_sigma: conformer terms share conf_start_sigma;

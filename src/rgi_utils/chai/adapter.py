@@ -140,6 +140,22 @@ class ChaiStructureAdapter:
             elements[:n] = np.where(exists[:n], z[:n], 0)
         return elements
 
+    def get_reference_positions(self) -> np.ndarray:
+        positions = np.zeros((self._n_atom, 3), dtype=np.float64)
+        if self.sc is not None:
+            ref = np.asarray(self.sc.atom_ref_pos, dtype=np.float64)
+            n = min(len(ref), self._n_atom)
+            positions[:n] = ref[:n]
+        return positions
+
+    def get_reference_space_uid(self) -> np.ndarray:
+        uid = np.full(self._n_atom, -1, dtype=np.int64)
+        if self.sc is not None:
+            ref_uid = np.asarray(self.sc.atom_ref_space_uid, dtype=np.int64)
+            n = min(len(ref_uid), self._n_atom)
+            uid[:n] = ref_uid[:n]
+        return uid
+
     def _mol_from_smiles(self, smiles, idxs, elements, coords):
         """Build the ligand mol from the source SMILES so it carries real bond ORDERS
         (chai drops them at every layer). chai names a SMILES ligand's atoms

@@ -26,6 +26,7 @@ from rgi_utils._mol_build import uff_relax
 from rgi_utils.atom_context import LigandConf
 from rgi_utils.spec import (
     DIST_TYPE_CODES,
+    ActiveVdwConfig,
     AngleArrays,
     BondArrays,
     ChiralArrays,
@@ -108,7 +109,7 @@ def _cistrans_rad(crds: np.ndarray, i: int, j: int, k: int, ll: int) -> float:
     return float(np.arctan2(y, x))
 
 
-def _extract_conformer(ligand_confs: list[LigandConf]):
+def _extract_conformer(ligand_confs: list[LigandConf], *, relax: bool = True):
     """Return bond/angle/chiral/cistrans restraint tuples and plane groups in GLOBAL atom
     indices."""
     bonds = []  # (g0, g1, r0)
@@ -134,7 +135,7 @@ def _extract_conformer(ligand_confs: list[LigandConf]):
         # chai/esmfold2 expose no bond orders -> their mol is all-single, so UFF would
         # localize aromatic rings to single-bond lengths (~1.5), corrupting the target;
         # for those tools the cached conformer holds the real reference geometry.
-        if any(
+        if relax and any(
             b.GetIsAromatic() or b.GetBondType() == Chem.BondType.DOUBLE
             for b in mol.GetBonds()
         ):
@@ -366,6 +367,7 @@ def _conf_slack(conformer_config: dict | None, key: str, default: float) -> floa
 
 def _build_vdw_config(
     ligand_confs: list[LigandConf],
+    polymer_atoms: np.ndarray,
     conformer_config: dict,
     active_sites: np.ndarray,
     g2l: dict,
@@ -382,7 +384,11 @@ def _build_vdw_config(
     """
     vcfg = (conformer_config or {}).get("vdw", {}) or {}
     weight = _conf_weight(conformer_config, "vdw")
-    if weight <= 0.0 or not ligand_confs or elements is None:
+    if (
+        weight <= 0.0
+        or (not ligand_confs and len(polymer_atoms) == 0)
+        or elements is None
+    ):
         return None
 
     # ligand atoms + per-atom radii from the mols (global index -> radius)
@@ -391,6 +397,10 @@ def _build_vdw_config(
         gidx = np.asarray(lc.global_indices, dtype=np.int64)
         for i, atom in enumerate(lc.mol.GetAtoms()):
             lig_radius[int(gidx[i])] = _vdw_radius(atom.GetAtomicNum())
+    elements = np.asarray(elements)
+    for g in polymer_atoms:
+        if 0 <= int(g) < len(elements) and int(elements[int(g)]) > 0:
+            lig_radius[int(g)] = _vdw_radius(int(elements[int(g)]))
     ligand_global = np.array(sorted(lig_radius), dtype=np.int64)
     # every ligand atom is in active_sites (added in build_spec when VdW is on)
     ligand_local = np.array([g2l[int(g)] for g in ligand_global], dtype=np.int64)
@@ -400,7 +410,6 @@ def _build_vdw_config(
 
     # fixed background = all non-padding atoms NOT optimised (not in active_sites):
     # protein / DNA/RNA / non-restrained ligand. element code 0 is the padding sentinel.
-    elements = np.asarray(elements)
     active_set = {int(a) for a in active_sites}
     background_global = np.array(
         [
@@ -424,6 +433,62 @@ def _build_vdw_config(
         background_radii=background_radii,
         scale=float(vcfg.get("scale", 0.75)),
         dmax=float(vcfg.get("dmax", 5.0)),
+    )
+
+
+def _build_active_vdw_config(
+    polymer_atoms: np.ndarray,
+    conformer_config: dict,
+    active_sites: np.ndarray,
+    elements: np.ndarray | None,
+    bonds,
+    angles,
+) -> ActiveVdwConfig | None:
+    """Build dynamic polymer-involving VdW metadata in local active-site space."""
+
+    weight = _conf_weight(conformer_config, "vdw")
+    if weight <= 0.0 or len(polymer_atoms) == 0 or elements is None:
+        return None
+    elements = np.asarray(elements)
+    g2l = {int(g): i for i, g in enumerate(active_sites)}
+    radii = np.array(
+        [
+            _vdw_radius(int(elements[g])) if int(elements[g]) > 0 else 0.0
+            for g in active_sites
+        ],
+        dtype=np.float64,
+    )
+    polymer_set = {int(g) for g in polymer_atoms}
+    polymer_mask = np.array([int(g) in polymer_set for g in active_sites], dtype=bool)
+    n_active = len(active_sites)
+    excluded = set()
+
+    def exclude(global_i, global_j):
+        if global_i not in g2l or global_j not in g2l:
+            return
+        i, j = sorted((g2l[int(global_i)], g2l[int(global_j)]))
+        if i != j:
+            excluded.add(i * n_active + j)
+
+    for g0, g1, _target in bonds:
+        exclude(g0, g1)
+    for g0, g1, g2, _target in angles:
+        exclude(g0, g1)
+        exclude(g1, g2)
+        exclude(g0, g2)
+
+    vcfg = (conformer_config or {}).get("vdw", {}) or {}
+    max_neighbors = int(vcfg.get("max_neighbors", 32))
+    if max_neighbors < 1:
+        raise ValueError("conformer vdw max_neighbors must be >= 1")
+    return ActiveVdwConfig(
+        weight=weight,
+        radii=radii,
+        polymer_mask=polymer_mask,
+        excluded_codes=np.asarray(sorted(excluded), dtype=np.int64),
+        scale=float(vcfg.get("scale", 0.75)),
+        dmax=float(vcfg.get("dmax", 5.0)),
+        max_neighbors=max_neighbors,
     )
 
 
@@ -570,6 +635,7 @@ def build_spec(
     angle_restraints: list | None = None,
     dihedral_restraints: list | None = None,
     custom_restraints: list | None = None,
+    polymer_geometry=None,
 ) -> RestraintSpec:
     """Build a RestraintSpec. ``distance_restraints`` are DistanceData with
     ``target_sites1``/``target_sites2`` already resolved to global indices;
@@ -596,7 +662,7 @@ def build_spec(
     # Loud signal for the silent no-op: conformer_restraints_config is present and ligands
     # exist, but none opted in -> zero conformer restraints built (NOT "satisfied"). A
     # finalize term reading 0.00000 because the spec has 0 of that restraint is a no-op.
-    if cfg_present and _n_before and not ligand_confs:
+    if cfg_present and _n_before and not ligand_confs and polymer_geometry is None:
         # print() (not just logger.warning, which the package NullHandler mutes) so this
         # misconfiguration alert survives host logging configs -- the same reasoning as
         # the "NO ACTIVE RESTRAINTS" print in combined.setup. Fires only on the genuine
@@ -643,6 +709,21 @@ def build_spec(
     psl = _conf_slack(cfg, "plane", 0.0)
 
     bonds, angles, chirals, cistrans, planes = _extract_conformer(ligand_confs)
+    polymer_atoms = np.empty(0, dtype=np.int64)
+    if polymer_geometry is not None:
+        pb, pa, pc, _pd, _pp = _extract_conformer(
+            polymer_geometry.residue_confs, relax=False
+        )
+        bonds.extend(pb)
+        bonds.extend(polymer_geometry.link_bonds)
+        angles.extend(pa)
+        angles.extend(polymer_geometry.link_angles)
+        chirals.extend(pc)
+        chirals.extend(polymer_geometry.link_chirals)
+        polymer_atoms = np.asarray(polymer_geometry.atom_indices, dtype=np.int64)
+    # VdW covalent exclusions must survive even when bond/angle energy blocks are off.
+    exclusion_bonds = list(bonds)
+    exclusion_angles = list(angles)
     # weight<=0 means "disable": drop the term BEFORE the active_sites union so its
     # atoms do not become optimisable and it is never iterated — uniform across all
     # conformer terms. weight<=0 now also covers an ABSENT sub-block (_conf_weight -> 0),
@@ -690,6 +771,7 @@ def build_spec(
     if vdw_weight > 0:
         for lc in ligand_confs:
             active.update(int(g) for g in lc.global_indices)
+        active.update(int(g) for g in polymer_atoms)
 
     active_sites = np.array(sorted(active), dtype=np.int64)
     g2l = {int(g): i for i, g in enumerate(active_sites)}
@@ -733,9 +815,12 @@ def build_spec(
     )
     vdw_arrays = _concat_vdw_arrays(vdw_intra, vdw_inter)
     vdw_config = (
-        _build_vdw_config(ligand_confs, cfg, active_sites, g2l, elements)
+        _build_vdw_config(ligand_confs, polymer_atoms, cfg, active_sites, g2l, elements)
         if vdw_mode in ("intermolecular", "both")
         else None
+    )
+    active_vdw_config = _build_active_vdw_config(
+        polymer_atoms, cfg, active_sites, elements, exclusion_bonds, exclusion_angles
     )
 
     # ---- conformer arrays (local indices) -------------------------------------
@@ -994,6 +1079,7 @@ def build_spec(
         group_dihedral=group_dihedral,
         vdw=vdw_arrays,
         vdw_config=vdw_config,
+        active_vdw_config=active_vdw_config,
         conf_start_sigma=conf_start_sigma,
         conf_stop_sigma=conf_stop_sigma,
         conf_start_step=conf_start_step,
@@ -1008,6 +1094,11 @@ def build_spec(
     if vdw_config is not None:
         vdw_parts.append(
             f"{len(vdw_config.ligand_local)}lig/{len(vdw_config.background_global)}bg"
+        )
+    if active_vdw_config is not None:
+        vdw_parts.append(
+            f"{int(active_vdw_config.polymer_mask.sum())}poly/"
+            f"{active_vdw_config.max_neighbors}nn"
         )
     vdw_desc = "+".join(vdw_parts) if vdw_parts else "off"
     logger.info(

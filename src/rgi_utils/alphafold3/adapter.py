@@ -50,6 +50,10 @@ class AF3RestraintAdapter:
         self.ref_pos = np.asarray(batch["ref_pos"])  # (num_tokens, max, 3)
         self.ref_atom_name_chars = np.asarray(batch["ref_atom_name_chars"])
         self.ref_element = np.asarray(batch["ref_element"])  # (num_tokens, max)
+        ref_space_uid = batch.get("ref_space_uid")
+        self.ref_space_uid = (
+            None if ref_space_uid is None else np.asarray(ref_space_uid)
+        )
         self.max_atoms_per_token = self.ref_pos.shape[1]
         # Per-token molecule-type masks -> normalized "protein"/"dna"/"rna" for the
         # selection DSL (powers the protein/dna/rna selectors). AF3 always emits these
@@ -104,6 +108,14 @@ class AF3RestraintAdapter:
         elem = self.ref_element.reshape(-1).astype(np.int64)
         mask = self.ref_mask.reshape(-1)
         return np.where(mask > 0, elem, 0)
+
+    def get_reference_positions(self) -> np.ndarray:
+        return self.ref_pos.reshape(-1, 3).astype(np.float64)
+
+    def get_reference_space_uid(self) -> np.ndarray:
+        if self.ref_space_uid is None:
+            raise AttributeError("AF3 batch does not contain ref_space_uid")
+        return self.ref_space_uid.reshape(-1).astype(np.int64)
 
     def iter_atoms(self) -> Iterator[AtomRecord]:
         """Yield AtomRecord(chain, resid, index) for every real atom.
