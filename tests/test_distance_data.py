@@ -109,6 +109,59 @@ class TestDistanceDataSetConfig:
         assert dd.is_valid() is True
 
 
+_OMITTED = object()
+
+
+def _move(mv) -> DistanceData:
+    cfg = {
+        "atom_selection1": "chain A",
+        "atom_selection2": "chain B",
+        "harmonic": {"target_distance": 5.0},
+    }
+    if mv is not _OMITTED:
+        cfg["move"] = mv
+    return _make_dd(cfg)
+
+
+class TestDistanceDataMove:
+    """The `move` key shares its vocabulary (int / list / comma-string / all/both) with
+    the angle/dihedral `move` via parse_move_indices; a 2-group distance maps the index
+    set onto the 0/1/2 move_mode enum. move_mode: 0=both / 1=grp1 / 2=grp2."""
+
+    def test_default_is_both(self):
+        assert _move(_OMITTED).move_mode == 0
+
+    @pytest.mark.parametrize(
+        "mv,expected",
+        [
+            ("both", 0),
+            ("all", 0),
+            (1, 1),
+            (2, 2),
+            ("1", 1),
+            ("2", 2),
+            ([1], 1),
+            ([2], 2),
+            ([1, 2], 0),
+            ([2, 1], 0),  # order-independent (set)
+            ("1,2", 0),
+            ("1 2", 0),
+            ([1, 1], 1),  # duplicates collapse (set)
+        ],
+    )
+    def test_accepted_values(self, mv, expected):
+        assert _move(mv).move_mode == expected
+
+    @pytest.mark.parametrize("mv", [3, 0, [1, 3], [3], "1,3", "3", []])
+    def test_out_of_range_or_empty_raises(self, mv):
+        with pytest.raises(ValueError, match="move"):
+            _move(mv)
+
+    def test_non_integer_raises(self):
+        with pytest.raises(ValueError, match="move"):
+            _move("x")
+
+
 class TestDistanceDataResolveSites:
     def test_resolve_sites_maps_correct_atoms(self):
         dd = _make_dd(

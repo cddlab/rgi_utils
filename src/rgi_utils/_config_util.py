@@ -106,6 +106,49 @@ def apply_window_params(obj, config: dict, label: str) -> None:
             setattr(obj, key, float(value))
 
 
+def parse_move_indices(mv, n_groups: int) -> set[int] | None:
+    """Parse a ``move`` config value into a set of 1-based group indices, or ``None``.
+
+    The single source of truth for the ``move`` key's *vocabulary* — shared by the
+    2-group distance restraint (``distance_restr_data``) and the 3/4-group angle/dihedral
+    restraints (``group_geom_restr_data``) so the accepted spellings can't drift apart.
+    Only the vocabulary is shared; each caller maps the returned index set onto its own
+    representation (distance -> a 0/1/2 ``move_mode`` enum; angle/dihedral -> a per-group
+    free mask).
+
+    Accepts:
+      * ``None`` (key omitted) -> returns ``None`` so the caller applies its own default;
+      * ``"all"`` / ``"both"`` -> every group (``{1, .., n_groups}``);
+      * a single int ``k`` (or its string form ``"k"``) -> ``{k}``;
+      * a list / tuple / comma- or space-separated string of 1-based indices
+        (``[1, 3]`` / ``"1,3"`` / ``"1 3"``) -> exactly those indices.
+
+    Empty / out-of-range / non-integer values RAISE — a silent fallback would move the
+    wrong groups. (``"both"`` is the distance restraint's 2-group word, kept as a synonym
+    of ``"all"`` for both callers.)
+    """
+    if mv is None:
+        return None
+    if isinstance(mv, str):
+        s = mv.strip().lower()
+        if s in ("all", "both"):
+            return set(range(1, n_groups + 1))
+        items = [p for p in s.replace(",", " ").split() if p]
+    elif isinstance(mv, (list, tuple)):
+        items = list(mv)
+    else:
+        items = [mv]  # a bare int / float
+    try:
+        idx = {int(x) for x in items}
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"'move' must be 'all'/'both' or group indices 1..{n_groups} (got {mv!r})"
+        )
+    if not idx or any(k < 1 or k > n_groups for k in idx):
+        raise ValueError(f"'move' indices must be within 1..{n_groups} (got {mv!r})")
+    return idx
+
+
 def parse_geom_type(config: dict, base: str, conv):
     """Parse the distance-style restraint-type block shared by angle/dihedral and RMSD.
 

@@ -280,8 +280,11 @@ safety). Full config surface: `doc/config.md`.
   which group moves: `both` (default = minimal-displacement, both move) / `1` (only
   `atom_selection1`'s group) / `2` (only `atom_selection2`'s) — `1`/`2` PIN the other group via
   `_move_centroid(free=0)` (`stop_gradient`, the same mechanism as the group-restraint `move`),
-  e.g. move only a ligand toward a fixed pocket. It is a per-restraint `move_mode` int (0/1/2)
-  threaded into the distance leaf via `_TERMS`. For a single / disjoint restraint every mode
+  e.g. move only a ligand toward a fixed pocket. It shares the angle/dihedral `move` VOCABULARY
+  (parsed once by `_config_util.parse_move_indices`), so `both`/`all`/`[1,2]`/`"1,2"` all mean
+  both, and `[1]`/`[2]` alias `1`/`2`; distance has only 2 groups, so `[1,3]` (index out of
+  range) raises. It is a per-restraint `move_mode` int (0/1/2) threaded into the distance leaf
+  via `_TERMS`. For a single / disjoint restraint every mode
   reaches the exact target; minimal-displacement is **exactly reproduced only for single /
   disjoint** restraints (a coupled/shared atom settles at the CG joint minimum, not the closed-form
   split) **and only for the small per-step moves of real diffusion**: a single LARGE one-shot move

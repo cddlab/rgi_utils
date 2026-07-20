@@ -181,7 +181,7 @@ d = \lVert c_2 - c_1 \rVert, \qquad c_k = \frac{1}{|G_k|}\sum_{a \in G_k} x_a
 | `start_sigma` | float | `+inf` | activation upper bound (see Sigma gating) |
 | `stop_sigma` | float | `-1` | release lower bound |
 | `start_step` / `stop_step` | int | `-inf` / `+inf` | step gating — the alternative to the sigma window (mutually exclusive; see Step gating) |
-| `move` | `"both"`/`1`/`2` | `"both"` | which group the correction moves: `both` = minimal-displacement split; `1` / `2` move only that group and **pin** the other (e.g. move a ligand toward a fixed pocket) |
+| `move` | `"both"`/`"all"`/`1`/`2`/`[1,2]`/`"1,2"` | `"both"` | which group the correction moves: `both` (= `all` = `[1,2]`) = minimal-displacement split; `1` / `2` (or `[1]` / `[2]`) move only that group and **pin** the other (e.g. move a ligand toward a fixed pocket). Shares the list/comma vocabulary of the angle/dihedral `move`; distance has 2 groups so only indices 1–2 are valid (`[1,3]` raises) |
 | `weight` | float | `1.0` | relative strength. **No-op for a single restraint or disjoint groups** (each reaches its exact target regardless). Only bites when an atom is the **sole mover** of two **over-constrained coupled** restraints (each pinning its other group), where the shared atom settles `w₁:w₂` between the two targets (e.g. `2` vs `1` → 2:1). Not a soft "strength" knob in the common case |
 | one restraint-type block | dict | — (required) | the penalty (below) |
 

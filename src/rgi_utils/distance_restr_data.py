@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from rgi_utils._config_util import (
     apply_window_params,
     parse_geom_type,
+    parse_move_indices,
     warn_unknown_keys,
 )
 from rgi_utils.atom_context import FrameworkAdapter, candidate_dict
@@ -91,23 +92,20 @@ class DistanceData:
         # unless over-constrained coupling (see the field comment); the windows default to
         # always-on (set in __init__), and start_sigma None -> +inf is filled by from_dict.
         apply_window_params(self, config, "distance_restraints_config entry")
-        # per-distance move mode (OPTIONAL; default "both"): which group(s) the closed-
-        # form centroid shift moves. both/omitted -> 0 (split, both move); 1 -> only
-        # atom_selection1's group; 2 -> only atom_selection2's group. Accepts int or str
-        # (1 / "1"); unknown value raises (silent fallback would move wrong groups).
-        _mv = config.get("move")
-        if _mv is not None:
-            _mv_s = str(_mv).strip().lower()
-            if _mv_s == "both":
-                self.move_mode = 0
-            elif _mv_s == "1":
-                self.move_mode = 1
-            elif _mv_s == "2":
-                self.move_mode = 2
-            else:
-                raise ValueError(
-                    f"distance 'move' must be 'both', 1, or 2 (got {_mv!r})"
-                )
+        # per-distance move mode (OPTIONAL; default "both"): which group(s) the centroid
+        # shift moves. The `move` vocabulary is parsed by the shared parse_move_indices so
+        # it stays in lockstep with the angle/dihedral `move` key; a 2-group distance maps
+        # the returned index set onto the 0/1/2 move_mode enum. Accepts both/all/omitted ->
+        # 0 (split, both move); 1 / [1] / "1" -> 1 (only atom_selection1's group); 2 / [2]
+        # -> 2 (only atom_selection2's group); [1, 2] / "1,2" -> 0. Out-of-range ([1, 3],
+        # 3) / empty raises (silent fallback would move wrong groups).
+        idx = parse_move_indices(config.get("move"), 2)  # {1}, {2}, or {1, 2}
+        if idx is not None:
+            self.move_mode = {
+                frozenset({1, 2}): 0,
+                frozenset({1}): 1,
+                frozenset({2}): 2,
+            }[frozenset(idx)]
         # Restraint type + target(s) via the shared helper — the SAME parse rmsd /
         # angle / dihedral use, so the four type keys (harmonic / flat-bottomed /
         # flat-bottomed1 / flat-bottomed2) and their error messages can't drift. It maps

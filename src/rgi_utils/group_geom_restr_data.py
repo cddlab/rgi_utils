@@ -41,6 +41,7 @@ import math
 from rgi_utils._config_util import (
     apply_window_params,
     parse_geom_type,
+    parse_move_indices,
     warn_unknown_keys,
 )
 from rgi_utils.atom_context import FrameworkAdapter, candidate_dict
@@ -106,28 +107,13 @@ def _parse_move(config: dict, n_groups: int, default_free: tuple) -> tuple:
 
     ``"both"`` is accepted as a synonym for ``"all"`` (it is the distance restraint's
     2-group word). Out-of-range / empty / non-integer raises — a silent fallback would
-    move the wrong groups.
+    move the wrong groups. The ``move`` vocabulary (int / list / comma-string / all/both)
+    is parsed by the shared ``parse_move_indices`` so it stays in lockstep with the
+    distance restraint's ``move`` key; here we only map the index set onto a free mask.
     """
-    mv = config.get("move")
-    if mv is None:
+    idx = parse_move_indices(config.get("move"), n_groups)
+    if idx is None:
         return default_free
-    if isinstance(mv, str):
-        s = mv.strip().lower()
-        if s in ("all", "both"):
-            return tuple([True] * n_groups)
-        items = [p for p in s.replace(",", " ").split() if p]
-    elif isinstance(mv, (list, tuple)):
-        items = list(mv)
-    else:
-        items = [mv]  # a bare int / float
-    try:
-        idx = {int(x) for x in items}
-    except (TypeError, ValueError):
-        raise ValueError(
-            f"'move' must be 'all' or group indices 1..{n_groups} (got {mv!r})"
-        )
-    if not idx or any(k < 1 or k > n_groups for k in idx):
-        raise ValueError(f"'move' indices must be within 1..{n_groups} (got {mv!r})")
     return tuple((g + 1) in idx for g in range(n_groups))
 
 
