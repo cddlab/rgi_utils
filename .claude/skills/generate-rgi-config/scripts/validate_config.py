@@ -27,17 +27,16 @@ What this CANNOT check (needs the real predicted structure):
     ``built spec: ... distances=N ...`` counts — a count of 0 means it selected nothing.
 
 Usage:
-    python validate_config.py <input-file ...>      # .yaml / .yml / .json
+    uv run --project <rgi-utils-dir> --frozen --with pyyaml \\
+        python validate_config.py <input-file ...>  # .yaml / .yml / .json
 
 Handles every tool's layout: boltz YAML (``restraints_config:`` nested), protenix JSON
 (a list of jobs), AF3 fold-input JSON, openfold ``queries.<name>.restraints_config``,
 the chai top-level sidecar, or a bare ``restraints_config`` dict.
 
-Needs only numpy (+ pyyaml for YAML files). Run it with a Python that can import
-rgi_utils. For a JSON file the repo venv ``rgi_utils/.venv/bin/python`` is enough; for a
-YAML file (boltz / chai) use a tool venv that ALSO has pyyaml, e.g.
-``boltz_restr/.venv/bin/python``. If rgi_utils is not installed at all, this script adds
-the repo ``src/`` to ``sys.path`` automatically (then YAML still needs pyyaml present).
+Needs only numpy and pyyaml. Run it through the rgi_utils uv project as shown above. If
+rgi_utils is not installed, this script adds the repo ``src/`` to ``sys.path``
+automatically.
 """
 
 from __future__ import annotations
@@ -64,16 +63,23 @@ try:
 except ImportError as exc:  # pragma: no cover
     sys.exit(
         f"cannot import rgi_utils ({exc}). Run with a Python that has rgi_utils on its "
-        f"path, e.g. rgi_utils/.venv/bin/python validate_config.py <file>."
+        f"path, e.g. uv run --project <rgi-utils-dir> --frozen --with pyyaml "
+        f"python validate_config.py <file>."
     )
 
 
 # selection-string keys per restraint type (read off the raw config dict)
 _SELECTION_KEYS = (
-    "atom_selection1", "atom_selection2", "atom_selection3", "atom_selection4",
-    "atom_selection_ref", "atom_selection_target",
-    "atom_selection_ref_fit", "atom_selection_target_fit",
-    "atom_selection_ref_calc", "atom_selection_target_calc",
+    "atom_selection1",
+    "atom_selection2",
+    "atom_selection3",
+    "atom_selection4",
+    "atom_selection_ref",
+    "atom_selection_target",
+    "atom_selection_ref_fit",
+    "atom_selection_target_fit",
+    "atom_selection_ref_calc",
+    "atom_selection_target_calc",
 )
 
 
@@ -113,9 +119,12 @@ def _find_configs(obj, path="<root>"):
             yield from _find_configs(q, f"{path}.queries.{name}")
     # chai sidecar / bare dict: the object itself is the restraints_config
     _restraint_keys = {
-        "distance_restraints_config", "angle_restraints_config",
-        "dihedral_restraints_config", "conformer_restraints_config",
-        "rmsd_restraints_config", "custom_restraints_config",
+        "distance_restraints_config",
+        "angle_restraints_config",
+        "dihedral_restraints_config",
+        "conformer_restraints_config",
+        "rmsd_restraints_config",
+        "custom_restraints_config",
     }
     if "restraints_config" not in obj and (_restraint_keys & set(obj)):
         yield (path, obj, obj)
@@ -123,8 +132,12 @@ def _find_configs(obj, path="<root>"):
 
 def _collect_selection_strings(cfg: dict):
     """Walk a restraints_config and yield (key, selection_string) pairs to syntax-check."""
-    for section in ("distance_restraints_config", "angle_restraints_config",
-                    "dihedral_restraints_config", "rmsd_restraints_config"):
+    for section in (
+        "distance_restraints_config",
+        "angle_restraints_config",
+        "dihedral_restraints_config",
+        "rmsd_restraints_config",
+    ):
         for i, entry in enumerate(cfg.get(section, []) or []):
             if not isinstance(entry, dict):
                 continue
@@ -185,8 +198,9 @@ def _validate_one(location: str, cfg: dict, enclosing: dict) -> int:
         f"rmsd={len(rc.rmsd_data)} custom={len(rc.custom_data)}"
     )
     conf = cfg_for_schema.get("conformer_restraints_config") or {}
-    conf_terms = [t for t in ("bond", "angle", "chiral", "plane", "cistrans", "vdw")
-                  if t in conf]
+    conf_terms = [
+        t for t in ("bond", "angle", "chiral", "plane", "cistrans", "vdw") if t in conf
+    ]
     if conf_terms:
         print(f"    conformer terms: {', '.join(conf_terms)}")
 

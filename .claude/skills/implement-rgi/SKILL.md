@@ -1,20 +1,13 @@
 ---
 name: implement-rgi
 description: >-
-  Guide for adding restraint-guided inference (RGI) — five restraint types:
-  distance, angle, and dihedral (between atom-group centroids), conformer
-  (ligand bond/angle/chiral/cistrans/plane + VdW toward an ideal geometry), and RMSD
-  (toward a reference structure) — to a diffusion-based structure-prediction tool
-  (boltz / protenix / chai-lab / openfold-3 / esmfold2 / AlphaFold3 and similar
-  samplers). The shared engine `rgi_utils` does all the heavy lifting;
-  the tool only needs a small adapter, a few hook lines in its sampling loop,
-  and to pass one `restraints_config` dict through. Use this skill whenever
-  someone wants to add restraints / RGI / guided sampling to a structure
-  predictor, inject distance or conformer constraints into a diffusion model,
-  port restraints from one predictor to another, or asks "how do I constrain
-  ligand geometry / inter-domain distance during sampling". Do NOT reinvent
-  energy/optim/selection code or add new CLI flags — keep the tool side minimal
-  and reach feature parity with the other tools.
+  Integrate Restraint-Guided Inference (RGI) into a diffusion-based structure
+  predictor using rgi_utils. Use when adding or porting guided sampling,
+  distance, group-angle, group-dihedral, ligand-conformer, VdW, RMSD, or custom
+  restraints to boltz, protenix, chai-lab, openfold-3, esmfold2, AlphaFold3, or
+  a similar sampler. Implement only the framework adapter, sampling-loop hooks,
+  and restraints_config pass-through; do not duplicate energy, optimization,
+  config, or selection logic in the tool.
 ---
 
 # Implement Restraint-Guided Inference (RGI) in a structure-prediction tool
@@ -87,9 +80,10 @@ numpy survives only as the energy reference for backend-parity tests. (A leftove
 
 ### Step 2 — Write an adapter
 
-**First, ask the user where the adapter should live** (use `AskUserQuestion`) — it is a
-deliberate placement choice, and both options work identically at runtime because the
-rgi_utils adapter protocol is duck-typed (no base class, no registration):
+**First, ask the user where the adapter should live.** Use the client's structured input
+mechanism when available. It is a deliberate placement choice, and both options work
+identically at runtime because the rgi_utils adapter protocol is duck-typed (no base
+class, no registration):
 
 - **In rgi_utils** (`rgi_utils/<tool>/adapter.py`) — the convention all six existing tools
   follow; centralizes parity-critical code in one repo (one place to review the `resid`

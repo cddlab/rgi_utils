@@ -80,14 +80,16 @@ in the config is inert (run the process on the JAX CPU platform to use CPU).
 | esmfold2 | a Python script (see `esm_restr/restr_example.py` + `sbatch_esm_example.sh`); single-sequence, no MSA. Note the esmfold2 copy-over gotcha in `doc/esmfold2_restr.md` — without it the per-step hook is silently absent |
 
 GPU work goes through `sbatch` on a compute node, never the login node. See the workspace
-`CLAUDE.md` ("GPU work goes through sbatch") and each `doc/<tool>.md` for the full,
-copy-pasteable run script.
+`AGENTS.md` (also exposed as `CLAUDE.md`; "GPU work goes through sbatch") and each
+`doc/<tool>.md` for the full, copy-pasteable run script.
 
 ## Which Python runs the validator
 
-`.claude/skills/generate-rgi-config/scripts/validate_config.py` needs `rgi_utils`
-(numpy-only) and, for YAML files, `pyyaml`:
+The bundled `scripts/validate_config.py` needs `rgi_utils` (numpy-only) and, for YAML
+files, `pyyaml`. Resolve `SKILL_DIR` to the directory containing the skill's `SKILL.md`,
+then run:
 
-- **JSON** (protenix/AF3/openfold): `rgi_utils/.venv/bin/python` is enough.
-- **YAML** (boltz/chai): use a tool venv that also has pyyaml, e.g.
-  `boltz_restr/.venv/bin/python`.
+```bash
+uv run --project <rgi-utils-dir> --frozen --with pyyaml \
+  python "$SKILL_DIR/scripts/validate_config.py" <file>
+```

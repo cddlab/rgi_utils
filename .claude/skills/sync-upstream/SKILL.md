@@ -1,20 +1,13 @@
 ---
 name: sync-upstream
 description: >-
-  Pull real-upstream updates into an RGI tool fork's `main` (a pristine mirror of the
-  predictor's true upstream — jwohlwend/boltz, bytedance/Protenix, chaidiscovery/chai-lab,
-  google-deepmind/alphafold3, aqlaboratory/openfold-3, Biohub/esm, Biohub/transformers),
-  then propagate that update into its `rgi-integration` branch by merging, resolving the
-  conflicts that land on the RGI hook points, and verifying the RGI wiring survived. Use
-  this skill whenever someone wants to sync / update / catch up a `*_restr` fork with its
-  fork source — "pull in the upstream updates", "merge the fork source's changes into main
-  and propagate them to rgi-integration", "catch boltz up with the latest", "update the
-  fork", "merge upstream into rgi-integration", "I want to keep up with the original repo"
-  — even when they don't name the branches or the upstream repo.
-  It carries the verified upstream URL table (4 of the 7 forks have no `upstream` remote
-  yet, and transformers' upstream is Biohub, NOT huggingface), so do not guess remotes. A
-  conflict-free merge is NOT proof of success — upstream rewrites silently drop RGI
-  plumbing — so always run the wiring verification before reporting done.
+  Safely sync a predictor's true upstream into an RGI fork's main branch, then
+  merge main into rgi-integration and verify the restraint wiring survived.
+  Use when updating or catching up boltz_restr, protenix_restr, chai-lab_restr,
+  alphafold3_restr, openfold-3_restr, esm_restr, or transformers_restr. Follow
+  the bundled verified upstream table instead of guessing remotes, preserve the
+  pristine-main contract, never rebase or force-push, and run the RGI wiring
+  probe even after a conflict-free merge.
 ---
 
 # Sync real-upstream updates into an RGI fork, then into `rgi-integration`
@@ -52,9 +45,12 @@ Default scope is **the tool(s) the user named**. If they named none, run the sta
 across all seven and report which ones actually have upstream commits pending, then ask
 which to sync rather than syncing everything.
 
+Resolve `<skill-dir>` to the directory containing this `SKILL.md` before running bundled
+scripts.
+
 ```bash
-rgi_utils/.claude/skills/sync-upstream/scripts/sync_status.sh            # all seven
-rgi_utils/.claude/skills/sync-upstream/scripts/sync_status.sh boltz_restr chai-lab_restr
+<skill-dir>/scripts/sync_status.sh            # all seven
+<skill-dir>/scripts/sync_status.sh boltz_restr chai-lab_restr
 ```
 
 The script is idempotent: it adds the `upstream` remote where missing (from the verified
@@ -84,13 +80,14 @@ resolving.
 
 A conflict on `main` in any *other* tool means `main` is not pristine after all. Stop and
 report that finding rather than resolving it — the fix is a separate decision (see the
-boltz revert precedent in the workspace `CLAUDE.md`), not part of a routine sync.
+boltz revert precedent in the workspace `AGENTS.md` / `CLAUDE.md`), not part of a routine
+sync.
 
 ## Step 3 — Record the RGI baseline (do this *before* merging into `rgi-integration`)
 
 ```bash
 git checkout rgi-integration
-rgi_utils/.claude/skills/sync-upstream/scripts/rgi_probe.sh <tool> > <scratch>/rgi_before.txt
+<skill-dir>/scripts/rgi_probe.sh <tool> > <scratch>/rgi_before.txt
 ```
 
 `rgi_probe.sh` inventories where the RGI wiring currently lives: per file, how many lines
@@ -120,10 +117,11 @@ adapted to whatever upstream renamed or restructured.
 
 "Adapted correctly" has a spec, not a vibe. The RGI hook contract (where `minimize` fires,
 which sigma it gates on, what `setup`/`finalize` must bracket) lives in
-`rgi_utils/.claude/skills/implement-rgi/references/lifecycle-and-hooks.md`, and the traps
-are catalogued in `.../references/pitfalls.md`. Read them when a hook site has moved
-enough that you're re-deriving the hook rather than re-indenting it. The invariants in the
-workspace `CLAUDE.md` ("Non-obvious invariants that must hold across all six tools") are
+`../implement-rgi/references/lifecycle-and-hooks.md`, and the traps are catalogued in
+`../implement-rgi/references/pitfalls.md`. Read them when a hook site has moved enough
+that you're re-deriving the hook rather than re-indenting it. The invariants in the
+workspace `AGENTS.md` (also exposed as `CLAUDE.md`; "Non-obvious invariants that must hold
+across all six tools") are
 the acceptance criteria — especially that `minimize` gates on the **pre-step / pre-churn**
 schedule sigma, which is easy to lose when upstream reshuffles a sampling loop.
 
@@ -162,7 +160,7 @@ the per-ligand `conformer_restraint` opt-in plumbing with no conflict, and the o
 was `n_active=0` — a restraint that parses fine and does nothing.
 
 ```bash
-rgi_utils/.claude/skills/sync-upstream/scripts/rgi_probe.sh <tool> > <scratch>/rgi_after.txt
+<skill-dir>/scripts/rgi_probe.sh <tool> > <scratch>/rgi_after.txt
 diff <scratch>/rgi_before.txt <scratch>/rgi_after.txt
 ```
 
@@ -189,13 +187,14 @@ something got merged in the wrong direction.
 Then, if the tool's environment is available, run the cheap engine check (it needs no GPU):
 
 ```bash
-rgi_utils/.venv/bin/python -m pytest -m "not gpu" tests/test_backend_parity.py -q
+uv run --project <rgi-utils-dir> --frozen \
+  python -m pytest -m "not gpu" tests/test_backend_parity.py -q
 ```
 
 Full E2E confirmation is a GPU job and **must go through `sbatch`, never the login node**
-(see the workspace `CLAUDE.md` for the recipe and the per-tool partition constraints —
-protenix must run on sm_89). Don't launch one unprompted; instead tell the user which E2E
-fixture would confirm the hook still fires, and offer to submit it.
+(see the workspace `AGENTS.md` / `CLAUDE.md` for the recipe and the per-tool partition
+constraints — protenix must run on sm_89). Don't launch one unprompted; instead tell the
+user which E2E fixture would confirm the hook still fires, and offer to submit it.
 
 The cheapest fixture that proves the hook actually fires is the **fumarate plane run**
 (`sbatch_{af3,chai,of3,esm}_plane.sh` + `input_*_plane.*`). One decisive line:

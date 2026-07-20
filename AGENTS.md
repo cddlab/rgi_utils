@@ -1,6 +1,7 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to coding agents, including Codex and Claude Code, when
+working with code in this repository. `CLAUDE.md` is a symlink to this file.
 
 ## Commands
 
@@ -25,8 +26,9 @@ GPU paths (real CUDA torch / jax devices) are exercised by the host tools via
 **rgi_utils** — Restraint-Guided Inference (RGI): inject distance + ligand
 conformer + RMSD restraints into a structure-prediction diffusion loop via gradient
 optimization. Shared by boltz / protenix / chai-lab / openfold-3 / esmfold2 (torch)
-and alphafold3 (jax). The end-to-end guide for integrating a new tool is the skill at
-`.claude/skills/implement-rgi/` (SKILL.md + references/). Per-tool as-built integration write-ups live in
+and alphafold3 (jax). The end-to-end guide for integrating a new tool is the
+`implement-rgi` skill, shared from `.claude/skills/` to `.agents/skills/`. Per-tool
+as-built integration write-ups live in
 `doc/<tool>.md` (one per tool); the shared config + selection-DSL surface is `doc/config.md`.
 
 Design = **3 layers + autodiff + static shapes + GPU-complete optimization**:

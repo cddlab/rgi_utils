@@ -116,8 +116,9 @@ best-effort `finalize` energy log after the first seed's inference.
 AF3's other structural difference: RGI lives partly in its own new package
 (`src/alphafold3/model/restraints/`), which upstream cannot conflict with by construction.
 The real hook is in `diffusion_head.py`, where the pure `restr.get_minimizer()` closure is
-injected inside the `lax.scan` — see `alphafold3_restr/CLAUDE.md` and the implement-rgi
-skill's `framework-notes.md` for why the spec must be built outside the scan.
+injected inside the `lax.scan` — see `alphafold3_restr/AGENTS.md` (or its `CLAUDE.md`
+alias) and the implement-rgi skill's `framework-notes.md` for why the spec must be built
+outside the scan.
 
 ### Lockfiles — regenerate, never hand-merge
 

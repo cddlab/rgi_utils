@@ -41,11 +41,11 @@ just disables that feature (e.g. no `iter_ligand_confs` → distance-only tool).
 ## Where the adapter lives
 
 When integrating a **new** tool, ASK THE USER to choose the placement (SKILL.md Step 2
-spells out the trade-off and tells you to use `AskUserQuestion`): in rgi_utils (the
-convention below) or in the tool's own codebase (rgi_utils left unedited, the tool owns the
-adapter and may import its framework freely — at the cost of having to track protocol
-drift). Both work — the protocol is duck-typed (no base class, no registration). The
-existing six all chose rgi_utils:
+spells out the trade-off and requires a structured question when the client supports
+one): in rgi_utils (the convention below) or in the tool's own codebase (rgi_utils left
+unedited, the tool owns the adapter and may import its framework freely — at the cost of
+having to track protocol drift). Both work — the protocol is duck-typed (no base class,
+no registration). The existing six all chose rgi_utils:
 
 **All six adapters live in `rgi_utils/<tool>/adapter.py`** — the project keeps them
 together so a cross-tool invariant (the `resid` convention, a protocol tweak) is

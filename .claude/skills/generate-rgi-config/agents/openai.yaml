@@ -1,0 +1,4 @@
+interface:
+  display_name: "Generate RGI Config"
+  short_description: "Create and validate RGI restraint configs"
+  default_prompt: "Use $generate-rgi-config to create and validate an RGI restraints_config for my structure-prediction run."

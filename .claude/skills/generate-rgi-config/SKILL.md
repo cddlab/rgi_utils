@@ -1,19 +1,14 @@
 ---
 name: generate-rgi-config
 description: >-
-  Generate a ready-to-run restraints_config for Restraint-Guided Inference (RGI) by
-  interviewing the user about what they want, then writing a validated config placed
-  correctly for their structure-prediction tool (boltz / protenix / chai-lab /
-  alphafold3 / openfold-3 / esmfold2). Use this whenever someone wants to add or set up
-  restraints for a structure prediction — "keep these two domains ~25 Å apart",
-  "hold the ligand at a sensible geometry", "pin this loop to a reference structure",
-  "make an RGI config", "I want to build a restraints_config", "I want to run RGI",
-  "write me a restraint file",
-  "add a distance / angle / dihedral / conformer / RMSD / custom restraint" — even
-  when they don't name the file format or the exact restraint type. Translate the goal
-  into the right restraint type, atom-selection DSL, target, and sigma window, then
-  validate it. This is for AUTHORING a config for an ALREADY-INTEGRATED tool; it is NOT
-  for adding RGI support to a new tool's code (that is the separate implement-rgi skill).
+  Create and validate a ready-to-run restraints_config for Restraint-Guided
+  Inference (RGI), placing it correctly for boltz, protenix, chai-lab,
+  alphafold3, openfold-3, or esmfold2. Use when a user wants to run RGI, write
+  a restraint file, constrain a distance, angle, dihedral, ligand conformer,
+  RMSD, or custom energy, or translate a plain-language structural goal into
+  the selection DSL, target, and activation window. Use only for an
+  already-integrated tool; use implement-rgi when adding RGI support to a new
+  predictor.
 ---
 
 # Generate an RGI restraints_config
@@ -134,16 +129,13 @@ looks fine but applies no ligand restraint.
 
 ### 7. Validate before running
 
-Run the bundled validator on the file you produced:
+Resolve `SKILL_DIR` to the directory containing this `SKILL.md`, then run the
+bundled validator on the file you produced:
 
 ```bash
-# JSON files: the rgi_utils venv is enough
-rgi_utils/.venv/bin/python .claude/skills/generate-rgi-config/scripts/validate_config.py <file>
-# YAML files (boltz/chai): use a venv that also has pyyaml
-boltz_restr/.venv/bin/python .claude/skills/generate-rgi-config/scripts/validate_config.py <file>
+uv run --project <rgi-utils-dir> --frozen --with pyyaml \
+  python "$SKILL_DIR/scripts/validate_config.py" <file>
 ```
-(paths are relative to the workspace root `impl_rgi/`; the skill lives in the rgi_utils
-checkout's `.claude/skills/`. The validator finds rgi_utils on its own.)
 
 It runs the real `RestraintsConfig.from_dict` (catching unknown/misspelled section names,
 a top-level `start_sigma`, a leftover `backend` key, mixed sigma+step windows, empty windows, …),

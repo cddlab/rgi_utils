@@ -10,7 +10,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# scripts -> sync-upstream -> skills -> .claude -> rgi_utils -> workspace root
+# scripts -> skill -> skills -> agent config directory -> rgi_utils -> workspace root
 ROOT="$(cd "$SCRIPT_DIR/../../../../.." && pwd)"
 
 # Verified 2026-07-17: each fork's origin/main HEAD was confirmed to exist in the upstream

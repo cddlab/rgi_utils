@@ -54,13 +54,14 @@ That is what `rgi_probe.sh` is watching for.
 
 There is a spec; you do not have to judge by eye:
 
-- **Hook shape and placement** — `rgi_utils/.claude/skills/implement-rgi/references/lifecycle-and-hooks.md`.
+- **Hook shape and placement** — `../../implement-rgi/references/lifecycle-and-hooks.md`.
   The hook goes right after the network's denoised x0 and before the integrator step:
   `restr.setup(adapter, nbatch, config)` once, `coords = restr.minimize(coords, step, sigma)`
   per step, `restr.finalize(coords, step)` at the end.
-- **Known traps** — `.../implement-rgi/references/pitfalls.md`.
-- **Cross-tool invariants** — the workspace `CLAUDE.md`, section "Non-obvious invariants
-  that must hold across all six tools". These are the acceptance criteria for a resolution.
+- **Known traps** — `../../implement-rgi/references/pitfalls.md`.
+- **Cross-tool invariants** — the workspace `AGENTS.md` (also exposed as `CLAUDE.md`),
+  section "Non-obvious invariants that must hold across all six tools". These are the
+  acceptance criteria for a resolution.
 
 The invariant most often broken by a resolution — because it is invisible in a diff — is the
 **sigma gating**: `minimize` must be gated on the *pre-step / pre-churn* schedule sigma
