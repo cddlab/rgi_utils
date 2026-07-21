@@ -22,7 +22,7 @@ class RestraintsConfig:
     gpu: bool = True
     method: str = "CG"
     max_iter: int = 100
-    # one value for all conformer (ligand) restraints; +inf = active every step (the
+    # one value for all conformer restraints; +inf = active every step (the
     # documented "omitted start_sigma" default, matching build_spec). from_dict always
     # passes this explicitly, so the default only applies to a bare RestraintsConfig().
     conf_start_sigma: float = float("inf")
@@ -98,9 +98,6 @@ class RestraintsConfig:
             )
         _ALWAYS_ON = float("inf")  # omitted start_sigma -> active at every step
         conformer_config = config.get("conformer_restraints_config", {}) or {}
-        from rgi_utils.polymer import parse_polymer_types
-
-        parse_polymer_types(conformer_config)
         # The conformer cis/trans term was renamed dihedral -> cistrans. Reject the old
         # key loudly (like the start_sigma / backend:numpy guards) rather than silently
         # falling back to the default weight, which would weaken or re-enable the term.
@@ -123,6 +120,29 @@ class RestraintsConfig:
                 "(it is now a servalcat-style best-fit-plane restraint over whole planar "
                 "atom groups — aromatic/conjugated rings + non-ring sp2 groups — not just "
                 "per-centre sp2 signed volume)."
+            )
+        known_conformer_keys = {
+            "start_sigma",
+            "stop_sigma",
+            "start_step",
+            "stop_step",
+            "bond",
+            "angle",
+            "chiral",
+            "plane",
+            "cistrans",
+            "vdw",
+        }
+        unknown_conformer = {
+            key
+            for key in conformer_config
+            if not str(key).startswith("_") and key not in known_conformer_keys
+        }
+        if unknown_conformer:
+            raise ValueError(
+                "conformer_restraints_config: unknown key(s) "
+                f"{sorted(unknown_conformer)}. Known keys: "
+                f"{sorted(known_conformer_keys)}"
             )
         # conformer terms share ONE gate window. Like every other restraint it is EITHER
         # a sigma window OR a step window (mutually exclusive); reuse the shared check.

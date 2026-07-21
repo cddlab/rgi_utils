@@ -60,6 +60,12 @@ class ProtenixAdapter:
         names = np.asarray(aa.atom_name) if hasattr(aa, "atom_name") else None
         resnames = np.asarray(aa.res_name) if hasattr(aa, "res_name") else None
         mtypes = np.asarray(aa.mol_type) if hasattr(aa, "mol_type") else None
+        categories = aa.get_annotation_categories()
+        conf_restraints = (
+            np.asarray(aa.conformer_restraints, dtype=bool)
+            if "conformer_restraints" in categories
+            else None
+        )
         # Per-chain 1-based residue/token ordinal, matching boltz/AF3 so one
         # selection string means the same atom in every tool. protenix tokenizes a
         # ligand per atom but sets res_id=1 for ALL atoms of a single-CCD ligand,
@@ -89,6 +95,9 @@ class ProtenixAdapter:
                 name=nm,
                 resname=rnm,
                 mol_type=mt,
+                conformer_restraints=(
+                    False if conf_restraints is None else bool(conf_restraints[i])
+                ),
             )
 
     # --- ConformerAdapter -----------------------------------------------------

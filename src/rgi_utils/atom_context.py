@@ -27,6 +27,9 @@ class AtomRecord:
     resname: str | None = None  # 3-letter residue/CCD code (e.g. "ALA"); OPTIONAL,
     # enables the PyMOL-align-like (pairing="align") RMSD correspondence. None =
     # unavailable (that adapter has not been plumbed; align pairing then errors loudly).
+    # Per-chain opt-in propagated from the sequence input. Polymer conformer geometry
+    # is built only for records whose chain sets this flag.
+    conformer_restraints: bool = False
 
 
 def candidate_dict(record, resname_attr: str = "resname") -> dict:
@@ -65,14 +68,8 @@ class LigandConf:
     conf_coords: "np.ndarray"  # (n_lig_atoms, 3) ideal conformer coordinates
     global_indices: "np.ndarray"  # (n_lig_atoms,) global padded atom index per mol atom
     invert_chirality: bool = False
-    # per-ligand opt-in: conformer restraints (bond/angle/chiral/VdW) are built for
-    # this ligand ONLY when this is True. EVERY tool now sets it from a per-ligand input
-    # flag and defaults it to False: boltz/protenix/openfold-3 from a ``conformer_restraints``
-    # field, chai from the sidecar ``conformer_restraints`` {chain: bool} map, esm from
-    # ``ChainInfo.conformer_restraints``. (af3 is the one inversion: its in-tool shim DROPS
-    # opted-out ligands upstream and passes True for the ones it keeps.) So a ligand left
-    # without the flag gets NO conformer restraints even when ``conformer_restraints_config``
-    # is present — the featurizer logs a warning in that case.
+    # Per-chain opt-in: conformer restraints are built only when this is True. Every
+    # tool gets the flag from the ligand sequence input (chai uses its chain sidecar).
     conformer_restraints: bool = False
 
 

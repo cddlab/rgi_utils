@@ -86,6 +86,11 @@ class BoltzFeatsAdapter:
             res_type_idx = torch.argmax(rt0, dim=-1).detach().cpu().numpy()
         else:
             res_type_idx = None
+        ref_conf_restr = self.feats.get("ref_conformer_restraint")
+        if ref_conf_restr is not None:
+            rcr0 = ref_conf_restr[0] if ref_conf_restr.dim() > 1 else ref_conf_restr
+        else:
+            rcr0 = None
         for chain in record[0].chains:
             chain_id = chain.chain_id
             # exclude padding atoms (else they surface as chain-0 / resid 1)
@@ -111,6 +116,9 @@ class BoltzFeatsAdapter:
                         None
                         if res_type_idx is None
                         else self.token_names[int(res_type_idx[t])]
+                    ),
+                    conformer_restraints=(
+                        False if rcr0 is None else bool(rcr0[gidx].item())
                     ),
                 )
 
@@ -193,9 +201,8 @@ class BoltzFeatsAdapter:
         asym_id_atom_b0, _ = self._per_atom()
         elements = np.asarray(self.get_elements())
         record = feats["record"]
-        # per-ligand conformer_restraints flag, stored per-atom (the ch_rest input
-        # flag -> ref_conformer_restraint); a ligand chain's atoms share one value.
-        # Absent (older feats) -> default on.
+        # Per-chain conformer-restraints flag stored per atom. A ligand chain's atoms
+        # share one value; absent older features default off.
         ref_conf_restr = feats.get("ref_conformer_restraint")
         rcr0 = None
         if ref_conf_restr is not None:

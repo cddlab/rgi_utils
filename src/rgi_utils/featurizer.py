@@ -647,10 +647,8 @@ def build_spec(
     cfg = conformer_config or {}
     # Conformer restraints are OPT-IN -- this is the single enforcement point for every
     # tool: (1) with no conformer_restraints_config (e.g. a distance-only run) build no
-    # conformer at all; (2) otherwise restrain only ligands flagged
-    # conformer_restraints=True. EVERY tool defaults the per-ligand flag to False, so a
-    # ligand must explicitly opt in (boltz/protenix/af3/openfold/esm via a per-ligand
-    # input field; chai via the sidecar conformer_restraints map).
+    # conformer at all; (2) otherwise restrain only ligand conformers whose chain opted
+    # in. Every tool defaults the per-chain flag to False.
     # A config holding only documentation keys ("_comment") counts as absent.
     cfg_present = any(not str(k).startswith("_") for k in cfg)
     if not cfg_present:

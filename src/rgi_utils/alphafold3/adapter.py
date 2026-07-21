@@ -8,7 +8,8 @@ only alphafold3-coupled step), and hands this adapter plain data:
   - ``batch``: the featurised example dict (numpy arrays) — atom layout, reference
     coords/elements/atom-names, per-token molecule-type + residue-type.
   - ``chain_id_to_asym``: ``{fold_input chain id -> 1-based asym int}``.
-  - ``polymer_types``: ``residue_names.POLYMER_TYPES`` passed as data (resname lookup).
+  - ``polymer_residue_names``: AF3's polymer CCD-name vocabulary.
+  - ``conformer_restraints_by_asym``: per-chain opt-in values.
   - ``ligand_mols``: ``[(chain_id, mol, is_smiles)]`` resolved by the shim.
 
 AF3 atom layout: positions are ``(num_tokens, max_atoms_per_token, 3)`` and
@@ -44,7 +45,14 @@ class AF3RestraintAdapter:
     the in-tool shim that constructs this object.
     """
 
-    def __init__(self, batch, chain_id_to_asym, polymer_types, ligand_mols) -> None:
+    def __init__(
+        self,
+        batch,
+        chain_id_to_asym,
+        polymer_residue_names,
+        ligand_mols,
+        conformer_restraints_by_asym=None,
+    ) -> None:
         self.token_asym_ids = np.asarray(batch["asym_id"])  # (num_tokens,)
         self.ref_mask = np.asarray(batch["ref_mask"])  # (num_tokens, max)
         self.ref_pos = np.asarray(batch["ref_pos"])  # (num_tokens, max, 3)
@@ -62,13 +70,16 @@ class AF3RestraintAdapter:
         self.is_protein = np.asarray(batch["is_protein"]).astype(bool)  # (num_tokens,)
         self.is_dna = np.asarray(batch["is_dna"]).astype(bool)
         self.is_rna = np.asarray(batch["is_rna"]).astype(bool)
-        # per-token residue-type index into polymer_types -> 3-letter resname (powers
-        # AtomRecord.resname -> pairing="align" RMSD restraints).
+        # Per-token residue-type index into the CCD-name vocabulary.
         self.aatype = np.asarray(batch["aatype"])  # (num_tokens,)
-        self.polymer_types = polymer_types
+        self.polymer_residue_names = polymer_residue_names
         # chain.id -> asym int (1-based, fold_input chain order); resolved by the shim.
         self.chain_id_to_asym = dict(chain_id_to_asym)
         self.asym_int_to_chain = {v: k for k, v in self.chain_id_to_asym.items()}
+        self.conformer_restraints_by_asym = {
+            int(key): bool(value)
+            for key, value in (conformer_restraints_by_asym or {}).items()
+        }
         # [(chain_id, mol, is_smiles)] resolved by the shim (the only CCD/SMILES step).
         self.ligand_mols = list(ligand_mols)
         # The chain<->asym mapping assumes fold_input.chains order matches the batch
@@ -143,8 +154,8 @@ class AF3RestraintAdapter:
                 name = decode_atom_name(self.ref_atom_name_chars[token_idx, within])
                 at = int(self.aatype[token_idx])
                 resname = (
-                    self.polymer_types[at]
-                    if 0 <= at < len(self.polymer_types)
+                    self.polymer_residue_names[at]
+                    if 0 <= at < len(self.polymer_residue_names)
                     else None
                 )
                 yield AtomRecord(
@@ -154,6 +165,9 @@ class AF3RestraintAdapter:
                     name=name,
                     mol_type=self._token_mol_type(token_idx),
                     resname=resname,
+                    conformer_restraints=self.conformer_restraints_by_asym.get(
+                        int(aint), False
+                    ),
                 )
 
     # --- ConformerAdapter ------------------------------------------------------

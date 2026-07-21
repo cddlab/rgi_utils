@@ -92,8 +92,8 @@ restraints_config = {
         }
     ],
     "conformer_restraints_config": {
-        # Optional polymer local-chemistry repair. Omit start_sigma to enable it from step 0.
-        "polymer_types": ["protein", "dna", "rna"],
+        # Applied only to sequence/chain objects with conformer_restraints: true.
+        # Omit start_sigma to enable it from step 0.
         "bond": {"weight": 1.0},
         "angle": {"weight": 1.0},
         "chiral": {"weight": 1.0},

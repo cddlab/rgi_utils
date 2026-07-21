@@ -96,6 +96,11 @@ class Openfold3Adapter:
         # backbone/sidechain + RMSD align pairing for modified residues.
         cats = aa.get_annotation_categories()
         mtypes = np.asarray(aa.molecule_type_id) if "molecule_type_id" in cats else None
+        conf_restraints = (
+            np.asarray(aa.conformer_restraints, dtype=bool)
+            if "conformer_restraints" in cats
+            else None
+        )
         # Non-standard residues are biotite hetero=True; a standard polymer residue is
         # not. hetero (not molecule_type_id) drives the per-token ORDINAL below because a
         # modified residue must get its own ordinal to match the other tools.
@@ -130,6 +135,9 @@ class Openfold3Adapter:
                 name=nm,
                 resname=rnm,
                 mol_type=mt,
+                conformer_restraints=(
+                    False if conf_restraints is None else bool(conf_restraints[i])
+                ),
             )
 
     # --- ConformerAdapter -----------------------------------------------------

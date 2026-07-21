@@ -28,9 +28,8 @@ export OPENFOLD_CACHE="$HOME/.openfold3"
 OpenFold reads RGI from a **`restraints_config` field per query** in the input JSON
 (`queries.<name>.restraints_config`). Two things turn conformer restraints on:
 
-1. **Per ligand** — add `"conformer_restraints": true` to the ligand chain to enable its
-   bond/angle/chiral/plane/cistrans/VdW conformer restraints. Without it that ligand is left
-   unrestrained even when a `conformer_restraints_config` block is present.
+1. **Per chain** — add `"conformer_restraints": true` to each protein, DNA, RNA, or
+   ligand chain to enable conformer restraints for only that chain.
 2. **The `restraints_config` block** — the distance / angle / dihedral / conformer / RMSD
    restraints (below). Ligands are identified by `molecule_type_id == LIGAND` and accept `ccd_codes`.
 
@@ -56,7 +55,8 @@ the MSA from the ColabFold server.
         {
           "molecule_type": "protein",
           "chain_ids": ["A"],
-          "sequence": "ADKKLVVATDTAFVPFEFKQGDKYVGFDVDLWAAIAKELKLDYELKPMDFSGIIPALQTKNVDLALAGITITDERKKAIDFSDGYYKSGLLVMVKANNNDVKSVKDLDGKVVAVKSGTGSVDYAKANIKTKDLRQFPNIDNAYMELGTNRADAVLHDTPNILYFIKTAGNGQFKAVGDSLEAQQYGIAFPKGSDELRDKVNGALKTLRENGTYNEIYKKWFGTEPK"
+          "sequence": "ADKKLVVATDTAFVPFEFKQGDKYVGFDVDLWAAIAKELKLDYELKPMDFSGIIPALQTKNVDLALAGITITDERKKAIDFSDGYYKSGLLVMVKANNNDVKSVKDLDGKVVAVKSGTGSVDYAKANIKTKDLRQFPNIDNAYMELGTNRADAVLHDTPNILYFIKTAGNGQFKAVGDSLEAQQYGIAFPKGSDELRDKVNGALKTLRENGTYNEIYKKWFGTEPK",
+          "conformer_restraints": true
         },
         {
           "molecule_type": "ligand",

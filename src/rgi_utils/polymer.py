@@ -14,7 +14,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from rgi_utils._mol_build import build_ligand_mol
-from rgi_utils._moltype import POLYMER_TYPES, polymer_type
+from rgi_utils._moltype import polymer_type
 from rgi_utils.atom_context import LigandConf
 
 
@@ -42,28 +42,6 @@ _PHOSPHODIESTER_ANGLES = (
     ("C3'", "O3'", "P", 119.7),
     ("O3'", "P", "O5'", 104.0),
 )
-
-
-def parse_polymer_types(conformer_config: dict | None) -> tuple[str, ...]:
-    """Return validated polymer types requested by ``polymer_types``."""
-
-    raw = (conformer_config or {}).get("polymer_types", ())
-    if raw is None:
-        return ()
-    if isinstance(raw, str):
-        raw = [raw]
-    if not isinstance(raw, (list, tuple, set)):
-        raise ValueError(
-            "conformer_restraints_config.polymer_types must be a string or list"
-        )
-    values = tuple(dict.fromkeys(str(v).strip().lower() for v in raw))
-    unknown = sorted(set(values) - set(POLYMER_TYPES))
-    if unknown:
-        raise ValueError(
-            "conformer_restraints_config.polymer_types accepts only "
-            f"{list(POLYMER_TYPES)}, got {unknown}"
-        )
-    return values
 
 
 def _normalise_name(name: str | None) -> str:
@@ -131,10 +109,21 @@ def build_polymer_geometry(
     silently omitting polymer restraints would otherwise look like a successful run.
     """
 
-    selected_types = set(parse_polymer_types(conformer_config))
-    if not selected_types:
+    cfg_present = any(not str(key).startswith("_") for key in (conformer_config or {}))
+    if not cfg_present:
         return None
-    required = ("iter_atoms", "get_elements", "get_reference_positions")
+    if not hasattr(adapter, "iter_atoms"):
+        return None
+    records = list(adapter.iter_atoms())
+    has_enabled_polymer = any(
+        polymer_type(record.mol_type, record.resname) is not None
+        and bool(getattr(record, "conformer_restraints", False))
+        for record in records
+    )
+    if not has_enabled_polymer:
+        return None
+
+    required = ("get_elements", "get_reference_positions")
     missing = [name for name in required if not hasattr(adapter, name)]
     if missing:
         raise TypeError(
@@ -142,7 +131,6 @@ def build_polymer_geometry(
             + ", ".join(missing)
         )
 
-    records = list(adapter.iter_atoms())
     elements = np.asarray(adapter.get_elements())
     ref_pos = np.asarray(adapter.get_reference_positions(), dtype=np.float64)
     n = min(len(elements), len(ref_pos))
@@ -170,7 +158,11 @@ def build_polymer_geometry(
         for record in records:
             g = int(record.index)
             ptype = polymer_type(record.mol_type, record.resname)
-            if ptype in selected_types and 0 <= g < n:
+            if (
+                ptype is not None
+                and bool(getattr(record, "conformer_restraints", False))
+                and 0 <= g < n
+            ):
                 key = (record.chain, int(record.resid), ptype)
                 ref_uid[g] = uid_for_key.setdefault(key, len(uid_for_key))
 
@@ -178,7 +170,12 @@ def build_polymer_geometry(
     for record in records:
         g = int(record.index)
         ptype = polymer_type(record.mol_type, record.resname)
-        if ptype not in selected_types or g < 0 or g >= n:
+        if (
+            ptype is None
+            or not bool(getattr(record, "conformer_restraints", False))
+            or g < 0
+            or g >= n
+        ):
             continue
         if int(elements[g]) <= 0 or int(ref_uid[g]) < 0:
             continue

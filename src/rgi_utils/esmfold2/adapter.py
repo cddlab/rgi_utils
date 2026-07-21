@@ -126,9 +126,7 @@ class ESMFold2Adapter:
             int(c.asym_id): list(getattr(c, "ligand_bond_orders", None) or [])
             for c in (chain_infos or [])
         }
-        # {asym_id -> bool} per-ligand conformer_restraints opt-in (from
-        # LigandInput.conformer_restraints via ChainInfo); absent -> False (opt-in
-        # required), so a ligand is restrained only when it explicitly opted in.
+        # {asym_id -> bool} per-chain conformer-restraints opt-in from ChainInfo.
         self._asym_to_conf_restraints = {
             int(c.asym_id): bool(getattr(c, "conformer_restraints", False))
             for c in (chain_infos or [])
@@ -187,6 +185,7 @@ class ESMFold2Adapter:
                 name=self._atom_name(i),
                 mol_type=MOLTYPE_BY_ID.get(int(self._mol_type[tok])),
                 resname=rnm,
+                conformer_restraints=self._asym_to_conf_restraints.get(asym, False),
             )
 
     # --- ConformerAdapter -----------------------------------------------------
@@ -264,8 +263,7 @@ class ESMFold2Adapter:
                 mol=mol,
                 conf_coords=coords,
                 global_indices=idxs,
-                # per-ligand opt-in from LigandInput.conformer_restraints (via ChainInfo);
-                # absent -> False, so a ligand is restrained only if it explicitly opted in.
+                # Per-chain opt-in from ChainInfo; absent defaults to False.
                 conformer_restraints=self._asym_to_conf_restraints.get(
                     int(asym), False
                 ),

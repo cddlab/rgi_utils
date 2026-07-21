@@ -71,7 +71,7 @@ def _af3_batch():
     }
 
 
-_POLY = ("ALA", "ARG", "ASN")  # POLYMER_TYPES stand-in; index 0 -> "ALA"
+_POLY = ("ALA", "ARG", "ASN")  # AF3 residue-name vocabulary; index 0 -> "ALA"
 
 
 def test_af3_adapter_imports_no_alphafold3():
@@ -80,7 +80,13 @@ def test_af3_adapter_imports_no_alphafold3():
 
 
 def test_af3_iter_atoms():
-    ad = AF3RestraintAdapter(_af3_batch(), {"A": 1, "B": 2}, _POLY, ligand_mols=[])
+    ad = AF3RestraintAdapter(
+        _af3_batch(),
+        {"A": 1, "B": 2},
+        _POLY,
+        ligand_mols=[],
+        conformer_restraints_by_asym={1: True, 2: False},
+    )
     recs = list(ad.iter_atoms())
     # 2 real atoms in token0 + 1 in token1 (padding atoms skipped)
     assert [(r.chain, r.resid, r.index, r.name) for r in recs] == [
@@ -90,6 +96,7 @@ def test_af3_iter_atoms():
     ]
     assert [r.mol_type for r in recs] == ["protein", "protein", None]
     assert [r.resname for r in recs] == ["ALA", "ALA", "ALA"]
+    assert [r.conformer_restraints for r in recs] == [True, True, False]
     assert ad.num_atoms() == 6  # 2 tokens * 3 max
     # get_elements: flat with padding (mask 0) -> 0
     assert ad.get_elements().tolist() == [6, 6, 0, 6, 0, 0]

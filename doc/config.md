@@ -264,18 +264,15 @@ Targets in **degrees** by default (`unit: radians` to override).
 
 ## `conformer_restraints_config` (single dict)
 
-Repairs local geometry in ligands and selected polymers. It is a single dict (not a list).
-Ligands remain **per-ligand opt-in in every tool** — a ligand is restrained only when it is flagged,
-even with this block present. The flag's placement differs by input format: boltz / protenix / AF3 /
-openfold set `conformer_restraints: true` on the ligand object; esmfold2 sets
-`conformer_restraints=True` on the `LigandInput`; chai (whose FASTA cannot carry it) uses a sidecar
-`conformer_restraints` map keyed by ligand chain id (e.g. `{B: true}`).
-
-Polymers opt in once through `polymer_types`, accepting any subset of `protein`, `dna`, and `rna`:
+Repairs local geometry in ligands, proteins, DNA, and RNA. It is a single dict (not a
+list). Every molecule is **independently opt-in**: set `conformer_restraints: true`
+on each boltz / protenix / AF3 / openfold sequence or chain object, or
+`conformer_restraints=True` on each esmfold2 input object. Chai uses the equivalent
+sidecar map keyed by chain id because FASTA cannot carry the flag. Missing/false chains
+remain unrestrained, including when another chain of the same polymer type is enabled.
 
 ```yaml
 conformer_restraints_config:
-  polymer_types: [protein, dna, rna]
   # No start_sigma: all four terms, including VdW, are active from the first step.
   bond: {}
   angle: {}

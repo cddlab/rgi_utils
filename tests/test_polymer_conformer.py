@@ -9,11 +9,20 @@ from rgi_utils.config import RestraintsConfig
 
 
 class _PolymerAdapter:
-    def __init__(self, molecule_type: str, names: list[str], coords: np.ndarray):
+    def __init__(
+        self,
+        molecule_type: str,
+        names: list[str],
+        coords: np.ndarray,
+        chain_flags: tuple[tuple[str, bool], ...] = (("A", True),),
+    ):
         self._type = molecule_type
         self._names = names
         self._one = np.asarray(coords, dtype=np.float64)
-        self._positions = np.concatenate([self._one, self._one], axis=0)
+        self._chain_flags = chain_flags
+        self._positions = np.concatenate(
+            [self._one, self._one] * len(chain_flags), axis=0
+        )
         self._elements = np.array(
             [
                 7
@@ -25,23 +34,25 @@ class _PolymerAdapter:
                 else 6
                 for name in names
             ]
-            * 2,
+            * (2 * len(chain_flags)),
             dtype=np.int64,
         )
-        self._uid = np.repeat(np.arange(2), len(names))
+        self._uid = np.repeat(np.arange(2 * len(chain_flags)), len(names))
 
     def iter_atoms(self):
-        for resid in (1, 2):
-            offset = (resid - 1) * len(self._names)
-            for local, name in enumerate(self._names):
-                yield AtomRecord(
-                    chain="A",
-                    resid=resid,
-                    index=offset + local,
-                    name=name,
-                    mol_type=self._type,
-                    resname="ALA" if self._type == "protein" else "A",
-                )
+        for chain_index, (chain, enabled) in enumerate(self._chain_flags):
+            for resid in (1, 2):
+                offset = (2 * chain_index + resid - 1) * len(self._names)
+                for local, name in enumerate(self._names):
+                    yield AtomRecord(
+                        chain=chain,
+                        resid=resid,
+                        index=offset + local,
+                        name=name,
+                        mol_type=self._type,
+                        resname="ALA" if self._type == "protein" else "A",
+                        conformer_restraints=enabled,
+                    )
 
     def get_elements(self):
         return self._elements
@@ -65,6 +76,7 @@ class _AtomTokenizedPolymerAdapter(_PolymerAdapter):
                     name=name,
                     mol_type=self._type,
                     resname="MSE",
+                    conformer_restraints=True,
                 )
 
 
@@ -80,12 +92,11 @@ _ALA_COORDS = np.array(
 )
 
 
-def _config(polymer_type: str):
+def _config():
     return {
         "gpu": False,
         "max_iter": 100,
         "conformer_restraints_config": {
-            "polymer_types": [polymer_type],
             "bond": {},
             "angle": {},
             "chiral": {},
@@ -96,9 +107,7 @@ def _config(polymer_type: str):
 
 def test_protein_builds_peptide_link_chiral_and_vdw_exclusions():
     restr = CombinedRestraints()
-    restr.setup(
-        _PolymerAdapter("protein", _ALA_NAMES, _ALA_COORDS), config=_config("protein")
-    )
+    restr.setup(_PolymerAdapter("protein", _ALA_NAMES, _ALA_COORDS), config=_config())
     spec = restr.spec
 
     assert spec.bond is not None
@@ -125,7 +134,7 @@ def test_reference_uid_groups_atom_tokenized_modified_residues():
     restr = CombinedRestraints()
     restr.setup(
         _AtomTokenizedPolymerAdapter("protein", _ALA_NAMES, _ALA_COORDS),
-        config=_config("protein"),
+        config=_config(),
     )
     assert any(np.array_equal(row, [2, 5]) for row in restr.spec.bond.idx)
 
@@ -142,7 +151,7 @@ def test_phosphodiester_link_targets_are_present():
         ]
     )
     restr = CombinedRestraints()
-    restr.setup(_PolymerAdapter("rna", names, coords), config=_config("rna"))
+    restr.setup(_PolymerAdapter("rna", names, coords), config=_config())
     spec = restr.spec
 
     link = np.where(np.all(spec.bond.idx == np.array([4, 5]), axis=1))[0]
@@ -156,9 +165,7 @@ def test_phosphodiester_link_targets_are_present():
 def test_polymer_restraint_repairs_peptide_link_at_high_sigma():
     torch = pytest.importorskip("torch")
     restr = CombinedRestraints()
-    restr.setup(
-        _PolymerAdapter("protein", _ALA_NAMES, _ALA_COORDS), config=_config("protein")
-    )
+    restr.setup(_PolymerAdapter("protein", _ALA_NAMES, _ALA_COORDS), config=_config())
     coords = np.concatenate([_ALA_COORDS, _ALA_COORDS + np.array([5.0, 0.0, 0.0])])
     coords = torch.tensor(coords, dtype=torch.float64)
     before = abs(float(torch.linalg.vector_norm(coords[2] - coords[5])) - 1.329)
@@ -232,9 +239,7 @@ def test_polymer_restraint_runs_in_jitted_jax_minimizer():
     jax = pytest.importorskip("jax")
     jnp = pytest.importorskip("jax.numpy")
     restr = CombinedRestraints()
-    restr.setup(
-        _PolymerAdapter("protein", _ALA_NAMES, _ALA_COORDS), config=_config("protein")
-    )
+    restr.setup(_PolymerAdapter("protein", _ALA_NAMES, _ALA_COORDS), config=_config())
     coords = np.concatenate([_ALA_COORDS, _ALA_COORDS + np.array([5.0, 0.0, 0.0])])
     before = abs(float(np.linalg.norm(coords[2] - coords[5])) - 1.329)
     minimize = jax.jit(restr.get_minimizer())
@@ -249,7 +254,7 @@ def test_polymer_active_vdw_runs_through_compiled_gpu_cg():
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
         pytest.skip("CUDA is unavailable")
-    config = _config("protein")
+    config = _config()
     config["gpu"] = True
     restr = CombinedRestraints()
     restr.setup(_PolymerAdapter("protein", _ALA_NAMES, _ALA_COORDS), config=config)
@@ -262,8 +267,33 @@ def test_polymer_active_vdw_runs_through_compiled_gpu_cg():
     assert after < before
 
 
-def test_unknown_polymer_type_is_rejected_during_config_parse():
-    with pytest.raises(ValueError, match="polymer_types accepts only"):
-        RestraintsConfig.from_dict(
-            {"conformer_restraints_config": {"polymer_types": ["carbohydrate"]}}
-        )
+def test_unknown_conformer_key_is_rejected_during_config_parse():
+    with pytest.raises(ValueError, match="unknown key"):
+        RestraintsConfig.from_dict({"conformer_restraints_config": {"not_a_term": {}}})
+
+
+def test_only_explicitly_enabled_polymer_chain_is_restrained():
+    adapter = _PolymerAdapter(
+        "protein",
+        _ALA_NAMES,
+        _ALA_COORDS,
+        chain_flags=(("A", True), ("B", False)),
+    )
+    restr = CombinedRestraints()
+    restr.setup(adapter, config=_config())
+
+    assert restr.spec.active_sites.tolist() == list(range(2 * len(_ALA_NAMES)))
+    assert any(np.array_equal(row, [2, 5]) for row in restr.spec.bond.idx)
+
+
+def test_polymer_chain_defaults_to_unrestrained():
+    adapter = _PolymerAdapter(
+        "protein",
+        _ALA_NAMES,
+        _ALA_COORDS,
+        chain_flags=(("A", False),),
+    )
+    restr = CombinedRestraints()
+    restr.setup(adapter, config=_config())
+
+    assert not restr.spec.is_active()
