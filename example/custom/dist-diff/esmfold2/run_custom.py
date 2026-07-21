@@ -21,7 +21,7 @@ RESTRAINTS_CONFIG = {'verbose': True,
  'gpu': True,
  'max_iter': 100,
  'method': 'CG',
- 'custom_restraints_config': [{'name': 'double_distres',
+ 'custom_restraints_config': [{'name': 'dist-diff',
                                'energy': '((distance(A, B) - distance(C, D)) - 0.0)**2',
                                'selections': {'A': '(resid 1 to 17) or (resid 52 to 66) or '
                                                    '(resid 69 to 78) or (resid 108 to 121) or '
