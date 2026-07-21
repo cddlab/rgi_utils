@@ -46,7 +46,7 @@ PROTEIN_RESIDUES = frozenset(
 DNA_RESIDUES = frozenset({"DA", "DC", "DG", "DT"})
 RNA_RESIDUES = frozenset({"A", "C", "G", "U"})
 
-POLYMER_TYPES = ("protein", "dna", "rna")
+_POLYMER_MOL_TYPES = ("protein", "dna", "rna")
 
 # Framework molecule-type enum -> normalized string, for adapters whose enum uses
 # this ordering: boltz ``const.chain_types`` and esmfold2 ``constants`` both number
@@ -92,7 +92,7 @@ def polymer_type(mol_type: str | None, resname: str | None) -> str | None:
     such as MSE classifies as "protein" in ALL tools (the framework/biotite entity type
     keeps it a polymer). The earlier cross-tool divergence — MSE -> None in
     chai/of3/protenix because they left mol_type unset — has been removed (2026-06)."""
-    if mol_type in POLYMER_TYPES:
+    if mol_type in _POLYMER_MOL_TYPES:
         return mol_type
     if mol_type is not None:
         return None

@@ -25,8 +25,8 @@ uv pip install -e ".[cuda]"                     # also pulls the rgi_utils engin
 boltz reads RGI from a **top-level `restraints_config:` key nested inside the input YAML** (the
 same YAML that lists the sequences). Two things turn restraints on:
 
-1. **Per ligand** — add `conformer_restraints: true` next to the ligand's `ccd`/`smiles` to enable
-   the bond/angle/chiral/plane/cistrans/VdW conformer restraints for that ligand.
+1. **Per sequence** — add `conformer_restraints: true` to each protein, DNA, RNA, or
+   ligand to enable conformer restraints for only that chain.
 2. **The `restraints_config:` block** — the distance / angle / dihedral / conformer /
    RMSD restraints, plus config-only `custom` restraints (define your own — see config.md). The example below writes **every usable variable** with a concrete value; see
    [`config.md`](config.md) for what each does, the alternative restraint types (`flat-bottomed`
@@ -49,6 +49,7 @@ sequences:
   - protein:
       id: [A]
       sequence: ADKKLVVATDTAFVPFEFKQGDKYVGFDVDLWAAIAKELKLDYELKPMDFSGIIPALQTKNVDLALAGITITDERKKAIDFSDGYYKSGLLVMVKANNNDVKSVKDLDGKVVAVKSGTGSVDYAKANIKTKDLRQFPNIDNAYMELGTNRADAVLHDTPNILYFIKTAGNGQFKAVGDSLEAQQYGIAFPKGSDELRDKVNGALKTLRENGTYNEIYKKWFGTEPK
+      conformer_restraints: true
   - ligand:
       id: [B]
       ccd: GLN

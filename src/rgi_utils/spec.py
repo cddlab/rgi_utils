@@ -162,6 +162,49 @@ class VdwConfig:
 
 
 @dataclass
+class ActiveVdwConfig:
+    """Dynamic active-active VdW neighbours involving restrained polymer atoms.
+
+    A fixed-width nearest-neighbour list is rebuilt from the current coordinates once
+    per diffusion step and held fixed during CG.  This keeps each energy evaluation
+    O(N*K), while 1-2/1-3 covalent pairs are removed through ``excluded_codes``.
+    """
+
+    weight: float
+    radii: np.ndarray  # (n_active,) VdW radius for every active atom
+    polymer_mask: np.ndarray  # (n_active,) bool; pair needs at least one True endpoint
+    excluded_codes: np.ndarray  # sorted canonical pair codes min(i,j)*N+max(i,j)
+    scale: float = 0.75
+    dmax: float = 5.0
+    max_neighbors: int = 32
+
+
+# Largest positive value an int32 can hold; the JAX pair-code encoding lives in int32.
+_ACTIVE_VDW_INT32_MAX = 2**31 - 1
+
+
+def check_active_vdw_int32_safe(n_active: int) -> None:
+    """Guard the active-active VdW pair-code encoding against int32 overflow (JAX).
+
+    Pair codes are ``min(i, j) * n_active + max(i, j)``. The JAX optimizer builds them
+    (and the sorted ``excluded_codes``) as int32 because JAX runs with x64 disabled by
+    default, so forcing int64 there is silently downcast back. Once ``n_active**2``
+    exceeds the int32 range the codes wrap negative, which breaks the sortedness
+    ``jnp.searchsorted`` relies on and silently corrupts the covalent 1-2/1-3 exclusion.
+    Fail loudly instead. The torch optimizer uses int64 and is unaffected, so this bound
+    only limits the restrained-polymer size under JAX/AF3. (Conservative: it trips at
+    ``n_active**2 > 2**31 - 1``, a hair below the exact ``n**2 - n - 1`` maximum code.)
+    """
+    if n_active * n_active > _ACTIVE_VDW_INT32_MAX:
+        raise ValueError(
+            "active-active VdW (polymer conformer) supports at most ~46340 active "
+            f"atoms under the JAX int32 pair-code encoding; got n_active={n_active}. "
+            "Reduce the restrained polymer selection to run this under AF3/JAX (the "
+            "torch tools are unaffected)."
+        )
+
+
+@dataclass
 class DistanceArrays:
     """Centroid distance restraints between two atom groups (padded)."""
 
@@ -318,6 +361,7 @@ class RestraintSpec:
     cistrans: CisTransArrays | None = None
     vdw: VdwArrays | None = None
     vdw_config: VdwConfig | None = None
+    active_vdw_config: ActiveVdwConfig | None = None
     distance: DistanceArrays | None = None
     rmsd: RmsdArrays | None = None
     # centroid angle/dihedral restraints between atom GROUPS (distinct from the conformer
@@ -350,6 +394,8 @@ class RestraintSpec:
         """True if any conformer (bond/angle/chiral/plane/cistrans/vdw) restraint
         exists."""
         if self.vdw_config is not None and self.vdw_config.weight > 0:
+            return True
+        if self.active_vdw_config is not None and self.active_vdw_config.weight > 0:
             return True
         return any(
             arr is not None and arr.mask.sum() > 0

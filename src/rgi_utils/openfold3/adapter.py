@@ -96,6 +96,11 @@ class Openfold3Adapter:
         # backbone/sidechain + RMSD align pairing for modified residues.
         cats = aa.get_annotation_categories()
         mtypes = np.asarray(aa.molecule_type_id) if "molecule_type_id" in cats else None
+        conf_restraints = (
+            np.asarray(aa.conformer_restraints, dtype=bool)
+            if "conformer_restraints" in cats
+            else None
+        )
         # Non-standard residues are biotite hetero=True; a standard polymer residue is
         # not. hetero (not molecule_type_id) drives the per-token ORDINAL below because a
         # modified residue must get its own ordinal to match the other tools.
@@ -130,6 +135,9 @@ class Openfold3Adapter:
                 name=nm,
                 resname=rnm,
                 mol_type=mt,
+                conformer_restraints=(
+                    False if conf_restraints is None else bool(conf_restraints[i])
+                ),
             )
 
     # --- ConformerAdapter -----------------------------------------------------
@@ -139,6 +147,16 @@ class Openfold3Adapter:
     def get_elements(self) -> np.ndarray:
         """(num_atoms,) atomic numbers; padding atoms (beyond the AtomArray) are 0."""
         return biotite_get_elements(self.atom_array, self._n_atom)
+
+    def get_reference_positions(self) -> np.ndarray:
+        positions = np.zeros((self._n_atom, 3), dtype=np.float64)
+        source = self._ref_coords
+        if source is None and self.atom_array is not None:
+            source = np.asarray(self.atom_array.coord, dtype=np.float64)
+        if source is not None:
+            n = min(len(source), self._n_atom)
+            positions[:n] = source[:n]
+        return positions
 
     def iter_ligand_confs(self) -> Iterator[LigandConf]:
         aa = self.atom_array

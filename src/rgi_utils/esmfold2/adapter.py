@@ -96,6 +96,10 @@ class ESMFold2Adapter:
             bool
         )  # (n_atom,)
         self._ref_pos = _batch0(features["ref_pos"]).astype(np.float64)  # (n_atom, 3)
+        ref_uid = features.get("ref_space_uid")
+        self._ref_space_uid = (
+            _batch0(ref_uid).astype(np.int64) if ref_uid is not None else None
+        )
         self._ref_element = _batch0(features["ref_element"]).astype(
             np.int64
         )  # (n_atom,)
@@ -122,9 +126,7 @@ class ESMFold2Adapter:
             int(c.asym_id): list(getattr(c, "ligand_bond_orders", None) or [])
             for c in (chain_infos or [])
         }
-        # {asym_id -> bool} per-ligand conformer_restraints opt-in (from
-        # LigandInput.conformer_restraints via ChainInfo); absent -> False (opt-in
-        # required), so a ligand is restrained only when it explicitly opted in.
+        # {asym_id -> bool} per-chain conformer-restraints opt-in from ChainInfo.
         self._asym_to_conf_restraints = {
             int(c.asym_id): bool(getattr(c, "conformer_restraints", False))
             for c in (chain_infos or [])
@@ -183,6 +185,7 @@ class ESMFold2Adapter:
                 name=self._atom_name(i),
                 mol_type=MOLTYPE_BY_ID.get(int(self._mol_type[tok])),
                 resname=rnm,
+                conformer_restraints=self._asym_to_conf_restraints.get(asym, False),
             )
 
     # --- ConformerAdapter -----------------------------------------------------
@@ -195,6 +198,20 @@ class ESMFold2Adapter:
         n = min(len(self._ref_element), self._n_atom)
         elements[:n] = np.where(self._exists[:n], self._ref_element[:n], 0)
         return elements
+
+    def get_reference_positions(self) -> np.ndarray:
+        positions = np.zeros((self._n_atom, 3), dtype=np.float64)
+        n = min(len(self._ref_pos), self._n_atom)
+        positions[:n] = self._ref_pos[:n]
+        return positions
+
+    def get_reference_space_uid(self) -> np.ndarray:
+        if self._ref_space_uid is None:
+            raise AttributeError("ESMFold2 features do not contain ref_space_uid")
+        uid = np.full(self._n_atom, -1, dtype=np.int64)
+        n = min(len(self._ref_space_uid), self._n_atom)
+        uid[:n] = self._ref_space_uid[:n]
+        return uid
 
     def iter_ligand_confs(self) -> Iterator[LigandConf]:
         a2t = self._atom_to_token
@@ -246,8 +263,7 @@ class ESMFold2Adapter:
                 mol=mol,
                 conf_coords=coords,
                 global_indices=idxs,
-                # per-ligand opt-in from LigandInput.conformer_restraints (via ChainInfo);
-                # absent -> False, so a ligand is restrained only if it explicitly opted in.
+                # Per-chain opt-in from ChainInfo; absent defaults to False.
                 conformer_restraints=self._asym_to_conf_restraints.get(
                     int(asym), False
                 ),

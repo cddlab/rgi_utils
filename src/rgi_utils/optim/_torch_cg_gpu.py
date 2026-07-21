@@ -57,11 +57,10 @@ logger = logging.getLogger(__name__)
 
 # set RGI_DISABLE_COMPILE=1 to force the eager functional CG (debugging / unsupported env)
 _COMPILE_DISABLED = os.environ.get("RGI_DISABLE_COMPILE", "") not in ("", "0", "false")
-# per-artifact (keyed by with_vdw): one compiled energy failing must NOT disable the other
-# independent one for the rest of the batch.
-_compile_failed = {False: False, True: False}
-_CVG = None  # compiled grad_and_value(_energy), built lazily
-_CVG_VDW = None  # compiled grad_and_value(_energy_vdw) (dynamic fixed-background VdW)
+# Per-artifact mode: bit 0=fixed-background VdW, bit 1=active-active VdW. One
+# artifact failing must not disable the independent modes for the rest of the batch.
+_compile_failed = {0: False, 1: False, 2: False, 3: False}
+_CVG_BY_MODE = {}
 
 # Defense-in-depth: the compiled energy is module-global and reused across all structures
 # in a process, so an unforeseen value-specialized leaf must not silently trip dynamo's
@@ -104,6 +103,68 @@ def _vdw_pair_energy(active, bg_pos, lig_local, lig_r, bg_r, scale, weight):
     return weight * torch.sum(delta**2)
 
 
+def build_active_vdw_pairs(
+    active,
+    radii,
+    polymer_mask,
+    excluded_codes,
+    dmax,
+    max_neighbors,
+):
+    """Build a fixed-width directed neighbour list from detached step coordinates.
+
+    Mutual directed rows receive weight 1/2 and one-sided KNN rows weight 1, so every
+    physical pair contributes once.  The list is held fixed during the subsequent CG.
+    """
+
+    n_atom = active.shape[-2]
+    batch = active.reshape(-1, n_atom, 3).detach()
+    if n_atom < 2:
+        empty_idx = torch.zeros(
+            (batch.shape[0], n_atom, 0), dtype=torch.long, device=active.device
+        )
+        return empty_idx, empty_idx.to(active.dtype)
+    k = min(int(max_neighbors), n_atom - 1)
+    dist = torch.cdist(batch, batch)
+    eye = torch.eye(n_atom, dtype=torch.bool, device=active.device).unsqueeze(0)
+    dist = dist.masked_fill(eye, float("inf"))
+    values, neighbours = torch.topk(dist, k, dim=-1, largest=False, sorted=False)
+    source = torch.arange(n_atom, device=active.device).view(1, n_atom, 1)
+    lo = torch.minimum(source, neighbours)
+    hi = torch.maximum(source, neighbours)
+    codes = lo * n_atom + hi
+    valid = values <= dmax
+    valid = valid & (polymer_mask[source] | polymer_mask[neighbours])
+    valid = valid & (radii[source] > 0) & (radii[neighbours] > 0)
+    if excluded_codes.numel() > 0:
+        positions = torch.searchsorted(excluded_codes, codes)
+        positions = torch.clamp(positions, max=excluded_codes.numel() - 1)
+        valid = valid & (excluded_codes[positions] != codes)
+
+    batch_idx = torch.arange(batch.shape[0], device=active.device).view(-1, 1, 1)
+    reverse_neighbours = neighbours[batch_idx, neighbours]
+    reverse_valid = valid[batch_idx, neighbours]
+    reverse = ((reverse_neighbours == source.unsqueeze(-1)) & reverse_valid).any(-1)
+    pair_factor = valid.to(active.dtype) / (1.0 + reverse.to(active.dtype))
+    return neighbours, pair_factor
+
+
+def active_vdw_pair_energy(active, neighbours, pair_factor, radii, scale, weight):
+    """VdW energy over a fixed per-step active-active neighbour list."""
+
+    n_atom = active.shape[-2]
+    batch = active.reshape(-1, n_atom, 3)
+    if neighbours.shape[-1] == 0:
+        return torch.sum(batch) * 0.0
+    batch_idx = torch.arange(batch.shape[0], device=active.device).view(-1, 1, 1)
+    other = batch[batch_idx, neighbours]
+    diff = batch[:, :, None, :] - other
+    dist = torch.sqrt(torch.sum(diff**2, dim=-1) + EPS)
+    r_min = scale * (radii[None, :, None] + radii[neighbours])
+    delta = torch.clamp(dist - r_min, max=0.0)
+    return weight * torch.sum(pair_factor * delta**2)
+
+
 def _energy_vdw(a, prepared, bg_pos, lig_local, lig_r, bg_r, scale, weight):
     """``_energy`` + the dynamic fixed-background VdW term, as one compiled energy so the
     default boltz/protenix conformer (which uses the dynamic VdW) is JIT-compiled too."""
@@ -112,27 +173,69 @@ def _energy_vdw(a, prepared, bg_pos, lig_local, lig_r, bg_r, scale, weight):
     )
 
 
-def _get_cvg(with_vdw=False):
-    """The compiled ``grad_and_value`` of the energy (vdw-augmented when ``with_vdw``),
-    built once and reused. ``None`` if compile is disabled or has failed -> eager."""
-    global _CVG, _CVG_VDW
-    if _COMPILE_DISABLED or _compile_failed[with_vdw]:
+def _energy_active_vdw(a, prepared, neighbours, pair_factor, radii, scale, weight):
+    return _energy(a, prepared) + active_vdw_pair_energy(
+        a, neighbours, pair_factor, radii, scale, weight
+    )
+
+
+def _energy_both_vdw(
+    a,
+    prepared,
+    bg_pos,
+    lig_local,
+    lig_r,
+    bg_r,
+    fixed_scale,
+    fixed_weight,
+    neighbours,
+    pair_factor,
+    radii,
+    active_scale,
+    active_weight,
+):
+    return (
+        _energy(a, prepared)
+        + _vdw_pair_energy(
+            a,
+            bg_pos,
+            lig_local,
+            lig_r,
+            bg_r,
+            fixed_scale,
+            fixed_weight,
+        )
+        + active_vdw_pair_energy(
+            a,
+            neighbours,
+            pair_factor,
+            radii,
+            active_scale,
+            active_weight,
+        )
+    )
+
+
+def _get_cvg(mode=0):
+    """Return the compiled grad/value artifact for the requested VdW mode."""
+
+    if _COMPILE_DISABLED or _compile_failed[mode]:
         return None
     try:
-        if with_vdw:
-            if _CVG_VDW is None:
-                _CVG_VDW = torch.compile(
-                    torch.func.grad_and_value(_energy_vdw, argnums=0), fullgraph=False
-                )
-            return _CVG_VDW
-        if _CVG is None:
-            _CVG = torch.compile(
-                torch.func.grad_and_value(_energy, argnums=0), fullgraph=False
+        if mode not in _CVG_BY_MODE:
+            fn = {
+                0: _energy,
+                1: _energy_vdw,
+                2: _energy_active_vdw,
+                3: _energy_both_vdw,
+            }[mode]
+            _CVG_BY_MODE[mode] = torch.compile(
+                torch.func.grad_and_value(fn, argnums=0), fullgraph=False
             )
-        return _CVG
+        return _CVG_BY_MODE[mode]
     except Exception as exc:
         logger.warning("torch.compile of the GPU CG energy failed (%s); eager", exc)
-        _compile_failed[with_vdw] = True
+        _compile_failed[mode] = True
         return None
 
 
@@ -187,33 +290,51 @@ def _cg_minimize_torch(vg, x0, max_iter, max_ls=MAX_LS, gtol=GTOL, ftol=FTOL):
     return x
 
 
-def gpu_cg(prepared, x0, max_iter, vdw=None):
+def gpu_cg(prepared, x0, max_iter, vdw=None, active_vdw=None):
     """Run the CG on CUDA coords. ``prepared`` is the (stable, pre-gated) energy dict;
     ``x0`` the active coords; ``vdw`` an optional tuple ``(bg_pos, lig_local, lig_r,
     bg_r, scale, weight)`` folding the dynamic fixed-background VdW term into the compiled
-    energy. The energy+grad is inductor-compiled for CUDA coords (the non-GPU tests
+    energy; ``active_vdw`` similarly carries the fixed per-step polymer neighbour list.
+    The energy+grad is inductor-compiled for CUDA coords (the non-GPU tests
     exercise the eager functional CG, the same correct algorithm); any compile/runtime
     failure degrades permanently to eager. Returns optimized coords."""
-    with_vdw = vdw is not None
-    cvg = _get_cvg(with_vdw=with_vdw) if x0.is_cuda else None
+    mode = (1 if vdw is not None else 0) | (2 if active_vdw is not None else 0)
+    cvg = _get_cvg(mode=mode) if x0.is_cuda else None
     if cvg is not None:
-        vg = (
-            (lambda x: cvg(x, prepared, *vdw))
-            if with_vdw
-            else (lambda x: cvg(x, prepared))
-        )
+        if mode == 0:
+
+            def vg(x):
+                return cvg(x, prepared)
+
+        elif mode == 1:
+
+            def vg(x):
+                return cvg(x, prepared, *vdw)
+
+        elif mode == 2:
+
+            def vg(x):
+                return cvg(x, prepared, *active_vdw)
+
+        else:
+
+            def vg(x):
+                return cvg(x, prepared, *vdw, *active_vdw)
+
         try:
             return _cg_minimize_torch(vg, x0, max_iter)
         except (
             Exception
         ) as exc:  # this artifact's runtime failure -> eager, permanently
             logger.warning("GPU CG (compiled) failed at runtime (%s); eager", exc)
-            _compile_failed[with_vdw] = True
+            _compile_failed[mode] = True
 
     # eager fallback (CPU coords, compile disabled, or compiled artifact failed): the same
     # correct early-exit CG on the same (vdw-augmented) energy used by the compiled path.
-    base = _energy_vdw if with_vdw else _energy
-    extra = vdw if with_vdw else ()
+    base = {0: _energy, 1: _energy_vdw, 2: _energy_active_vdw, 3: _energy_both_vdw}[
+        mode
+    ]
+    extra = (vdw or ()) + (active_vdw or ())
 
     def e_of(a):
         return base(a, prepared, *extra)

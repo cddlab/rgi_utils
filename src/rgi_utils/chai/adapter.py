@@ -67,10 +67,8 @@ class ChaiStructureAdapter:
         # the aromatic-ideal target). The structure_context ligand atoms are in MolFromSmiles
         # heavy-atom order, so a fresh MolFromSmiles maps its bonds back by index.
         self._smiles_by_subchain = dict(smiles_by_subchain or {})
-        # {subchain_id -> bool} per-ligand conformer_restraints opt-in. chai's FASTA can't
-        # carry a per-ligand flag (the parser rejects header fields other than name=), so
-        # this comes from the sidecar `conformer_restraints` map, keyed by chain id = the
-        # subchain_id used in atom_selection and in smiles_by_subchain. Absent -> False.
+        # {subchain_id -> bool} per-chain conformer-restraints opt-in. Chai's FASTA
+        # cannot carry this flag, so it comes from the sidecar map keyed by chain id.
         self._conf_restraints_by_subchain = dict(conf_restraints_by_subchain or {})
 
     def _token_chains(self) -> list[str]:
@@ -122,6 +120,9 @@ class ChaiStructureAdapter:
                 name=nm,
                 resname=rnm,
                 mol_type=mt,
+                conformer_restraints=bool(
+                    self._conf_restraints_by_subchain.get(ch, False)
+                ),
             )
 
     # --- ConformerAdapter -----------------------------------------------------
@@ -139,6 +140,22 @@ class ChaiStructureAdapter:
             n = min(len(z), self._n_atom)
             elements[:n] = np.where(exists[:n], z[:n], 0)
         return elements
+
+    def get_reference_positions(self) -> np.ndarray:
+        positions = np.zeros((self._n_atom, 3), dtype=np.float64)
+        if self.sc is not None:
+            ref = np.asarray(self.sc.atom_ref_pos, dtype=np.float64)
+            n = min(len(ref), self._n_atom)
+            positions[:n] = ref[:n]
+        return positions
+
+    def get_reference_space_uid(self) -> np.ndarray:
+        uid = np.full(self._n_atom, -1, dtype=np.int64)
+        if self.sc is not None:
+            ref_uid = np.asarray(self.sc.atom_ref_space_uid, dtype=np.int64)
+            n = min(len(ref_uid), self._n_atom)
+            uid[:n] = ref_uid[:n]
+        return uid
 
     def _mol_from_smiles(self, smiles, idxs, elements, coords):
         """Build the ligand mol from the source SMILES so it carries real bond ORDERS
@@ -279,9 +296,7 @@ class ChaiStructureAdapter:
                 mol=mol,
                 conf_coords=coords,
                 global_indices=idxs.astype(np.int64),
-                # per-ligand opt-in from the sidecar `conformer_restraints` map, keyed by
-                # the same subchain id as smiles_by_subchain (= the chain id used in
-                # atom_selection). Absent -> False, so a ligand opts in explicitly.
+                # Per-chain opt-in from the sidecar map. Absent defaults to False.
                 conformer_restraints=self._conf_restraints_by_subchain.get(
                     str(ch), False
                 ),

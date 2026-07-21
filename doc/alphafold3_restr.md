@@ -34,7 +34,8 @@ uv pip install -e .                            # compiles the C++ chem component
 AF3 reads RGI from a **`restraints_config` key inside the fold-input JSON** (beside
 `sequences`/`modelSeeds`). Turn restraints on with:
 
-1. **Per ligand** — `"conformer_restraints": true` on the ligand object.
+1. **Per sequence** — `"conformer_restraints": true` on each protein, DNA, RNA,
+   or ligand object enables only that chain.
 2. **The `restraints_config` object** — the distance / angle / dihedral / conformer /
    RMSD restraints, plus config-only `custom` restraints (define your own — see config.md). The example below writes **every usable variable** with a concrete value; see
    [`config.md`](config.md) for the alternatives (restraint types, RMSD `atom_selection`
@@ -74,7 +75,8 @@ minimizer (`lax.scan`) like every other restraint.
       "protein": {
         "id": "A",
         "sequence": "ADKKLVVATDTAFVPFEFKQGDKYVGFDVDLWAAIAKELKLDYELKPMDFSGIIPALQTKNVDLALAGITITDERKKAIDFSDGYYKSGLLVMVKANNNDVKSVKDLDGKVVAVKSGTGSVDYAKANIKTKDLRQFPNIDNAYMELGTNRADAVLHDTPNILYFIKTAGNGQFKAVGDSLEAQQYGIAFPKGSDELRDKVNGALKTLRENGTYNEIYKKWFGTEPK",
-        "modifications": []
+        "modifications": [],
+        "conformer_restraints": true
       }
     },
     {

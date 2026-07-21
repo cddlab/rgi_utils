@@ -31,8 +31,8 @@ protenix reads RGI from a **`restraints_config` key nested inside each fold-inpu
 input JSON (the input is a JSON *list* of fold jobs; the key sits beside `name`/`sequences`). Turn
 restraints on with:
 
-1. **Per ligand** — `"conformer_restraints": true` on the ligand object enables its conformer
-   restraints.
+1. **Per sequence** — `"conformer_restraints": true` on each protein, DNA, RNA, or
+   ligand object enables conformer restraints for only that chain.
 2. **The `restraints_config` object** — the distance / angle / dihedral / conformer /
    RMSD restraints, plus config-only `custom` restraints (define your own — see config.md). The example below writes **every usable variable** with a concrete value; see
    [`config.md`](config.md) for what each does, the alternative restraint types
@@ -55,7 +55,7 @@ rationale lives here in prose). The run command passes `--use_msa true`, so prot
   {
     "name": "qbp_rgi_example",
     "sequences": [
-      { "proteinChain": { "sequence": "ADKKLVVATDTAFVPFEFKQGDKYVGFDVDLWAAIAKELKLDYELKPMDFSGIIPALQTKNVDLALAGITITDERKKAIDFSDGYYKSGLLVMVKANNNDVKSVKDLDGKVVAVKSGTGSVDYAKANIKTKDLRQFPNIDNAYMELGTNRADAVLHDTPNILYFIKTAGNGQFKAVGDSLEAQQYGIAFPKGSDELRDKVNGALKTLRENGTYNEIYKKWFGTEPK", "count": 1 } },
+      { "proteinChain": { "sequence": "ADKKLVVATDTAFVPFEFKQGDKYVGFDVDLWAAIAKELKLDYELKPMDFSGIIPALQTKNVDLALAGITITDERKKAIDFSDGYYKSGLLVMVKANNNDVKSVKDLDGKVVAVKSGTGSVDYAKANIKTKDLRQFPNIDNAYMELGTNRADAVLHDTPNILYFIKTAGNGQFKAVGDSLEAQQYGIAFPKGSDELRDKVNGALKTLRENGTYNEIYKKWFGTEPK", "count": 1, "conformer_restraints": true } },
       { "ligand": { "ligand": "CCD_GLN", "count": 1, "conformer_restraints": true } }
     ],
     "restraints_config": {

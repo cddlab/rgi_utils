@@ -31,6 +31,7 @@ from rgi_utils.optim._cg_config import (
     GTOL,
     MAX_LS,
 )
+from rgi_utils.spec import check_active_vdw_int32_safe
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +121,63 @@ def _vdw_pair_energy(active, bg_pos, lig_local, lig_r, bg_r, scale, weight):
     return weight * jnp.sum(delta**2)
 
 
+def _build_active_vdw_pairs(
+    active,
+    radii,
+    polymer_mask,
+    excluded_codes,
+    dmax,
+    max_neighbors,
+):
+    """Pure-jax fixed-width neighbour builder matching the torch implementation."""
+
+    n_atom = active.shape[-2]
+    batch = active.reshape((-1, n_atom, 3))
+    if n_atom < 2:  # nothing to pair (mirrors the torch builder's guard)
+        empty = jnp.zeros((batch.shape[0], n_atom, 0), dtype=jnp.int32)
+        return empty, empty.astype(active.dtype)
+    k = min(int(max_neighbors), n_atom - 1)
+    diff = batch[:, :, None, :] - batch[:, None, :, :]
+    dist = jnp.sqrt(jnp.sum(diff**2, axis=-1) + EPS)
+    dist = jnp.where(jnp.eye(n_atom, dtype=bool)[None, :, :], jnp.inf, dist)
+    neg_values, neighbours = jax.lax.top_k(-dist, k)
+    values = -neg_values
+    source = jnp.arange(n_atom, dtype=jnp.int32).reshape((1, n_atom, 1))
+    lo = jnp.minimum(source, neighbours)
+    hi = jnp.maximum(source, neighbours)
+    codes = lo * n_atom + hi
+    valid = values <= dmax
+    valid = valid & (polymer_mask[source] | polymer_mask[neighbours])
+    valid = valid & (radii[source] > 0) & (radii[neighbours] > 0)
+    if excluded_codes.shape[0] > 0:
+        positions = jnp.searchsorted(excluded_codes, codes)
+        positions = jnp.minimum(positions, excluded_codes.shape[0] - 1)
+        valid = valid & (excluded_codes[positions] != codes)
+
+    batch_idx = jnp.arange(batch.shape[0], dtype=jnp.int32).reshape((-1, 1, 1))
+    reverse_neighbours = neighbours[batch_idx, neighbours]
+    reverse_valid = valid[batch_idx, neighbours]
+    reverse = jnp.any(
+        (reverse_neighbours == source[..., None]) & reverse_valid, axis=-1
+    )
+    pair_factor = valid.astype(active.dtype) / (1.0 + reverse.astype(active.dtype))
+    return neighbours, pair_factor
+
+
+def _active_vdw_pair_energy(active, neighbours, pair_factor, radii, scale, weight):
+    """VdW energy over the per-step active-active neighbour list."""
+
+    n_atom = active.shape[-2]
+    batch = active.reshape((-1, n_atom, 3))
+    batch_idx = jnp.arange(batch.shape[0], dtype=jnp.int32).reshape((-1, 1, 1))
+    other = batch[batch_idx, neighbours]
+    diff = batch[:, :, None, :] - other
+    dist = jnp.sqrt(jnp.sum(diff**2, axis=-1) + EPS)
+    r_min = scale * (radii[None, :, None] + radii[neighbours])
+    delta = jnp.minimum(dist - r_min, 0.0)
+    return weight * jnp.sum(pair_factor * delta**2)
+
+
 def make_minimizer(
     spec,
     max_iter: int = 100,
@@ -165,6 +223,20 @@ def make_minimizer(
         vdw_bg_r = jnp.asarray(_vc.background_radii)
         vdw_scale = jnp.asarray(float(_vc.scale))
         vdw_weight = jnp.asarray(float(_vc.weight))
+    _ac = getattr(spec, "active_vdw_config", None)
+    has_active_vdw = _ac is not None and _ac.weight > 0
+    if has_active_vdw:
+        # int32 pair-code encoding: fail loudly above the JAX-safe active-atom count
+        # rather than silently corrupting the covalent-pair exclusion (see spec.py).
+        check_active_vdw_int32_safe(int(_ac.radii.shape[0]))
+        active_vdw_radii = jnp.asarray(_ac.radii)
+        active_vdw_polymer = jnp.asarray(_ac.polymer_mask, dtype=bool)
+        active_vdw_excluded = jnp.asarray(_ac.excluded_codes, dtype=jnp.int32)
+        active_vdw_scale = jnp.asarray(float(_ac.scale))
+        active_vdw_weight = jnp.asarray(float(_ac.weight))
+        active_vdw_dmax = jnp.asarray(float(_ac.dmax))
+        active_vdw_max_neighbors = int(_ac.max_neighbors)
+    if has_vdw or has_active_vdw:
         conf_ss = jnp.asarray(float(spec.conf_start_sigma))
         conf_stop = jnp.asarray(float(getattr(spec, "conf_stop_sigma", -1.0)))
         # conformer STEP window (the alternative gate axis; ANDed with the sigma window).
@@ -179,9 +251,16 @@ def make_minimizer(
         # closed-form shift), plus the fixed-background VdW term (gated on conf_start_sigma —
         # the `jnp.where` zeroes its weight AND gradient above the gate). has_conf is already
         # True when vdw_config is set.
-        if has_dist or has_conf or has_rmsd or has_vdw or has_group or has_custom:
-            if has_vdw:
-                bg_pos = coords[..., vdw_bg_global, :]
+        if (
+            has_dist
+            or has_conf
+            or has_rmsd
+            or has_vdw
+            or has_active_vdw
+            or has_group
+            or has_custom
+        ):
+            if has_vdw or has_active_vdw:
                 # conformer window: active sigma window (conf_stop <= sigma <= conf_start)
                 # AND active step window (conf_sstep <= step <= conf_estep). NOT a _TERMS
                 # entry, so this gate is maintained by hand (mirrors torch_optim).
@@ -193,7 +272,19 @@ def make_minimizer(
                     & (_st >= conf_sstep)
                     & (_st <= conf_estep)
                 )
+            if has_vdw:
+                bg_pos = coords[..., vdw_bg_global, :]
                 vdw_w = jnp.where(in_win, vdw_weight, 0.0)
+            if has_active_vdw:
+                active_vdw_w = jnp.where(in_win, active_vdw_weight, 0.0)
+                neighbours, pair_factor = _build_active_vdw_pairs(
+                    jax.lax.stop_gradient(active),
+                    active_vdw_radii,
+                    active_vdw_polymer,
+                    active_vdw_excluded,
+                    active_vdw_dmax,
+                    active_vdw_max_neighbors,
+                )
 
             def energy_fn(a):
                 e = jax_energy.total_energy(a, prepared, sigma, step)
@@ -206,6 +297,15 @@ def make_minimizer(
                         vdw_bg_r,
                         vdw_scale,
                         vdw_w,
+                    )
+                if has_active_vdw:
+                    e = e + _active_vdw_pair_energy(
+                        a,
+                        neighbours,
+                        pair_factor,
+                        active_vdw_radii,
+                        active_vdw_scale,
+                        active_vdw_w,
                     )
                 # per-custom gate: active sigma window AND active step window.
                 for _name, start, stop, start_step, stop_step, closure in custom_terms:

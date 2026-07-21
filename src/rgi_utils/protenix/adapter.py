@@ -60,6 +60,12 @@ class ProtenixAdapter:
         names = np.asarray(aa.atom_name) if hasattr(aa, "atom_name") else None
         resnames = np.asarray(aa.res_name) if hasattr(aa, "res_name") else None
         mtypes = np.asarray(aa.mol_type) if hasattr(aa, "mol_type") else None
+        categories = aa.get_annotation_categories()
+        conf_restraints = (
+            np.asarray(aa.conformer_restraints, dtype=bool)
+            if "conformer_restraints" in categories
+            else None
+        )
         # Per-chain 1-based residue/token ordinal, matching boltz/AF3 so one
         # selection string means the same atom in every tool. protenix tokenizes a
         # ligand per atom but sets res_id=1 for ALL atoms of a single-CCD ligand,
@@ -89,6 +95,9 @@ class ProtenixAdapter:
                 name=nm,
                 resname=rnm,
                 mol_type=mt,
+                conformer_restraints=(
+                    False if conf_restraints is None else bool(conf_restraints[i])
+                ),
             )
 
     # --- ConformerAdapter -----------------------------------------------------
@@ -98,6 +107,21 @@ class ProtenixAdapter:
     def get_elements(self) -> np.ndarray:
         """(N_atom,) atomic numbers; padding atoms (beyond the atom_array) are 0."""
         return biotite_get_elements(self.atom_array, self._n_atom)
+
+    def _feature_numpy(self, name: str) -> np.ndarray:
+        value = self.feats[name]
+        if hasattr(value, "detach"):
+            value = value.detach().cpu().numpy()
+        value = np.asarray(value)
+        while value.ndim > (2 if name == "ref_pos" else 1):
+            value = value[0]
+        return value
+
+    def get_reference_positions(self) -> np.ndarray:
+        return self._feature_numpy("ref_pos").astype(np.float64)
+
+    def get_reference_space_uid(self) -> np.ndarray:
+        return self._feature_numpy("ref_space_uid").astype(np.int64)
 
     def iter_ligand_confs(self) -> Iterator[LigandConf]:
         aa = self.atom_array
