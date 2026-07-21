@@ -7,6 +7,11 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WS="$HERE"; while [ "$WS" != / ] && [ ! -d "$WS/rgi_utils" ]; do WS="$(dirname "$WS")"; done
+# Reference structures (1GGG open / 1WDN closed) are downloaded from RCSB at run time
+# instead of being stored in the repo. The config's ref_cif uses the bare filename.
+( cd "$HERE" && for pdb in 1GGG 1WDN; do
+    [ -f "$pdb.cif" ] || wget -q "https://files.rcsb.org/download/$pdb.cif"
+done )
 export OPENFOLD_CACHE="${OPENFOLD_CACHE:-$HOME/.openfold3}"
 PIXI="$WS/openfold-3_restr/.pixi-bin/pixi"; [ -x "$PIXI" ] || PIXI=pixi
 cd "$HERE"

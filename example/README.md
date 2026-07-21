@@ -38,6 +38,9 @@ Each `run.sh` locates the workspace root, activates/uses the matching fork's env
 
 ## Notes
 
+- The `rmsd/` reference structures (`1GGG.cif`, `1WDN.cif`) are **not stored in the repo** --
+  each `rmsd/*/run.sh` `wget`s them from RCSB into its own directory at run time (needs network
+  on the compute node). They are byte-identical to the RCSB deposits.
 - Selections use bare `resid N to M` (no `chain A and`) because QBP / ADK / DgoT are all
   single-chain, ligand-free. **On a system with a ligand or multiple chains, qualify each group
   with `chain A and (...)`** or the bare `resid` range will also sweep in the ligand's atoms.
