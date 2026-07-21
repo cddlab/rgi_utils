@@ -29,18 +29,48 @@ class PolymerGeometry:
     link_chirals: list[tuple[int, int, int, int, float]]
 
 
+# Side selectors: each link atom names its residue explicitly (previous / current)
+# rather than being inferred from the atom-name tuple, so the asymmetric peptide and
+# phosphodiester assignments read declaratively.
+_PREV, _CURR = 0, 1
+
+
+@dataclass(frozen=True)
+class _LinkGeometry:
+    """Canonical inter-residue link targets as (atom_name, side) references.
+
+    ``bond`` is ``((name, side), (name, side), target_angstrom)``; each ``angles`` entry
+    is three ``(name, side)`` atoms plus a target in DEGREES; each ``impropers`` entry is
+    four ``(name, side)`` atoms restrained to zero signed volume (peptide-plane flatness,
+    carried by the chiral energy leaf so polymer chemistry stays bond/angle/chiral/VdW).
+    """
+
+    bond: tuple
+    angles: tuple
+    impropers: tuple = ()
+
+
 # Engh-Huber peptide-link targets and conventional phosphodiester targets.
-# Angles are stored in degrees here and converted once while building the result.
 _PEPTIDE_BOND = 1.329
-_PEPTIDE_ANGLES = (
-    ("CA", "C", "N", 116.2),
-    ("O", "C", "N", 122.7),
-    ("C", "N", "CA", 121.7),
-)
 _PHOSPHODIESTER_BOND = 1.607
-_PHOSPHODIESTER_ANGLES = (
-    ("C3'", "O3'", "P", 119.7),
-    ("O3'", "P", "O5'", 104.0),
+_PROTEIN_LINK = _LinkGeometry(
+    bond=(("C", _PREV), ("N", _CURR), _PEPTIDE_BOND),
+    angles=(
+        (("CA", _PREV), ("C", _PREV), ("N", _CURR), 116.2),
+        (("O", _PREV), ("C", _PREV), ("N", _CURR), 122.7),
+        (("C", _PREV), ("N", _CURR), ("CA", _CURR), 121.7),
+    ),
+    impropers=(
+        (("C", _PREV), ("CA", _PREV), ("O", _PREV), ("N", _CURR)),
+        (("N", _CURR), ("C", _PREV), ("O", _PREV), ("CA", _CURR)),
+    ),
+)
+_NUCLEIC_LINK = _LinkGeometry(
+    bond=(("O3'", _PREV), ("P", _CURR), _PHOSPHODIESTER_BOND),
+    angles=(
+        (("C3'", _PREV), ("O3'", _PREV), ("P", _CURR), 119.7),
+        (("O3'", _PREV), ("P", _CURR), ("O5'", _CURR), 104.0),
+    ),
 )
 
 
@@ -48,65 +78,52 @@ def _normalise_name(name: str | None) -> str:
     return (name or "").strip().upper().replace("*", "'")
 
 
+def _is_enabled_polymer(record) -> bool:
+    """A polymer atom record whose chain opted into conformer restraints."""
+    return polymer_type(record.mol_type, record.resname) is not None and bool(
+        getattr(record, "conformer_restraints", False)
+    )
+
+
 def _link_geometry(previous, current, mol_type: str):
-    """Return canonical link bond/angles for two adjacent residue atom maps."""
+    """Return canonical link bond/angles/impropers for two adjacent residue atom maps."""
 
-    if mol_type == "protein":
-        bond_names = ("C", "N")
-        angle_defs = _PEPTIDE_ANGLES
-    else:
-        bond_names = ("O3'", "P")
-        angle_defs = _PHOSPHODIESTER_ANGLES
+    names = (previous["names"], current["names"])  # index by _PREV / _CURR
+    link = _PROTEIN_LINK if mol_type == "protein" else _NUCLEIC_LINK
 
-    prev_names = previous["names"]
-    curr_names = current["names"]
-    g0 = prev_names.get(bond_names[0])
-    g1 = curr_names.get(bond_names[1])
-    bond_target = _PEPTIDE_BOND if mol_type == "protein" else _PHOSPHODIESTER_BOND
+    def resolve(atom):
+        name, side = atom
+        return names[side].get(name)
+
+    b0, b1, bond_target = link.bond
+    g0, g1 = resolve(b0), resolve(b1)
     bonds = [] if g0 is None or g1 is None else [(g0, g1, bond_target)]
 
     angles = []
-    for n0, n1, n2, degrees in angle_defs:
-        # The first two atoms belong to the previous residue for CA-C-N and
-        # C3'-O3'-P. C-N-CA and O3'-P-O5' cross into the current residue.
-        if mol_type == "protein":
-            maps = (
-                (prev_names, prev_names, curr_names)
-                if (n0, n1, n2) != ("C", "N", "CA")
-                else (prev_names, curr_names, curr_names)
-            )
-        elif (n0, n1, n2) == ("C3'", "O3'", "P"):
-            maps = (prev_names, prev_names, curr_names)
-        else:
-            maps = (prev_names, curr_names, curr_names)
-        idx = tuple(m.get(n) for m, n in zip(maps, (n0, n1, n2)))
+    for a0, a1, a2, degrees in link.angles:
+        idx = tuple(resolve(a) for a in (a0, a1, a2))
         if all(i is not None for i in idx):
             angles.append((*idx, float(np.deg2rad(degrees))))
+
     chirals = []
-    if mol_type == "protein":
-        # Zero-volume impropers keep the five peptide-plane atoms coplanar.  They use
-        # the chiral energy leaf deliberately, so polymer chemistry still consists of
-        # only bond/angle/chiral/VdW terms.
-        improper_defs = (
-            (prev_names, "C", prev_names, "CA", prev_names, "O", curr_names, "N"),
-            (curr_names, "N", prev_names, "C", prev_names, "O", curr_names, "CA"),
-        )
-        for cm, cn, m1, n1, m2, n2, m3, n3 in improper_defs:
-            idx = (cm.get(cn), m1.get(n1), m2.get(n2), m3.get(n3))
-            if all(i is not None for i in idx):
-                chirals.append((*idx, 0.0))
+    for improper in link.impropers:
+        idx = tuple(resolve(a) for a in improper)
+        if all(i is not None for i in idx):
+            chirals.append((*idx, 0.0))
     return bonds, angles, chirals
 
 
 def build_polymer_geometry(
-    adapter, conformer_config: dict | None
+    adapter, conformer_config: dict | None, elements=None
 ) -> PolymerGeometry | None:
     """Build polymer-local reference conformers through the framework adapter.
 
     Requested adapters must expose reference positions in addition to ordinary atom
-    records and elements. Reference-space UIDs are used when available; otherwise the
-    grouping falls back to chain/residue/type records. Failing loudly is important:
-    silently omitting polymer restraints would otherwise look like a successful run.
+    records and elements. ``elements`` may be passed in when the caller already resolved
+    it (avoids a second ``get_elements`` call); otherwise it is read from the adapter.
+    Reference-space UIDs are used when available; otherwise the grouping falls back to
+    chain/residue/type records. Failing loudly is important: silently omitting polymer
+    restraints would otherwise look like a successful run.
     """
 
     cfg_present = any(not str(key).startswith("_") for key in (conformer_config or {}))
@@ -115,15 +132,12 @@ def build_polymer_geometry(
     if not hasattr(adapter, "iter_atoms"):
         return None
     records = list(adapter.iter_atoms())
-    has_enabled_polymer = any(
-        polymer_type(record.mol_type, record.resname) is not None
-        and bool(getattr(record, "conformer_restraints", False))
-        for record in records
-    )
-    if not has_enabled_polymer:
+    if not any(_is_enabled_polymer(record) for record in records):
         return None
 
-    required = ("get_elements", "get_reference_positions")
+    required = ["get_reference_positions"]
+    if elements is None:
+        required.insert(0, "get_elements")
     missing = [name for name in required if not hasattr(adapter, name)]
     if missing:
         raise TypeError(
@@ -131,7 +145,9 @@ def build_polymer_geometry(
             + ", ".join(missing)
         )
 
-    elements = np.asarray(adapter.get_elements())
+    if elements is None:
+        elements = adapter.get_elements()
+    elements = np.asarray(elements)
     ref_pos = np.asarray(adapter.get_reference_positions(), dtype=np.float64)
     n = min(len(elements), len(ref_pos))
     if ref_pos.ndim != 2 or ref_pos.shape[-1] != 3:
@@ -157,25 +173,15 @@ def build_polymer_geometry(
         uid_for_key = {}
         for record in records:
             g = int(record.index)
-            ptype = polymer_type(record.mol_type, record.resname)
-            if (
-                ptype is not None
-                and bool(getattr(record, "conformer_restraints", False))
-                and 0 <= g < n
-            ):
+            if _is_enabled_polymer(record) and 0 <= g < n:
+                ptype = polymer_type(record.mol_type, record.resname)
                 key = (record.chain, int(record.resid), ptype)
                 ref_uid[g] = uid_for_key.setdefault(key, len(uid_for_key))
 
     by_uid: dict[int, list] = {}
     for record in records:
         g = int(record.index)
-        ptype = polymer_type(record.mol_type, record.resname)
-        if (
-            ptype is None
-            or not bool(getattr(record, "conformer_restraints", False))
-            or g < 0
-            or g >= n
-        ):
+        if not _is_enabled_polymer(record) or g < 0 or g >= n:
             continue
         if int(elements[g]) <= 0 or int(ref_uid[g]) < 0:
             continue

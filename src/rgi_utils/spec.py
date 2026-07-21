@@ -179,6 +179,31 @@ class ActiveVdwConfig:
     max_neighbors: int = 32
 
 
+# Largest positive value an int32 can hold; the JAX pair-code encoding lives in int32.
+_ACTIVE_VDW_INT32_MAX = 2**31 - 1
+
+
+def check_active_vdw_int32_safe(n_active: int) -> None:
+    """Guard the active-active VdW pair-code encoding against int32 overflow (JAX).
+
+    Pair codes are ``min(i, j) * n_active + max(i, j)``. The JAX optimizer builds them
+    (and the sorted ``excluded_codes``) as int32 because JAX runs with x64 disabled by
+    default, so forcing int64 there is silently downcast back. Once ``n_active**2``
+    exceeds the int32 range the codes wrap negative, which breaks the sortedness
+    ``jnp.searchsorted`` relies on and silently corrupts the covalent 1-2/1-3 exclusion.
+    Fail loudly instead. The torch optimizer uses int64 and is unaffected, so this bound
+    only limits the restrained-polymer size under JAX/AF3. (Conservative: it trips at
+    ``n_active**2 > 2**31 - 1``, a hair below the exact ``n**2 - n - 1`` maximum code.)
+    """
+    if n_active * n_active > _ACTIVE_VDW_INT32_MAX:
+        raise ValueError(
+            "active-active VdW (polymer conformer) supports at most ~46340 active "
+            f"atoms under the JAX int32 pair-code encoding; got n_active={n_active}. "
+            "Reduce the restrained polymer selection to run this under AF3/JAX (the "
+            "torch tools are unaffected)."
+        )
+
+
 @dataclass
 class DistanceArrays:
     """Centroid distance restraints between two atom groups (padded)."""

@@ -354,6 +354,13 @@ including peptide and phosphodiester links, are excluded. Polymer atoms are also
 non-active fixed-background atoms on torch and JAX. Omit `start_sigma` (the default `+inf`) to keep
 VdW active from the first denoising step; setting `start_sigma` delays all conformer terms together.
 
+`max_neighbors` (default 32) caps each atom's neighbour list: a buried atom with more than
+`max_neighbors` partners within `dmax` keeps only its nearest `max_neighbors`. The nearest are the
+most clash-relevant, so this is a deliberate approximation — raise it for very dense cores. Under
+JAX the pair codes are int32 (JAX runs with x64 disabled by default), so a **single restrained
+polymer selection is limited to ~46340 active atoms on AF3**; exceeding it raises rather than
+silently corrupting the covalent-pair exclusion (the torch tools use int64 and are unaffected).
+
 ## `rmsd_restraints_config` (list)
 
 Drives the **Kabsch-superposed RMSD** of a moving group versus a reference structure, shaped by one

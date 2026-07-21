@@ -31,6 +31,7 @@ from rgi_utils.optim._cg_config import (
     GTOL,
     MAX_LS,
 )
+from rgi_utils.spec import check_active_vdw_int32_safe
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +133,9 @@ def _build_active_vdw_pairs(
 
     n_atom = active.shape[-2]
     batch = active.reshape((-1, n_atom, 3))
+    if n_atom < 2:  # nothing to pair (mirrors the torch builder's guard)
+        empty = jnp.zeros((batch.shape[0], n_atom, 0), dtype=jnp.int32)
+        return empty, empty.astype(active.dtype)
     k = min(int(max_neighbors), n_atom - 1)
     diff = batch[:, :, None, :] - batch[:, None, :, :]
     dist = jnp.sqrt(jnp.sum(diff**2, axis=-1) + EPS)
@@ -222,6 +226,9 @@ def make_minimizer(
     _ac = getattr(spec, "active_vdw_config", None)
     has_active_vdw = _ac is not None and _ac.weight > 0
     if has_active_vdw:
+        # int32 pair-code encoding: fail loudly above the JAX-safe active-atom count
+        # rather than silently corrupting the covalent-pair exclusion (see spec.py).
+        check_active_vdw_int32_safe(int(_ac.radii.shape[0]))
         active_vdw_radii = jnp.asarray(_ac.radii)
         active_vdw_polymer = jnp.asarray(_ac.polymer_mask, dtype=bool)
         active_vdw_excluded = jnp.asarray(_ac.excluded_codes, dtype=jnp.int32)

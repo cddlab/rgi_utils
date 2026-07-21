@@ -171,7 +171,9 @@ class CombinedRestraints:
                     raise
                 logger.warning("get_elements failed, VdW disabled: %s", exc)
 
-        polymer_geometry = build_polymer_geometry(adapter, cfg.conformer_config)
+        polymer_geometry = build_polymer_geometry(
+            adapter, cfg.conformer_config, elements=elements
+        )
 
         self.spec = build_spec(
             ligand_confs,

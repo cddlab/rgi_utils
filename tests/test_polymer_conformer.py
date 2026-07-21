@@ -272,6 +272,18 @@ def test_unknown_conformer_key_is_rejected_during_config_parse():
         RestraintsConfig.from_dict({"conformer_restraints_config": {"not_a_term": {}}})
 
 
+def test_active_vdw_int32_guard_rejects_oversized_polymer():
+    # The JAX active-active VdW encodes pairs as min(i,j)*n_active+max(i,j) in int32.
+    # 46340**2 still fits (~2.147e9 < 2**31-1); 46341**2 overflows -> loud failure so the
+    # covalent-pair exclusion cannot be silently corrupted (torch uses int64, unaffected).
+    from rgi_utils.spec import check_active_vdw_int32_safe
+
+    check_active_vdw_int32_safe(1)
+    check_active_vdw_int32_safe(46340)
+    with pytest.raises(ValueError, match="int32"):
+        check_active_vdw_int32_safe(46341)
+
+
 def test_only_explicitly_enabled_polymer_chain_is_restrained():
     adapter = _PolymerAdapter(
         "protein",
