@@ -212,8 +212,8 @@ means "satisfied" when the spec reports `plane>0` — with `plane=0` the same li
 so always read the two together.
 
 If a partition is busy, move the job rather than wait: af3/chai/openfold-3 all run fine on
-`q1`/`q3` (sm_89), and `sbatch -p q3 -o <new>.out <script>` overrides the script's own
-`#SBATCH` lines without editing the fixture.
+any sm_89 partition, and `sbatch -p <sm_89-partition> -o <new>.out <script>` overrides the
+script's own `#SBATCH` lines without editing the fixture.
 
 ## Step 8 — Report, then push after confirmation
 

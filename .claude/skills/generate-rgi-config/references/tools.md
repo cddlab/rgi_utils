@@ -73,7 +73,7 @@ in the config is inert (run the process on the JAX CPU platform to use CPU).
 | tool | run |
 |---|---|
 | boltz | `boltz predict input.yaml --seed 0 --out_dir out --model boltz2 --use_msa_server` |
-| protenix | the tool's `sbatch_*.sh` / `protenix predict`. **Run on sm_89 (RTX 4090: `q1`/`q3`/`af3`), NOT Blackwell (`q4`/`maxq`)** — its fused kernels silently emit all-NaN coords there |
+| protenix | the tool's `sbatch_*.sh` / `protenix predict`. **Run on sm_89 (RTX 4090), NOT Blackwell (sm_120)** — its fused kernels silently emit all-NaN coords there |
 | chai | `python -m chai_lab.main fold input.fasta out --restraints-config-path sidecar.yaml --num-diffn-timesteps 200 --num-diffn-samples 2 --seed 0 --use-msa-server --use-templates-server --no-use-esm-embeddings` (FASTA + out_dir are **positional**) |
 | alphafold3 | AF3's `run_alphafold.py` with `--json_path input.json` (+ `--model_dir`); MSA via local genetic search, no server |
 | openfold-3 | `pixi run -e openfold3-cuda12 run_openfold predict --query-json query.json --output-dir out --num-diffusion-samples 2 --use-msa-server false --use-templates false` |

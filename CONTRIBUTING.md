@@ -45,8 +45,8 @@ Notes:
   image's `/venv` (the CI environment), not your checkout's `.venv`, and will fail locally with
   a missing interpreter. The `task lint` / `task format` targets are fine (they use `uv run`).
 - **GPU tests** are marked `@pytest.mark.gpu`, need a real CUDA device, and are **excluded from
-  CI** (`-m "not gpu"`). Run them in your own GPU environment. If you work inside the cddlab
-  cluster, the sbatch/partition details live in [`AGENTS.md`](AGENTS.md).
+  CI** (`-m "not gpu"`). Run them in your own GPU environment. Maintainer-facing cluster
+  run details live in [`AGENTS.md`](AGENTS.md).
 
 ## Code style
 

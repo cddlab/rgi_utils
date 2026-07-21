@@ -27,8 +27,8 @@ Each `run.sh` locates the workspace root, activates/uses the matching fork's env
 - **The matching fork must exist as a sibling of `rgi_utils/`** (e.g. `../boltz_restr`,
   `../esm_restr`) with its venv/pixi env built. `run.sh` finds it automatically. See each
   fork's `rgi_utils/doc/<tool>.md` for install steps.
-- **GPU via sbatch** — never the login node. Partitions: `q1`/`q3`/`af3` = RTX 4090 (sm_89),
-  `q4`/`maxq` = sm_120.
+- **Run on a GPU compute node** — not a shared login node. GPU generations: RTX 4090 (sm_89)
+  and Blackwell (sm_120).
 - **protenix runs on sm_89 only** (Blackwell emits silent all-NaN). The default esm/chai torch
   is cu124 (sm_89) too.
 - **AlphaFold3 is the one non-self-contained example**: it has no ColabFold MSA server, so its

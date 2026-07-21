@@ -2,7 +2,7 @@
 # alphafold3 RGI example -- group-centroid angle -> 72.85 deg (ADK NMP-CORE-LID)
 # Restraint config = bench-rgi minimal; MSA is fetched from a server so the example is
 # self-contained. (AlphaFold3 is the exception -- it needs external model params + DBs.)
-# GPU only: run on a compute node via sbatch, NOT the login node.
+# GPU only: run on a GPU compute node (not a shared login node).
 # Requires the alphafold3_restr checkout to exist as a sibling of rgi_utils/.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -19,5 +19,5 @@ python "$WS/alphafold3_restr/run_alphafold.py" \
     --run_data_pipeline=True --model_dir="$MODEL_DIR" --db_dir="$DB_DIR" \
     --json_path=adk_72.85.json --output_dir=out
 # Local fallback (skip the DB search): add
-#   "unpairedMsaPath": "/home/hori/works/misc/impl_rgi/bench-rgi/distance/fixtures/qbp.a3m"
+#   "unpairedMsaPath": "/path/to/precomputed.a3m"
 # to the protein object in adk_72.85.json, then pass --run_data_pipeline=False.

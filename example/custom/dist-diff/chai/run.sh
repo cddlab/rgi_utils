@@ -2,7 +2,7 @@
 # chai RGI example -- custom dist-diff: (d(A,B)-d(C,D)) -> 0.0 (DgoT)
 # Restraint config = bench-rgi minimal; MSA is fetched from a server so the example is
 # self-contained. (AlphaFold3 is the exception -- it needs external model params + DBs.)
-# GPU only: run on a compute node via sbatch, NOT the login node.
+# GPU only: run on a GPU compute node (not a shared login node).
 # Requires the chai-lab_restr checkout to exist as a sibling of rgi_utils/.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
