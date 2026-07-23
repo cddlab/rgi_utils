@@ -371,6 +371,28 @@ class CombinedRestraints:
                     f"one or more group {label} restraints have stop_step < start_step, "
                     f"so their active step window is EMPTY and they NEVER activate"
                 )
+        # custom restraints: each CustomSpec is its own restraint (no mask array), so the
+        # same two traps apply as the built-in families above — start_sigma < 0 never fires
+        # (warn), and an EMPTY sigma/step window is a silent no-op that reads as satisfied
+        # via the ungated _custom_breakdown (raise). This block was the one family missing
+        # from the guard, so a custom restraint could silently never activate.
+        for cs in spec.custom:
+            if float(cs.start_sigma) < 0:
+                msgs.append(
+                    f"custom restraint {cs.name!r} has start_sigma < 0, so it will NEVER "
+                    "activate (gate is sigma <= start_sigma)"
+                )
+            if float(cs.stop_sigma) > float(cs.start_sigma):
+                errors.append(
+                    f"custom restraint {cs.name!r} has stop_sigma > start_sigma, so its "
+                    "active window is EMPTY and it NEVER activates — set stop_sigma below "
+                    "start_sigma"
+                )
+            if float(cs.stop_step) < float(cs.start_step):
+                errors.append(
+                    f"custom restraint {cs.name!r} has stop_step < start_step, so its "
+                    "active step window is EMPTY and it NEVER activates"
+                )
         for m in msgs:
             logger.warning(m)
             if self.config.verbose:

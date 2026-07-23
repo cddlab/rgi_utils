@@ -40,6 +40,13 @@ class TestResidSelection:
         assert sel.eval(mol(resid=0)) is False
         assert sel.eval(mol(resid=6)) is False
 
+    def test_resid_descending_range_raises(self):
+        """`resid 5 to 3` (end < start) must raise a clear range-order error. The check
+        used to be swallowed by the list-form backtracking (the `except ParseError` that
+        handles `resid 5 6 7`), leaving a misleading 'trailing characters: to 3' message."""
+        with pytest.raises(ValueError, match="less than start|Range end"):
+            AtomSelector("resid 5 to 3")
+
     def test_multiple_resids(self):
         sel = AtomSelector("resid 1 3 5")
         assert sel.eval(mol(resid=1)) is True

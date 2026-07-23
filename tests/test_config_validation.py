@@ -142,6 +142,42 @@ def test_coerce_bool():
     assert coerce_bool(1) is True and coerce_bool(0) is False
 
 
+def test_verbose_string_false_coerced():
+    """verbose:"false" (quoted) must disable verbose — plain bool("false") is True.
+    Mirrors the gpu coercion so a stringy config value can't silently turn verbose ON
+    (which would spam every diffusion step)."""
+    for falsey in ("false", "no", "off", "0"):
+        assert RestraintsConfig.from_dict({"verbose": falsey}).verbose is False
+    assert RestraintsConfig.from_dict({"verbose": "true"}).verbose is True
+    assert RestraintsConfig.from_dict({"verbose": True}).verbose is True
+    assert RestraintsConfig.from_dict({}).verbose is False  # default
+
+
+def test_unknown_method_raises():
+    """An unrecognized `method` must raise, not silently fall back to L-BFGS: the
+    optimizers route any non-CG string to L-BFGS, so a typo ('CGG', 'bfgs') would run a
+    different, untested solver with no error."""
+    for bad in ("CGG", "bfgs", "adam", "gradient-descent"):
+        with pytest.raises(ValueError, match="method"):
+            RestraintsConfig.from_dict({"method": bad})
+
+
+def test_known_methods_ok():
+    """The accepted solver names parse unchanged: CG aliases + l-bfgs spellings
+    (case-insensitive)."""
+    for good in (
+        "CG",
+        "cg",
+        "ncg",
+        "nonlinear-cg",
+        "nonlinearcg",
+        "l-bfgs",
+        "lbfgs",
+        "L-BFGS",
+    ):
+        assert RestraintsConfig.from_dict({"method": good}).method == good
+
+
 # --- esmfold2 adapter: per-chain resid convention + token-pad guard (F10) ---------
 def _min_esm_features(asym_ids):
     """Minimal ESMFold2 features dict (1 atom / token) for the convention checks."""

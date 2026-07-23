@@ -163,10 +163,23 @@ class RestraintsConfig:
         # via the shared helper so a quoted/string value (e.g. "false"/"no"/"off"/"0") --
         # truthy in plain Python -- correctly turns the GPU off for a CPU-intended run.
         gpu = coerce_bool(config.get("gpu", True))
+        # Validate `method` against the solver whitelist. An unrecognized value used to
+        # SILENTLY fall back to L-BFGS (torch_optim._is_cg / jax_optim route any non-CG
+        # string to L-BFGS), so a typo ('CGG', 'bfgs') ran a different, untested solver
+        # with no error. Raise instead (a warning would be muted by the NullHandler).
+        method = config.get("method", "CG")
+        _valid_methods = {"cg", "ncg", "nonlinear-cg", "nonlinearcg", "l-bfgs", "lbfgs"}
+        if str(method).lower() not in _valid_methods:
+            raise ValueError(
+                f"unknown method {method!r}: expected a CG alias "
+                "(cg/ncg/nonlinear-cg/nonlinearcg) or l-bfgs (l-bfgs/lbfgs)"
+            )
         cfg = cls(
-            verbose=config.get("verbose", False),
+            # coerce so a quoted/string value (e.g. "false"/"no"/"off"/"0") -- truthy in
+            # plain Python -- correctly turns verbose OFF (mirrors the gpu coercion above).
+            verbose=coerce_bool(config.get("verbose", False)),
             gpu=gpu,
-            method=config.get("method", "CG"),
+            method=method,
             max_iter=config.get("max_iter", 100),
             # one start_sigma for all conformer terms (omitted -> +inf = every step)
             conf_start_sigma=conf_start_sigma,

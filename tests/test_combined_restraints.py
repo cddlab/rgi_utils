@@ -816,6 +816,58 @@ def test_conformer_stop_sigma_above_start_raises():
         cr.setup(MockAdapter(atoms, [lc]))
 
 
+def _custom_window_atoms():
+    return [
+        AtomRecord("A", 1, 0),
+        AtomRecord("A", 2, 1),
+        AtomRecord("B", 1, 2),
+        AtomRecord("B", 2, 3),
+    ]
+
+
+def test_custom_stop_sigma_above_start_raises():
+    """Empty window (stop_sigma > start_sigma) on a CUSTOM restraint must RAISE, mirroring
+    the distance/rmsd/conformer checks in _warn_never_active. Without the guard the custom
+    restraint is a silent no-op whose ungated finalize energy reads as satisfied."""
+    cr = CombinedRestraints()
+    cr.set_config(
+        {
+            "custom_restraints_config": [
+                {
+                    "name": "c",
+                    "energy": "harmonic(distance(A, B), 5.0)",
+                    "selections": {"A": "chain A", "B": "chain B"},
+                    "start_sigma": 1.0,
+                    "stop_sigma": 5.0,  # > start_sigma -> empty window
+                }
+            ],
+        }
+    )
+    with pytest.raises(ValueError, match="stop_sigma > start_sigma"):
+        cr.setup(MockAdapter(_custom_window_atoms()))
+
+
+def test_custom_empty_step_window_raises():
+    """Empty STEP window (stop_step < start_step) on a CUSTOM restraint must RAISE, the
+    step-axis analogue of the sigma check above."""
+    cr = CombinedRestraints()
+    cr.set_config(
+        {
+            "custom_restraints_config": [
+                {
+                    "name": "c",
+                    "energy": "harmonic(distance(A, B), 5.0)",
+                    "selections": {"A": "chain A", "B": "chain B"},
+                    "start_step": 50,
+                    "stop_step": 10,  # < start_step -> empty step window
+                }
+            ],
+        }
+    )
+    with pytest.raises(ValueError, match="stop_step < start_step"):
+        cr.setup(MockAdapter(_custom_window_atoms()))
+
+
 def test_rmsd_count_mismatch_raises(tmp_path):
     """User requirement: mismatched ref/target atom counts must error out."""
     ref = np.random.default_rng(1).standard_normal((6, 3))

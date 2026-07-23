@@ -189,6 +189,17 @@ class ParseError(ValueError):
     pass
 
 
+class SelectionError(ValueError):
+    """A hard, non-recoverable selection error (e.g. a descending ``resid`` range).
+
+    Deliberately NOT a subclass of ``ParseError``: the recursive-descent parser uses
+    ``except ParseError`` for backtracking (try the next alternative), so a ``ParseError``
+    raised deep in ``_parse_numbers`` gets swallowed and reported as a misleading generic
+    "Expected an atomic selection" at position 0. ``SelectionError`` propagates past every
+    ``except ParseError`` to the top, where ``parse_selection`` turns it into the real
+    message."""
+
+
 # --- Parser Class ---
 RESERVED_KEYWORDS = {
     "and",
@@ -322,10 +333,10 @@ class SelectionParser:
             self._consume_tag("to")
             self._skip_space1()
             last = self._parse_usize()
-            if last < first:
-                raise ParseError(f"Range end {last} is less than start {first}")
-            return list(range(first, last + 1))
         except ParseError:
+            # not a range ("resid 5 6 7" list form) -> backtrack and parse a number list.
+            # The range-order check is deliberately NOT inside this try: a descending range
+            # must be a hard error, not something this `except` swallows into list form.
             self.pos = saved_pos_for_to
             numbers = [first]
             while True:
@@ -337,6 +348,13 @@ class SelectionParser:
                     self.pos = saved_pos_loop
                     break
             return numbers
+        # committed to a range ("first to last"): a descending range is a hard error.
+        # Raise SelectionError (NOT ParseError) so the `except ParseError` backtracking in
+        # _parse_atom/_parse_primary can't swallow it into the list form and report a
+        # misleading "Expected an atomic selection at position 0".
+        if last < first:
+            raise SelectionError(f"Range end {last} is less than start {first}")
+        return list(range(first, last + 1))
 
     def _parse_resid(self) -> SelectionNode:
         self._consume_tag("resid")
@@ -496,7 +514,9 @@ def parse_selection(selection_string: str) -> Union[SelectionNode, str]:
     try:
         parser = SelectionParser(selection_string)
         return parser.parse()
-    except ParseError as e:
+    except (ParseError, SelectionError) as e:
+        # SelectionError (hard errors like a descending range) reaches here past the
+        # per-alternative `except ParseError` backtracking; surface its real message.
         return str(e)
 
 
