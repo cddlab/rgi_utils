@@ -709,15 +709,20 @@ def build_spec(
     bonds, angles, chirals, cistrans, planes = _extract_conformer(ligand_confs)
     polymer_atoms = np.empty(0, dtype=np.int64)
     if polymer_geometry is not None:
-        pb, pa, pc, _pd, _pp = _extract_conformer(
+        pb, pa, pc, _pd, pp = _extract_conformer(
             polymer_geometry.residue_confs, relax=False
         )
         bonds.extend(pb)
         bonds.extend(polymer_geometry.link_bonds)
         angles.extend(pa)
         angles.extend(polymer_geometry.link_angles)
-        chirals.extend(pc)
-        chirals.extend(polymer_geometry.link_chirals)
+        chirals.extend(pc)  # residue-local stereocentres (Calpha) only
+        # Polymer planarity: residue-local aromatic rings (His/Phe/Tyr/Trp side chains,
+        # nucleic-acid bases) from _extract_conformer, plus the canonical peptide plane
+        # (a 5-atom group in global indices; appended directly, bypassing the residue-
+        # local coplanarity check like link_bonds/link_angles).
+        planes.extend(pp)
+        planes.extend(polymer_geometry.link_planes)
         polymer_atoms = np.asarray(polymer_geometry.atom_indices, dtype=np.int64)
     # VdW covalent exclusions must survive even when bond/angle energy blocks are off.
     exclusion_bonds = list(bonds)

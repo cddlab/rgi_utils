@@ -2,8 +2,9 @@
 
 Reference conformers in the supported predictors are residue-local: each
 ``ref_space_uid`` identifies one independently positioned CCD component. That makes
-them suitable targets for intra-residue bonds, angles and chirality, but not for
-measuring inter-residue link geometry. Canonical peptide and phosphodiester links are
+them suitable targets for intra-residue bonds, angles, chirality and planar groups
+(aromatic side chains / nucleic-acid bases), but not for measuring inter-residue link
+geometry. Canonical peptide and phosphodiester links (and the peptide plane) are
 therefore supplied explicitly below.
 """
 
@@ -26,7 +27,9 @@ class PolymerGeometry:
     atom_indices: np.ndarray
     link_bonds: list[tuple[int, int, float]]
     link_angles: list[tuple[int, int, int, float]]
-    link_chirals: list[tuple[int, int, int, int, float]]
+    # Canonical inter-residue planar groups (e.g. the peptide plane): each a tuple of
+    # global atom indices scored by the `plane` term (best-fit-plane flatness).
+    link_planes: list[tuple[int, ...]]
 
 
 # Side selectors: each link atom names its residue explicitly (previous / current)
@@ -40,14 +43,15 @@ class _LinkGeometry:
     """Canonical inter-residue link targets as (atom_name, side) references.
 
     ``bond`` is ``((name, side), (name, side), target_angstrom)``; each ``angles`` entry
-    is three ``(name, side)`` atoms plus a target in DEGREES; each ``impropers`` entry is
-    four ``(name, side)`` atoms restrained to zero signed volume (peptide-plane flatness,
-    carried by the chiral energy leaf so polymer chemistry stays bond/angle/chiral/VdW).
+    is three ``(name, side)`` atoms plus a target in DEGREES; each ``planes`` entry is an
+    N-tuple of ``(name, side)`` atoms forming one planar group restrained to zero
+    out-of-plane deviation (peptide-plane flatness, carried by the `plane` energy leaf
+    so polymer chemistry stays bond/angle/chiral/plane/VdW).
     """
 
     bond: tuple
     angles: tuple
-    impropers: tuple = ()
+    planes: tuple = ()
 
 
 # Engh-Huber peptide-link targets and conventional phosphodiester targets.
@@ -60,9 +64,10 @@ _PROTEIN_LINK = _LinkGeometry(
         (("O", _PREV), ("C", _PREV), ("N", _CURR), 122.7),
         (("C", _PREV), ("N", _CURR), ("CA", _CURR), 121.7),
     ),
-    impropers=(
-        (("C", _PREV), ("CA", _PREV), ("O", _PREV), ("N", _CURR)),
-        (("N", _CURR), ("C", _PREV), ("O", _PREV), ("CA", _CURR)),
+    # Peptide plane: the union of the two classic omega-plane impropers is one 5-atom
+    # planar group {C, CA, O of the previous residue; N, CA of the current}.
+    planes=(
+        (("C", _PREV), ("CA", _PREV), ("O", _PREV), ("N", _CURR), ("CA", _CURR)),
     ),
 )
 _NUCLEIC_LINK = _LinkGeometry(
@@ -86,7 +91,7 @@ def _is_enabled_polymer(record) -> bool:
 
 
 def _link_geometry(previous, current, mol_type: str):
-    """Return canonical link bond/angles/impropers for two adjacent residue atom maps."""
+    """Return canonical link bond/angles/planes for two adjacent residue atom maps."""
 
     names = (previous["names"], current["names"])  # index by _PREV / _CURR
     link = _PROTEIN_LINK if mol_type == "protein" else _NUCLEIC_LINK
@@ -105,12 +110,12 @@ def _link_geometry(previous, current, mol_type: str):
         if all(i is not None for i in idx):
             angles.append((*idx, float(np.deg2rad(degrees))))
 
-    chirals = []
-    for improper in link.impropers:
-        idx = tuple(resolve(a) for a in improper)
+    planes = []
+    for group in link.planes:
+        idx = tuple(resolve(a) for a in group)
         if all(i is not None for i in idx):
-            chirals.append((*idx, 0.0))
-    return bonds, angles, chirals
+            planes.append(idx)
+    return bonds, angles, planes
 
 
 def build_polymer_geometry(
@@ -228,7 +233,7 @@ def build_polymer_geometry(
 
     link_bonds = []
     link_angles = []
-    link_chirals = []
+    link_planes = []
     by_chain: dict[str, list[dict]] = {}
     for meta in residue_meta:
         by_chain.setdefault(meta["chain"], []).append(meta)
@@ -240,17 +245,17 @@ def build_polymer_geometry(
         for previous, current in zip(residues, residues[1:]):
             if current["mol_type"] != previous["mol_type"]:
                 continue
-            bonds, angles, chirals = _link_geometry(
+            bonds, angles, planes = _link_geometry(
                 previous, current, current["mol_type"]
             )
             link_bonds.extend(bonds)
             link_angles.extend(angles)
-            link_chirals.extend(chirals)
+            link_planes.extend(planes)
 
     return PolymerGeometry(
         residue_confs=residue_confs,
         atom_indices=np.asarray(sorted(atom_indices), dtype=np.int64),
         link_bonds=link_bonds,
         link_angles=link_angles,
-        link_chirals=link_chirals,
+        link_planes=link_planes,
     )

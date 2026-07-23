@@ -91,6 +91,22 @@ _ALA_COORDS = np.array(
     ]
 )
 
+# A flat 6-membered carbon ring (regular hexagon in z=0, ~1.4 A bonds) stands in for a
+# planar aromatic side chain / nucleic-acid base. The names avoid every backbone-link
+# atom (C, N, CA, O, O3', P, ...) so no peptide/phosphodiester link is built and the
+# only planar group is the residue-local ring detected from its coplanar reference.
+_RING_NAMES = ["C1", "C2", "C3", "C4", "C5", "C6"]
+_RING_COORDS = np.array(
+    [
+        [1.40, 0.00, 0.00],
+        [0.70, 1.21, 0.00],
+        [-0.70, 1.21, 0.00],
+        [-1.40, 0.00, 0.00],
+        [-0.70, -1.21, 0.00],
+        [0.70, -1.21, 0.00],
+    ]
+)
+
 
 def _config():
     return {
@@ -100,12 +116,13 @@ def _config():
             "bond": {},
             "angle": {},
             "chiral": {},
+            "plane": {},
             "vdw": {"max_neighbors": 8},
         },
     }
 
 
-def test_protein_builds_peptide_link_chiral_and_vdw_exclusions():
+def test_protein_builds_peptide_link_plane_and_vdw_exclusions():
     restr = CombinedRestraints()
     restr.setup(_PolymerAdapter("protein", _ALA_NAMES, _ALA_COORDS), config=_config())
     spec = restr.spec
@@ -117,9 +134,16 @@ def test_protein_builds_peptide_link_chiral_and_vdw_exclusions():
     assert spec.angle is not None
     assert any(np.array_equal(row, [1, 2, 5]) for row in spec.angle.idx)
     assert any(np.array_equal(row, [2, 5, 6]) for row in spec.angle.idx)
-    assert spec.chiral is not None and int(spec.chiral.mask.sum()) >= 4
-    peptide_planes = np.where(spec.chiral.vol0 == 0.0)[0]
-    assert len(peptide_planes) >= 2
+    # Residue-local Calpha stereocentres survive on the chiral term; the peptide-plane
+    # impropers no longer ride it (no zero signed-volume targets remain).
+    assert spec.chiral is not None and int(spec.chiral.mask.sum()) >= 2
+    assert not (spec.chiral.vol0 == 0.0).any()
+
+    # The peptide plane is one 5-atom best-fit-plane group {C,CA,O(res1), N,CA(res2)} =
+    # local indices {1, 2, 3, 5, 6}. ALA has no aromatic ring, so it is the only plane.
+    assert spec.plane is not None and int(spec.plane.mask.sum()) == 1
+    group = {int(i) for i, m in zip(spec.plane.idx[0], spec.plane.grp_mask[0]) if m > 0}
+    assert group == {1, 2, 3, 5, 6}
 
     av = spec.active_vdw_config
     assert av is not None
@@ -128,6 +152,26 @@ def test_protein_builds_peptide_link_chiral_and_vdw_exclusions():
     # Peptide C-N and the CA-C-N 1-3 pair must never receive VdW repulsion.
     assert 2 * spec.n_active + 5 in set(av.excluded_codes.tolist())
     assert 1 * spec.n_active + 5 in set(av.excluded_codes.tolist())
+
+
+def test_polymer_residue_local_aromatic_ring_builds_plane():
+    # (2b) A planar aromatic group inside a polymer residue (nucleic-acid base or a
+    # His/Phe/Tyr/Trp side chain) becomes a residue-local `plane` group, the ONLY plane
+    # path for nucleic acids (their inter-residue link carries no peptide plane).
+    config = {
+        "gpu": False,
+        "max_iter": 100,
+        "conformer_restraints_config": {"plane": {}},
+    }
+    restr = CombinedRestraints()
+    restr.setup(_PolymerAdapter("protein", _RING_NAMES, _RING_COORDS), config=config)
+    spec = restr.spec
+
+    # Two residues, each a coplanar 6-ring -> two plane groups of 6 atoms; no peptide
+    # link (ring atom names are not backbone atoms), so these are the only planes.
+    assert spec.plane is not None
+    assert int(spec.plane.mask.sum()) == 2
+    assert (spec.plane.grp_mask.sum(axis=1) == 6).all()
 
 
 def test_reference_uid_groups_atom_tokenized_modified_residues():

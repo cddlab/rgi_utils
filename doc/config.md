@@ -281,13 +281,17 @@ conformer_restraints_config:
     max_neighbors: 32
 ```
 
-Intra-residue bond, angle, and chiral targets come from each predictor's residue-local ideal
-reference conformer. Canonical inter-residue geometry is added explicitly: peptide `C-N` bonds plus
-`CA-C-N`, `O-C-N`, and `C-N-CA` angles; and DNA/RNA `O3'-P` phosphodiester bonds plus
+Intra-residue bond, angle, chiral, and planar-group targets come from each predictor's residue-local
+ideal reference conformer. Canonical inter-residue geometry is added explicitly: peptide `C-N` bonds
+plus `CA-C-N`, `O-C-N`, and `C-N-CA` angles; and DNA/RNA `O3'-P` phosphodiester bonds plus
 `C3'-O3'-P` and `O3'-P-O5'` angles. The adjacent `P-O5'-C5'` angle comes from the current residue's
-reference conformer. Peptide-plane zero-volume impropers are carried by the `chiral` term. Together
-these prevent an RMSD restraint from repairing a selected residue while breaking the covalent link
-to its neighbour. Polymer `plane` and `cistrans` are not built; those remain ligand-only terms.
+reference conformer. Together these prevent an RMSD restraint from repairing a selected residue while
+breaking the covalent link to its neighbour. Polymer `plane` **is** built (opt-in via the `plane`
+sub-block): residue-local aromatic rings — His/Phe/Tyr/Trp side chains and nucleic-acid bases — plus
+the protein **peptide plane**, the canonical inter-residue 5-atom group `{C, CA, O}` (previous
+residue) `+ {N, CA}` (current), scored by the best-fit-plane `plane` term (this replaces the old
+peptide-plane zero-volume impropers that rode the `chiral` term — so a `chiral`-only config no longer
+flattens the peptide plane; add a `plane` sub-block). Polymer `cistrans` remains a ligand-only term.
 
 Top-level (shared by all terms): `start_sigma` (`+inf`), `stop_sigma` (`-1`) — or the step-window
 alternative `start_step` (`-inf`) / `stop_step` (`+inf`) (mutually exclusive with the sigma window).
