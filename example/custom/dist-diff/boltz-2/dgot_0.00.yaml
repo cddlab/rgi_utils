@@ -5,7 +5,7 @@ sequences:
 restraints_config:
   verbose: true
   gpu: true
-  max_iter: 100
+  max_iter: 1000
   method: CG
   custom_restraints_config:
   - name: dist-diff

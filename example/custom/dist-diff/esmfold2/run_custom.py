@@ -19,7 +19,7 @@ SEQUENCE = "RRRYLTLVMIFITVVICYVDRANLAVASAHIQEEFGITKAEMGYVFSAFAWLYTLCQIPGGWFLDRVG
 
 RESTRAINTS_CONFIG = {'verbose': True,
  'gpu': True,
- 'max_iter': 100,
+ 'max_iter': 1000,
  'method': 'CG',
  'custom_restraints_config': [{'name': 'dist-diff',
                                'energy': '((distance(A, B) - distance(C, D)) - 0.0)**2',
