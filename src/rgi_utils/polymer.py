@@ -66,9 +66,7 @@ _PROTEIN_LINK = _LinkGeometry(
     ),
     # Peptide plane: the union of the two classic omega-plane impropers is one 5-atom
     # planar group {C, CA, O of the previous residue; N, CA of the current}.
-    planes=(
-        (("C", _PREV), ("CA", _PREV), ("O", _PREV), ("N", _CURR), ("CA", _CURR)),
-    ),
+    planes=((("C", _PREV), ("CA", _PREV), ("O", _PREV), ("N", _CURR), ("CA", _CURR)),),
 )
 _NUCLEIC_LINK = _LinkGeometry(
     bond=(("O3'", _PREV), ("P", _CURR), _PHOSPHODIESTER_BOND),
