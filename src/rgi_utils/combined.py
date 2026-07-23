@@ -483,11 +483,21 @@ class CombinedRestraints:
         # window per term); each optimizer additionally skips the whole step when sigma
         # exceeds every restraint's start_sigma (spec.max_start_sigma()).
         if self._backend == "jax":
-            # sigma=None means "no sigma gating, all restraints active" (matching the
-            # torch branch). The gate is `sigma <= start_sigma`, so the None sentinel must
-            # be LOW (-inf) to pass every gate; 1e30 would skip everything.
-            s = sigma if sigma is not None else float("-inf")
-            return self._minimize_fn(coords, s, istep)
+            if sigma is None:
+                # The jax per-restraint gate is `stop_sigma <= sigma <= start_sigma`, so NO
+                # single scalar activates every restraint: the earlier `-inf` sentinel failed
+                # the stop_sigma lower bound (default -1) and silently gated EVERY sigma
+                # restraint OFF -> a no-op the torch branch (which special-cases sigma=None)
+                # does not share. Fail loudly instead of silently doing nothing. The
+                # production AF3 path always passes a real sigma via ScanMinimizer /
+                # get_minimizer(), so this only guards a direct debug call.
+                raise ValueError(
+                    "minimize(<jax array>) requires an explicit `sigma`: the jax gate "
+                    "cannot represent 'all restraints active' with a single scalar (unlike "
+                    "the torch path). Pass the schedule sigma, or drive the pure minimizer "
+                    "via get_minimizer()/ScanMinimizer as AF3 does."
+                )
+            return self._minimize_fn(coords, sigma, istep)
         return self._minimize_torch(coords, sigma, istep)
 
     def _minimize_torch(self, coords, sigma=None, step=None):

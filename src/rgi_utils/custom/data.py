@@ -122,7 +122,13 @@ class CustomData:
     def resolve_sites(self, adapter) -> None:
         if not self.run_restr:
             return
-        # resolve pass: run the energy with a recording ctx to collect selection identifiers
+        # resolve pass: run the energy ONCE with a recording ctx to collect the selection
+        # identifiers it touches. The DSL (`energy=`) path is safe because eval_formula
+        # evaluates every Call arg eagerly (even where(c,a,b) touches all three). A `fn`/
+        # `use` CODE restraint is arbitrary Python, so DATA-DEPENDENT BRANCHING resolves only
+        # the branch the fixed resolve-dummies take; a different branch on real coords then
+        # hits an UNRESOLVED selection and RestraintContext._idx raises a clear error. Rule
+        # for code restraints: reference every selection unconditionally (outside branches).
         rc = ResolveContext()
         self._evaluate_resolve(rc)
         self._identifiers = list(rc.selections)

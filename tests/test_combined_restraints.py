@@ -1672,6 +1672,69 @@ def test_cif_ref_hetatm_per_atom_ordinal(tmp_path):
     assert by[("B", "C1")] == 1 and by[("B", "C2")] == 2 and by[("B", "C3")] == 3
 
 
+def test_cif_quoted_value_with_space_not_truncated(tmp_path):
+    """A quoted mmCIF value with an EMBEDDED SPACE (in any column, even one we never read)
+    must not inflate the token count and silently truncate the parse. Before the quote-aware
+    tokeniser, raw.split() turned 'has a space' into 3 tokens -> len(toks) != ncol -> the row
+    read as the block terminator and every atom from it on was dropped."""
+    from rgi_utils.pdb_ref import read_cif_atoms
+
+    cif = tmp_path / "quoted.cif"
+    cif.write_text(
+        "data_test\n#\nloop_\n"
+        "_atom_site.group_PDB\n"
+        "_atom_site.id\n"
+        "_atom_site.type_symbol\n"
+        "_atom_site.auth_atom_id\n"
+        "_atom_site.auth_comp_id\n"
+        "_atom_site.auth_asym_id\n"
+        "_atom_site.auth_seq_id\n"
+        "_atom_site.Cartn_x\n"
+        "_atom_site.Cartn_y\n"
+        "_atom_site.Cartn_z\n"
+        "_atom_site.pdbx_note\n"
+        "ATOM 1 N N ALA A 5 1.0 2.0 3.0 'has a space'\n"
+        "ATOM 2 C CA ALA A 5 1.5 2.5 3.5 'more spaces here'\n"
+        "HETATM 3 C C1 LIG B 900 7.0 8.0 9.0 unquoted\n"
+        "#\n"
+    )
+    atoms = read_cif_atoms(str(cif))
+    assert len(atoms) == 3  # none dropped by the embedded-space rows
+    by = {(a.chain, a.name): a.resid for a in atoms}
+    assert by[("A", "N")] == 1 and by[("A", "CA")] == 1  # shared ATOM ordinal
+    assert by[("B", "C1")] == 1  # HETATM own ordinal
+
+
+def test_minimize_jax_requires_explicit_sigma():
+    """minimize(<jax array>) with no sigma must RAISE, not silently no-op. The jax gate
+    stop_sigma<=sigma<=start_sigma can't mean 'all active' with one scalar (the old -inf
+    sentinel gated every restraint OFF); the torch path special-cases sigma=None, so this is
+    a jax-only guard. AF3 always passes a real sigma via ScanMinimizer."""
+    jnp = pytest.importorskip("jax.numpy")
+    cr = CombinedRestraints()
+    cr.set_config(
+        {
+            "distance_restraints_config": [
+                {
+                    "atom_selection1": "chain A",
+                    "atom_selection2": "chain B",
+                    "harmonic": {"target_distance": 5.0},
+                }
+            ],
+        }
+    )
+    atoms = [
+        AtomRecord("A", 1, 0),
+        AtomRecord("A", 2, 1),
+        AtomRecord("B", 1, 2),
+        AtomRecord("B", 2, 3),
+    ]
+    cr.setup(MockAdapter(atoms))
+    coords = jnp.zeros((1, 4, 3))
+    with pytest.raises(ValueError, match="requires an explicit"):
+        cr.minimize(coords)  # istep defaults, sigma=None
+
+
 def test_rmsd_ref_cif_and_pdb_mutually_exclusive():
     """ref_pdb and ref_cif are mutually exclusive -- giving both is a config error
     (which file wins would otherwise be silent)."""

@@ -23,13 +23,14 @@ PDB ATOM/HETATM columns are fixed-width (PDB 3.30): record(1-6), serial(7-11),
 name(13-16), altLoc(17), resName(18-20), chainID(22), resSeq(23-26), iCode(27),
 x(31-38), y(39-46), z(47-54), element(77-78) — here in 0-based Python slices.
 mmCIF ``_atom_site`` columns are self-describing (order varies per file), so the reader
-maps each ``_atom_site.<field>`` tag to its position and pulls fields by name. Data rows
-are whitespace-split (no ``_atom_site`` field we read carries an embedded space), then each
-token has at most ONE outer quote pair removed: a gemmi-written name like ``"O5'"`` (gemmi
-double-quotes a value containing ``'``) reads back as ``O5'``, while an already-unquoted
-``O5'`` is left intact. A blanket ``str.strip("'\"")`` would corrupt the unquoted form
-(``O5'`` → ``O5``) and ``shlex`` mis-tokenises the bare apostrophe — hence the precise
-single-outer-pair rule.
+maps each ``_atom_site.<field>`` tag to its position and pulls fields by name. Data rows are
+tokenised whitespace-first but QUOTE-AWARE (``_split_cif_row``): a ``'...'`` / ``"..."`` value
+with an embedded space (possible in any column, even ones we never read) stays ONE token, so
+it doesn't inflate the token count and truncate the parse. Each token then has at most ONE
+outer quote pair removed: a gemmi-written name like ``"O5'"`` (gemmi double-quotes a value
+containing ``'``) reads back as ``O5'``, while an already-unquoted ``O5'`` is left intact. A
+blanket ``str.strip("'\"")`` would corrupt the unquoted form (``O5'`` → ``O5``) and ``shlex``
+mis-tokenises the bare apostrophe — hence the precise single-outer-pair rule.
 """
 
 from __future__ import annotations
@@ -66,7 +67,16 @@ def _build_atoms(rows, *, source_label: str, path: str) -> list[PdbAtom]:
     (ATOM) residue's atoms share one ordinal, while a ligand/non-polymer (HETATM) atom
     gets its OWN ordinal (the adapters tokenise a ligand one atom per token). Aligning the
     readers here is what lets RMSD identity-pair ligand atoms. Raises ValueError if no
-    rows survived (the RMSD restraint must fail loudly)."""
+    rows survived (the RMSD restraint must fail loudly).
+
+    LIMITATION (context-free reader — no entity info): a HETATM that sits INSIDE a polymer
+    chain (a modified residue such as MSE, or a bound ion/water) is per-atom-incremented
+    like a ligand, so it shifts the per-chain ordinal of every following ATOM residue. This
+    is harmless under the default ``pairing: align`` (sequence-position pairing absorbs the
+    shift), but breaks ``pairing: identity`` and can drop the modified residue from the
+    aligned sequence. Distinguishing a polymer-internal HETATM from a standalone ligand
+    needs entity typing this reader deliberately does not have; use ``pairing: align`` (the
+    default) for references with in-chain HETATM."""
     atoms: list[PdbAtom] = []
     chain_ord: dict[str, int] = {}
     last_key: dict[str, tuple | None] = {}
@@ -153,6 +163,39 @@ def _cif_unquote(v: str) -> str:
     return v
 
 
+def _split_cif_row(raw: str) -> list[str]:
+    """Whitespace-tokenise one mmCIF ``_atom_site`` data row, honouring ``'...'`` / ``"..."``
+    quoting so a value with an EMBEDDED SPACE (in any column, even ones we never read) stays
+    a single token instead of splitting into several — which used to inflate the token count
+    and make the strict ``len(toks) == ncol`` check treat the row as the block terminator,
+    silently truncating the parse. mmCIF rule: a quote opens a value only at a token start,
+    and the matching quote closes it only when followed by whitespace / end-of-line (so a
+    mid-value apostrophe such as ``O5'`` is literal, not a close). The quote characters are
+    KEPT in the returned token so the downstream ``_cif_unquote`` strips them exactly as
+    before. Multiline (``;``-delimited) values are not handled — ``_atom_site`` rows never
+    use them (and such a line is already caught as a terminator by the ``;`` prefix check)."""
+    toks: list[str] = []
+    i, n = 0, len(raw)
+    while i < n:
+        c = raw[i]
+        if c.isspace():
+            i += 1
+            continue
+        if c in ("'", '"'):
+            start = i  # keep the opening quote
+            i += 1
+            while i < n and not (raw[i] == c and (i + 1 >= n or raw[i + 1].isspace())):
+                i += 1
+            i = min(i + 1, n)  # include the closing quote
+            toks.append(raw[start:i])
+        else:
+            start = i
+            while i < n and not raw[i].isspace():
+                i += 1
+            toks.append(raw[start:i])
+    return toks
+
+
 def _iter_cif_rows(text: str, path: str):
     """Yield one normalised row per ``_atom_site`` data line of the FIRST ``_atom_site``
     loop. Columns are resolved by name from the loop header (their order varies per file),
@@ -202,9 +245,11 @@ def _iter_cif_atom_site(lines, start, n, colmap, ncol):
         # the data block ends at the next category / loop / comment (#) / save / blank.
         if not s or s == "loop_" or s.startswith(("_", "#", ";", "data_", "save_")):
             break
-        toks = raw.split()
-        # _atom_site values never carry an embedded space, so a token-count mismatch is
-        # not a wrapped value but the block having ended -> stop rather than mis-parse.
+        toks = _split_cif_row(raw)
+        # quote-aware tokeniser above keeps a quoted embedded-space value as ONE token, so a
+        # token-count mismatch now genuinely means the block ended (the real terminators —
+        # blank / loop_ / _category / # / ; / data_ / save_ — are already caught above) ->
+        # stop rather than mis-parse.
         if len(toks) != ncol:
             break
         model = fld(toks, "pdbx_PDB_model_num")
