@@ -16,6 +16,10 @@ restraints_config:
       weight: 1
     chiral:
       weight: 1
+    plane:
+      weight: 1
+    vdw:
+      weight: 1
   rmsd_restraints_config:
   - ref_cif: 1GGG.cif
     atom_selection_ref_fit: chain A and name CA

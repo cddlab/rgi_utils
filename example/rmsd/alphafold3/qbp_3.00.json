@@ -30,6 +30,12 @@
       },
       "chiral": {
         "weight": 1
+      },
+      "plane": {
+        "weight": 1
+      },
+      "vdw": {
+        "weight": 1
       }
     },
     "rmsd_restraints_config": [

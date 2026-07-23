@@ -239,10 +239,20 @@ class CombinedRestraints:
                     if float(ss.min()) == float(ss.max())
                     else f"{float(ss.min()):g}..{float(ss.max()):g}"
                 )
+            # per-term conformer counts so a silently-empty sub-restraint (e.g. plane=0 when
+            # the caller expected polymer aromatic/peptide planes) is visible at setup, not
+            # only inferable from a 0.00000 finalize energy (which also reads 0 when built).
+            def _nrow(arr):
+                return int(arr.mask.sum()) if arr is not None else 0
+            conf_counts = (
+                f"bond={_nrow(self.spec.bond)} angle={_nrow(self.spec.angle)} "
+                f"chiral={_nrow(self.spec.chiral)} plane={_nrow(self.spec.plane)} "
+                f"cistrans={_nrow(self.spec.cistrans)}"
+            )
             msg = (
                 f"[rgi_utils] setup: "
                 f"n_active={self.spec.n_active} "
-                f"conformer={self.spec.has_conformer()} n_distance={n_dist} "
+                f"conformer={self.spec.has_conformer()} {conf_counts} n_distance={n_dist} "
                 f"n_rmsd={n_rmsd} n_group_angle={n_grp_angle} "
                 f"n_group_dihedral={n_grp_dihedral} n_custom={len(self.spec.custom)} "
                 f"vdw={vdw_s} conf_start_sigma={self.spec.conf_start_sigma:g} "
