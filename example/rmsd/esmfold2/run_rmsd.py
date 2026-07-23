@@ -19,7 +19,7 @@ SEQUENCE = "ADKKLVVATDTAFVPFEFKQGDKYVGFDVDLWAAIAKELKLDYELKPMDFSGIIPALQTKNVDLALAG
 
 RESTRAINTS_CONFIG = {'verbose': True,
  'gpu': True,
- 'max_iter': 100,
+ 'max_iter': 1000,
  'method': 'CG',
  'conformer_restraints_config': {'start_sigma': 99999999,
                                  'bond': {'weight': 1},
