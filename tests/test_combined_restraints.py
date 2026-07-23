@@ -1584,8 +1584,9 @@ def test_rmsd_ligand_identity_pairing(tmp_path):
 def _cif_block(rows):
     """An mmCIF ``_atom_site`` loop holding the SAME atoms ``_pdb_atom_line`` renders
     (resName ``LIG``, element = ``name[0]``), so read_pdb_atoms / read_cif_atoms can be
-    compared row-for-row. ``label_asym_id`` is deliberately a DIFFERENT value (``_<chain>``)
-    so a passing test also proves ``auth_asym_id`` wins. Each row is
+    compared row-for-row. ``label_asym_id`` is deliberately a DIFFERENT value (quoted
+    ``'_<chain>'`` -- quoted because a leading underscore is a reserved data-name start in
+    CIF) so a passing test also proves ``auth_asym_id`` wins. Each row is
     ``(rec, chain, resseq, name, x, y, z)``."""
     header = [
         "loop_",
@@ -1615,7 +1616,7 @@ def _cif_block(rows):
         # is written "O5'" -- mimic that so the reader's unquoting is exercised offline.
         nm = f'"{name}"' if "'" in name else name
         lines.append(
-            f"{grp} {i} {el} {nm} . LIG _{chain} {resseq} ? "
+            f"{grp} {i} {el} {nm} . LIG '_{chain}' {resseq} ? "
             f"{x:.3f} {y:.3f} {z:.3f} {resseq} LIG {chain} {nm} 1"
         )
     lines.append("#")

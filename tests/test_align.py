@@ -2,7 +2,6 @@
 
 from rgi_utils._align import (
     THREE_TO_ONE,
-    _blosum_score,
     pair_residues,
 )
 
@@ -14,17 +13,10 @@ def _prot(seq, start=1):
     return [(start + i, _ONE_TO_THREE[c]) for i, c in enumerate(seq)]
 
 
-def test_blosum62_transcription_spot_checks():
-    # diagonal + known off-diagonals + symmetry guard against a bad transcription
-    assert _blosum_score("A", "A") == 4
-    assert _blosum_score("W", "W") == 11
-    assert _blosum_score("C", "C") == 9
-    assert _blosum_score("A", "R") == -1
-    assert _blosum_score("D", "E") == 2
-    assert _blosum_score("F", "Y") == 3
-    for a in "ARNDCQEGHILKMFPSTWYV":
-        for b in "ARNDCQEGHILKMFPSTWYV":
-            assert _blosum_score(a, b) == _blosum_score(b, a)
+# (The old BLOSUM62-transcription spot check is gone: the matrix is no longer hand-
+# transcribed -- _align now loads Biopython's canonical BLOSUM62 -- so there is nothing
+# to guard against a bad copy. The protein-vs-nucleotide scoring behaviour is covered by
+# the pair_residues cases below.)
 
 
 def test_identical_sequence_pairs_one_to_one():

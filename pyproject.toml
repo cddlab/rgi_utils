@@ -7,6 +7,11 @@ requires-python = ">=3.12"
 dependencies = [
     "numpy",
     "rdkit>=2024.3.2",
+    # RMSD-reference structure I/O (pdb_ref.py) + sequence alignment (_align.py). Both are
+    # imported lazily inside their modules so `import rgi_utils` stays numpy-only. Loose
+    # lower bounds: the host tool venvs pin gemmi 0.6.5-0.7.5 and biopython 1.84-1.87.
+    "gemmi>=0.6.5",
+    "biopython>=1.84",
 ]
 
 [project.optional-dependencies]
