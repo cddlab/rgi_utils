@@ -618,7 +618,7 @@ are the same geometry), so a penalty on its **deviation** must fold that deviati
 $[-\pi, \pi]$ first. Write `wrap(dihedral(A,B,C,D) - t)**2` (harmonic), **not** the naïve
 `harmonic(dihedral(A,B,C,D), t)`: the naïve form counts $\phi = +179^\circ$ against $t = -179^\circ$
 as a $358^\circ$ deviation (huge energy, and a gradient pointing the *long way* round) instead of the
-correct $2^\circ$. `wrap(x)` $= \operatorname{atan2}(\sin x, \cos x)$ is exactly the fold the
+correct $2^\circ$. `wrap(x)` $= \mathrm{atan2}(\sin x, \cos x)$ is exactly the fold the
 built-in `dihedral_restraints_config` / conformer `cistrans` apply internally — see the Math table.
 For a window, wrap relative to the centre: `flat_bottomed(wrap(dihedral(...) - centre), -w, w)` — and
 because the deviation is wrapped, this window **can straddle $\pm 180^\circ$** (the built-in
@@ -644,7 +644,7 @@ it free inside a window, above a floor, or below a ceiling:
 
 | group | names |
 |---|---|
-| elementwise | `sqrt` `exp` `log` `abs` `sin` `cos` `clip(x, lo, hi)` `wrap(x)` = $\operatorname{atan2}(\sin x, \cos x)$, folds an angle/deviation into $[-\pi, \pi]$ (use on `dihedral` deviations — see Periodicity above) |
+| elementwise | `sqrt` `exp` `log` `abs` `sin` `cos` `clip(x, lo, hi)` `wrap(x)` = $\mathrm{atan2}(\sin x, \cos x)$, folds an angle/deviation into $[-\pi, \pi]$ (use on `dihedral` deviations — see Periodicity above) |
 | reductions | `sum` `minimum` `maximum` |
 | branching | `where(cond, a, b)` — there is **no `if`** (keeps the closure jax-traceable, since it must trace inside `lax.scan`) |
 
