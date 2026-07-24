@@ -72,97 +72,118 @@ Design = **3 layers + autodiff + static shapes + GPU-complete optimization**:
    the pure-numpy energy reference for `tests/test_backend_parity.py`. Optimization
    requires torch or jax.
 
-Supporting modules:
-- **`featurizer.py`**: `build_spec(ligand_confs, distance_restraints, conformer_config,
-  elements, conf_start_sigma, rmsd_restraints)` — the single place RDKit mols become bond/angle/
-  chiral/cistrans restraints (global indices, multi-ligand) and the dynamic
-  fixed-background `VdwConfig` is assembled. Cis/trans detection keys on
-  acyclic, non-aromatic `BondType.DOUBLE` bonds and targets the reference-conformer
-  torsion; it needs real bond orders, which every tool supplies — chai via its adapter's
-  source-SMILES path (`chai/adapter.py` `_mol_from_smiles`, Kekulized orders), the
-  geometry-perceived fallback (no SMILES) being all-single so `cistrans=0`.
-- **`config.py`**: `RestraintsConfig.from_dict()` parses the shared
-  `restraints_config` (one source of truth for boltz YAML / protenix JSON / AF3).
-- **`combined.py`**: `CombinedRestraints` entry point — **instance-scoped, one per
-  structure** (NOT a singleton): `CombinedRestraints()` →
-  `setup(adapter, nbatch, config=dict)` (folds in the old `set_config`; clears any
-  prior spec/optimizer up front so a reused instance is safe) →
-  `minimize(coords, step, sigma)` → `finalize(coords, step)`. Always construct a fresh
-  instance per structure (the old `get_instance()`/`reset()` singleton shim was removed). The
-  backend is **inferred from invocation, NOT a config key**: `get_minimizer()` →
-  jax (only AF3 calls it); `minimize(coords)` → jax if `coords` is a jax array, else
-  torch (numpy/torch coords both take the torch path). Resolution is lazy — `setup`
-  leaves `self._backend = None` and builds the optimizer on the first
-  `minimize`/`get_minimizer` (`_ensure_backend` raises if one instance is invoked under
-  two backends). `gpu` selects the torch *device* (CPU when `gpu:false`, the accelerator
-  when `gpu:true`), NOT the backend, so `gpu:false` runs the torch optimizer on CPU
-  (moving GPU coords to CPU and back). There is no numpy optimizer (numpy is the energy
-  reference only); a leftover `backend:` config key raises with a migration hint.
-  torch/jax imported lazily. JAX tools inside `lax.scan` grab the pure minimizer via
-  `get_minimizer()` instead of calling `minimize` per step (so for AF3 the `gpu` flag is
-  inert — to run AF3 restraints on CPU, run the whole process on the JAX CPU platform).
-- **Framework adapters** (`{boltz,protenix,chai,openfold3,esmfold2,alphafold3}/adapter.py` —
-  framework-free EXCEPT boltz, whose feats arrive as native torch tensors so its adapter
-  imports torch (read at batch 0); the others import no framework. AF3's CCD/SMILES mol
-  resolution lives in a thin in-tool shim
-  (`alphafold3_restr` `build_af3_adapter`) that feeds `rgi_utils/alphafold3/adapter.py` plain
-  data): implement `iter_atoms()` (→
-  `AtomRecord(chain, resid, index)` for distance selection) and optionally
-  `num_atoms()`, `get_elements()`, `iter_ligand_confs()` (→
-  `LigandConf(mol, conf_coords, global_indices)` for conformer + VdW).
-- **`_mol_build.py`**: `build_ligand_mol(elements, coords, bonds_local,
-  perceive_bonds=False)` — the shared RDKit builder. protenix/openfold pass real
-  `bonds_local`. chai exposes NO intra-ligand bonds, so its adapter passes
-  `perceive_bonds=True`: connectivity is derived from the reference conformer via
-  `DetermineConnectivity`, which leaves atoms `noImplicit=True` — so the branch then
-  runs `SetNoImplicit(False)` + `UpdatePropertyCache` **before**
-  `AssignStereochemistryFrom3D`, else stereocentres read as 3-coordinate and every
-  chiral restraint silently vanishes.
-- **Atom selection DSL** (`selection.py`): `AtomSelector` parses
-  `"(chain A or chain B) and resid 1 to 10"` (an MDTraj-like keyword/range/boolean
-  vocabulary); tokens are
-  `chain`/`resid`/`index`/`name`/`protein`/`dna`/`rna`/`backbone`/`sidechain` +
-  `and`/`or`/`not`/`()`. Used by `DistanceData` (`distance_restr_data.py`) for centroid
-  groups and `RmsdData` for fit/calc; `name CA` (atom-name, case-insensitive,
-  alnum-only — a nucleic-acid `C1'` is not selectable but fails loudly) restricts an
-  RMSD superposition to backbone. `backbone`/`sidechain` are MDTraj-like POLYMER
-  selectors (name-based but gated on polymer type via `_moltype.polymer_type`, which
-  prefers `AtomRecord.mol_type` and falls back to `resname` — so both flow through the
-  candidate dict); a ligand atom named "C"/"N"/"O" never matches them.
-- **RMSD restraint** (`rmsd_restr_data.py` + `pdb_ref.py`): `RmsdData` resolves a moving
-  group against a reference structure — `ref_pdb` (PDB) or `ref_cif` (mmCIF), **mutually
-  exclusive**, both parsed via **gemmi** (lazy-imported, so `import rgi_utils` stays numpy-only)
-  by `read_pdb_atoms` / `read_cif_atoms` into the same `PdbAtom` list (a shared `_build_atoms`
-  applies the per-chain ordinal once, so the two are interchangeable; PDB goes through
-  `gemmi.read_structure`, mmCIF reads the `_atom_site` loop via `gemmi.cif` preferring the
-  `auth_*` columns — this keeps the label-only fallback `read_structure` drops) — driving the
-  Kabsch-superposed RMSD, shaped by a restraint-type block (`harmonic` / `flat-bottomed` /
-  `flat-bottomed1` / `flat-bottomed2`, the same four types as distance/angle/dihedral). The
-  superposition ("fit") and measured ("calc")
-  atoms are selected INDEPENDENTLY by four keys — `atom_selection_target_fit`,
-  `atom_selection_ref_fit`, `atom_selection_target_calc`, `atom_selection_ref_calc`
-  (`atom_selection_target` / `atom_selection_ref` are a both-sides shorthand for the
-  fit+calc pair). **There is NO bare `atom_selection` key** — passing one now RAISES
-  (it used to be silently dropped, a footgun), so use the suffixed keys. All four omitted ⇒ fit+measure over the
-  WHOLE structure best-effort (atoms missing from the ref are skipped). `pairing`
-  **defaults to `align`** (sequence-align polymer chains so a homolog ref maps on by
-  residue; ligands + structures with no polymer fall back to ordinal identity, so the
-  default is safe everywhere) — set `pairing: identity` to force pure (chain, resid, name)
-  ordinal pairing. A `name CA` or `backbone` selection superposes on backbone only, which
-  under align keeps a substituted homolog's side chain from being pinned.
-  Each RMSD entry takes a `start_sigma` (active once `sigma <= start_sigma`) **and** a
-  `stop_sigma` (released once `sigma < stop_sigma`; default **-1** = never released): the
-  active window is `stop_sigma <= sigma <= start_sigma`. `stop_sigma > 0` releases the
-  restraint for the final low-sigma steps so the model re-idealises geometry the restraint
-  held distorted — the fix for a **broken peptide bond between a restrained residue and a
-  FREE unmodeled tail** (`target_rmsd=0` drives the restrained residue onto the ref every
-  step while the free tail lags and the bond snaps in length AND omega; releasing late lets
-  the model repair it without losing the global ref bias set over the earlier steps). The
-  CG fully converges each step, so a per-atom RMSD weight only changes convergence RATE not
-  the fixed point — it can NOT keep the terminus off the ref; releasing (stop_sigma) is what
-  works. **Validated on boltz2: `stop_sigma: 1.0` fully heals the bond (ref Cα-RMSD ~0.3 Å);
-  the same knob is available on distance + conformer restraints** (see the start_sigma note
-  below). All tools share sigma_data=16, so the value transfers.
+### Supporting modules
+
+#### `featurizer.py`
+
+`build_spec(ligand_confs, distance_restraints, conformer_config,
+elements, conf_start_sigma, rmsd_restraints)` — the single place RDKit mols become bond/angle/
+chiral/cistrans restraints (global indices, multi-ligand) and the dynamic
+fixed-background `VdwConfig` is assembled. Cis/trans detection keys on
+acyclic, non-aromatic `BondType.DOUBLE` bonds and targets the reference-conformer
+torsion; it needs real bond orders, which every tool supplies — chai via its adapter's
+source-SMILES path (`chai/adapter.py` `_mol_from_smiles`, Kekulized orders), the
+geometry-perceived fallback (no SMILES) being all-single so `cistrans=0`.
+
+#### `config.py`
+
+`RestraintsConfig.from_dict()` parses the shared
+`restraints_config` (one source of truth for boltz YAML / protenix JSON / AF3).
+
+#### `combined.py`
+
+`CombinedRestraints` entry point — **instance-scoped, one per
+structure** (NOT a singleton): `CombinedRestraints()` →
+`setup(adapter, nbatch, config=dict)` (folds in the old `set_config`; clears any
+prior spec/optimizer up front so a reused instance is safe) →
+`minimize(coords, step, sigma)` → `finalize(coords, step)`. Always construct a fresh
+instance per structure (the old `get_instance()`/`reset()` singleton shim was removed). The
+backend is **inferred from invocation, NOT a config key**: `get_minimizer()` →
+jax (only AF3 calls it); `minimize(coords)` → jax if `coords` is a jax array, else
+torch (numpy/torch coords both take the torch path). Resolution is lazy — `setup`
+leaves `self._backend = None` and builds the optimizer on the first
+`minimize`/`get_minimizer` (`_ensure_backend` raises if one instance is invoked under
+two backends). `gpu` selects the torch *device* (CPU when `gpu:false`, the accelerator
+when `gpu:true`), NOT the backend, so `gpu:false` runs the torch optimizer on CPU
+(moving GPU coords to CPU and back). There is no numpy optimizer (numpy is the energy
+reference only); a leftover `backend:` config key raises with a migration hint.
+torch/jax imported lazily. JAX tools inside `lax.scan` grab the pure minimizer via
+`get_minimizer()` instead of calling `minimize` per step (so for AF3 the `gpu` flag is
+inert — to run AF3 restraints on CPU, run the whole process on the JAX CPU platform).
+
+#### Framework adapters
+
+(`{boltz,protenix,chai,openfold3,esmfold2,alphafold3}/adapter.py` —
+framework-free EXCEPT boltz, whose feats arrive as native torch tensors so its adapter
+imports torch (read at batch 0); the others import no framework. AF3's CCD/SMILES mol
+resolution lives in a thin in-tool shim
+(`alphafold3_restr` `build_af3_adapter`) that feeds `rgi_utils/alphafold3/adapter.py` plain
+data): implement `iter_atoms()` (→
+`AtomRecord(chain, resid, index)` for distance selection) and optionally
+`num_atoms()`, `get_elements()`, `iter_ligand_confs()` (→
+`LigandConf(mol, conf_coords, global_indices)` for conformer + VdW).
+
+#### `_mol_build.py`
+
+`build_ligand_mol(elements, coords, bonds_local,
+perceive_bonds=False)` — the shared RDKit builder. protenix/openfold pass real
+`bonds_local`. chai exposes NO intra-ligand bonds, so its adapter passes
+`perceive_bonds=True`: connectivity is derived from the reference conformer via
+`DetermineConnectivity`, which leaves atoms `noImplicit=True` — so the branch then
+runs `SetNoImplicit(False)` + `UpdatePropertyCache` **before**
+`AssignStereochemistryFrom3D`, else stereocentres read as 3-coordinate and every
+chiral restraint silently vanishes.
+
+#### Atom selection DSL
+
+(`selection.py`): `AtomSelector` parses
+`"(chain A or chain B) and resid 1 to 10"` (an MDTraj-like keyword/range/boolean
+vocabulary); tokens are
+`chain`/`resid`/`index`/`name`/`protein`/`dna`/`rna`/`backbone`/`sidechain` +
+`and`/`or`/`not`/`()`. Used by `DistanceData` (`distance_restr_data.py`) for centroid
+groups and `RmsdData` for fit/calc; `name CA` (atom-name, case-insensitive,
+alnum-only — a nucleic-acid `C1'` is not selectable but fails loudly) restricts an
+RMSD superposition to backbone. `backbone`/`sidechain` are MDTraj-like POLYMER
+selectors (name-based but gated on polymer type via `_moltype.polymer_type`, which
+prefers `AtomRecord.mol_type` and falls back to `resname` — so both flow through the
+candidate dict); a ligand atom named "C"/"N"/"O" never matches them.
+
+#### RMSD restraint
+
+(`rmsd_restr_data.py` + `pdb_ref.py`): `RmsdData` resolves a moving
+group against a reference structure — `ref_pdb` (PDB) or `ref_cif` (mmCIF), **mutually
+exclusive**, both parsed via **gemmi** (lazy-imported, so `import rgi_utils` stays numpy-only)
+by `read_pdb_atoms` / `read_cif_atoms` into the same `PdbAtom` list (a shared `_build_atoms`
+applies the per-chain ordinal once, so the two are interchangeable; PDB goes through
+`gemmi.read_structure`, mmCIF reads the `_atom_site` loop via `gemmi.cif` preferring the
+`auth_*` columns — this keeps the label-only fallback `read_structure` drops) — driving the
+Kabsch-superposed RMSD, shaped by a restraint-type block (`harmonic` / `flat-bottomed` /
+`flat-bottomed1` / `flat-bottomed2`, the same four types as distance/angle/dihedral). The
+superposition ("fit") and measured ("calc")
+atoms are selected INDEPENDENTLY by four keys — `atom_selection_target_fit`,
+`atom_selection_ref_fit`, `atom_selection_target_calc`, `atom_selection_ref_calc`
+(`atom_selection_target` / `atom_selection_ref` are a both-sides shorthand for the
+fit+calc pair). **There is NO bare `atom_selection` key** — passing one now RAISES
+(it used to be silently dropped, a footgun), so use the suffixed keys. All four omitted ⇒ fit+measure over the
+WHOLE structure best-effort (atoms missing from the ref are skipped). `pairing`
+**defaults to `align`** (sequence-align polymer chains so a homolog ref maps on by
+residue; ligands + structures with no polymer fall back to ordinal identity, so the
+default is safe everywhere) — set `pairing: identity` to force pure (chain, resid, name)
+ordinal pairing. A `name CA` or `backbone` selection superposes on backbone only, which
+under align keeps a substituted homolog's side chain from being pinned.
+Each RMSD entry takes a `start_sigma` (active once `sigma <= start_sigma`) **and** a
+`stop_sigma` (released once `sigma < stop_sigma`; default **-1** = never released): the
+active window is `stop_sigma <= sigma <= start_sigma`. `stop_sigma > 0` releases the
+restraint for the final low-sigma steps so the model re-idealises geometry the restraint
+held distorted — the fix for a **broken peptide bond between a restrained residue and a
+FREE unmodeled tail** (`target_rmsd=0` drives the restrained residue onto the ref every
+step while the free tail lags and the bond snaps in length AND omega; releasing late lets
+the model repair it without losing the global ref bias set over the earlier steps). The
+CG fully converges each step, so a per-atom RMSD weight only changes convergence RATE not
+the fixed point — it can NOT keep the terminus off the ref; releasing (stop_sigma) is what
+works. **Validated on boltz2: `stop_sigma: 1.0` fully heals the bond (ref Cα-RMSD ~0.3 Å);
+the same knob is available on distance + conformer restraints** (see the start_sigma note
+below). All tools share sigma_data=16, so the value transfers.
 
 ### Conformer: VdW (two categories — intramolecular / intermolecular)
 

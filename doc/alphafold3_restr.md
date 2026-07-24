@@ -57,7 +57,7 @@ AF3 reads RGI from a **`restraints_config` key inside the fold-input JSON** (bes
   minimizer via `get_minimizer()` (not a config key). The `gpu` flag is **inert** (the minimizer
   always runs on the model's device — to compute on CPU, run the whole process on the JAX CPU
   platform).
-- AF3's minimizer converges near-target (~24–25 Å for the distance example); `max_iter: 2000`.
+- AF3's minimizer converges near-target (~24-25 Å for the distance example); `max_iter: 2000`.
 
 `resid` is the **per-chain 1-based ordinal**; there is **no top-level `start_sigma`**.
 

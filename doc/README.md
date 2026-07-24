@@ -5,14 +5,14 @@ shared [`restraints_config` reference](config.md) for restraint semantics and de
 
 ## Tool guides
 
-| Predictor | Backend | Config placement | Guide |
-|---|---|---|---|
-| Boltz-1 / Boltz-2 | PyTorch | `restraints_config` in the input YAML | [Boltz](boltz_restr.md) |
-| AlphaFold 3 | JAX | `restraints_config` in the fold-input JSON | [AlphaFold 3](alphafold3_restr.md) |
-| Protenix v1 / v2 | PyTorch | `restraints_config` in each fold-input JSON object | [Protenix](protenix_restr.md) |
-| ESMFold2 | PyTorch | Python dict passed to `fold()` | [ESMFold2](esmfold2_restr.md) |
-| OpenFold 3 | PyTorch | `queries.<name>.restraints_config` in the input JSON | [OpenFold 3](openfold-3_restr.md) |
-| Chai-1 | PyTorch | Top-level sidecar YAML passed with `--restraints-config-path` | [Chai-1](chai-lab_restr.md) |
+| Predictor         | Backend | Config placement                                              | Guide                              |
+| ----------------- | ------- | ------------------------------------------------------------- | ---------------------------------- |
+| Boltz-1 / Boltz-2 | PyTorch | `restraints_config` in the input YAML                         | [Boltz](boltz_restr.md)            |
+| AlphaFold 3       | JAX     | `restraints_config` in the fold-input JSON                    | [AlphaFold 3](alphafold3_restr.md) |
+| Protenix v1 / v2  | PyTorch | `restraints_config` in each fold-input JSON object            | [Protenix](protenix_restr.md)      |
+| ESMFold2          | PyTorch | Python dict passed to `fold()`                                | [ESMFold2](esmfold2_restr.md)      |
+| OpenFold 3        | PyTorch | `queries.<name>.restraints_config` in the input JSON          | [OpenFold 3](openfold-3_restr.md)  |
+| Chai-1            | PyTorch | Top-level sidecar YAML passed with `--restraints-config-path` | [Chai-1](chai-lab_restr.md)        |
 
 ## Recommended workflow
 

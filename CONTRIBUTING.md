@@ -118,9 +118,9 @@ drift out of parity.
 
 ## Docs to keep in sync
 
-| Doc | Covers |
-|-----|--------|
-| [`README.md`](README.md) | user-facing usage, restraint catalogue |
-| [`doc/config.md`](doc/config.md) | full `restraints_config` schema + selection DSL |
-| [`doc/`](doc/) `*_restr.md` | per-tool integration notes |
-| [`AGENTS.md`](AGENTS.md) / `CLAUDE.md` | deep architecture + invariants |
+| Doc                                    | Covers                                          |
+| -------------------------------------- | ----------------------------------------------- |
+| [`README.md`](README.md)               | user-facing usage, restraint catalogue          |
+| [`doc/config.md`](doc/config.md)       | full `restraints_config` schema + selection DSL |
+| [`doc/`](doc/) `*_restr.md`            | per-tool integration notes                      |
+| [`AGENTS.md`](AGENTS.md) / `CLAUDE.md` | deep architecture + invariants                  |

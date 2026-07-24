@@ -5,16 +5,16 @@ Restraint-Guided Inference (RGI) utilities for diffusion-based structure predict
 
 **Implemented and available in the following 8 models** (across 6 predictor integrations):
 
-| Model | Integration | Backend | Details |
-|-------|-------------|---------|---------|
-| **Boltz-1** | boltz | torch | [`doc/boltz_restr.md`](doc/boltz_restr.md) |
-| **Boltz-2** | boltz | torch | [`doc/boltz_restr.md`](doc/boltz_restr.md) |
-| **AlphaFold3** | alphafold3 | jax | [`doc/alphafold3_restr.md`](doc/alphafold3_restr.md) |
-| **Protenix v1** | protenix | torch | [`doc/protenix_restr.md`](doc/protenix_restr.md) |
-| **Protenix v2** | protenix | torch | [`doc/protenix_restr.md`](doc/protenix_restr.md) |
-| **ESMFold2** | esmfold2 | torch | [`doc/esmfold2_restr.md`](doc/esmfold2_restr.md) |
-| **OpenFold-3** | openfold-3 | torch | [`doc/openfold-3_restr.md`](doc/openfold-3_restr.md) |
-| **Chai-1** | chai-lab | torch | [`doc/chai-lab_restr.md`](doc/chai-lab_restr.md) |
+| Model           | Integration | Backend | Details                                              |
+| --------------- | ----------- | ------- | ---------------------------------------------------- |
+| **Boltz-1**     | boltz       | torch   | [`doc/boltz_restr.md`](doc/boltz_restr.md)           |
+| **Boltz-2**     | boltz       | torch   | [`doc/boltz_restr.md`](doc/boltz_restr.md)           |
+| **AlphaFold3**  | alphafold3  | jax     | [`doc/alphafold3_restr.md`](doc/alphafold3_restr.md) |
+| **Protenix v1** | protenix    | torch   | [`doc/protenix_restr.md`](doc/protenix_restr.md)     |
+| **Protenix v2** | protenix    | torch   | [`doc/protenix_restr.md`](doc/protenix_restr.md)     |
+| **ESMFold2**    | esmfold2    | torch   | [`doc/esmfold2_restr.md`](doc/esmfold2_restr.md)     |
+| **OpenFold-3**  | openfold-3  | torch   | [`doc/openfold-3_restr.md`](doc/openfold-3_restr.md) |
+| **Chai-1**      | chai-lab    | torch   | [`doc/chai-lab_restr.md`](doc/chai-lab_restr.md)     |
 
 See each tool's guide in [`doc/`](doc/) for install / run details, and
 [`doc/config.md`](doc/config.md) for the full `restraints_config` schema.
@@ -136,29 +136,29 @@ boolean vocabulary is **MDTraj-like** (`resid 1 to 5`, `and` / `or` / `not`,
 `protein` / `backbone` / …), though `chain` takes letter ids and `resid` is the
 per-chain 1-based ordinal:
 
-| Example | Meaning |
-|---------|---------|
-| `chain A` | all atoms in chain A |
-| `resid 10` | residue 10 (1-based, per-chain ordinal) |
-| `resid 1 to 5` | residues 1–5 |
-| `resid 1 3 7` | residues 1, 3, 7 |
-| `index 42` | atom at padded index 42 |
-| `name CA` | atoms named CA (case-insensitive) |
-| `protein` / `dna` / `rna` | polymer-type selectors |
-| `backbone` / `sidechain` | MDTraj-like polymer selectors (gated on polymer type) |
-| `chain A and resid 1 to 5` | boolean AND |
-| `chain A or chain B` | boolean OR |
-| `not chain A` | negation |
-| `(chain A or chain B) and resid 1 to 10` | parenthesized expressions |
+| Example                                  | Meaning                                               |
+| ---------------------------------------- | ----------------------------------------------------- |
+| `chain A`                                | all atoms in chain A                                  |
+| `resid 10`                               | residue 10 (1-based, per-chain ordinal)               |
+| `resid 1 to 5`                           | residues 1–5                                          |
+| `resid 1 3 7`                            | residues 1, 3, 7                                      |
+| `index 42`                               | atom at padded index 42                               |
+| `name CA`                                | atoms named CA (case-insensitive)                     |
+| `protein` / `dna` / `rna`                | polymer-type selectors                                |
+| `backbone` / `sidechain`                 | MDTraj-like polymer selectors (gated on polymer type) |
+| `chain A and resid 1 to 5`               | boolean AND                                           |
+| `chain A or chain B`                     | boolean OR                                            |
+| `not chain A`                            | negation                                              |
+| `(chain A or chain B) and resid 1 to 10` | parenthesized expressions                             |
 
 ### Distance restraint types
 
-| Type | Parameters | Behavior |
-|------|-----------|---------|
-| `harmonic` | `target_distance` | Quadratic penalty at all distances |
-| `flat-bottomed` | `target_distance1`, `target_distance2` | No penalty between d1–d2 |
-| `flat-bottomed1` | `target_distance1` | No penalty below d1 |
-| `flat-bottomed2` | `target_distance2` | No penalty above d2 |
+| Type             | Parameters                             | Behavior                           |
+| ---------------- | -------------------------------------- | ---------------------------------- |
+| `harmonic`       | `target_distance`                      | Quadratic penalty at all distances |
+| `flat-bottomed`  | `target_distance1`, `target_distance2` | No penalty between d1–d2           |
+| `flat-bottomed1` | `target_distance1`                     | No penalty below d1                |
+| `flat-bottomed2` | `target_distance2`                     | No penalty above d2                |
 
 Distance is calculated between the centroids (unweighted geometric centers) of the two selected atom groups (`calc_method: "unfixed-absolute"`).
 

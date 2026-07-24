@@ -19,8 +19,8 @@ check their spelling against this page. Source of truth:
 
 ## Quick navigation
 
-- [Config shape and global options](#shape)
-- [Activation windows](#sigma-gating-start_sigma--stop_sigma)
+- [Config shape](#shape) and [top-level keys](#top-level-keys)
+- [Activation windows](#sigma-gating-start_sigma--stop_sigma) and [step gating](#step-gating-start_step--stop_step-alternative-to-sigma)
 - [Atom-selection DSL](#atom-selection-dsl) and [penalty shapes](#penalty-shapes-shared)
 - [Distance](#distance_restraints_config-list), [group angle](#angle_restraints_config-list), and
   [group dihedral](#dihedral_restraints_config-list)
@@ -161,8 +161,8 @@ key differs: `target_distance` / `target_angle` / `target_dihedral` / `target_rm
 `…2` for the flat-bottomed bounds). The **conformer** terms use the flat-bottomed shape with a symmetric `slack`:
 $\delta = 0$ within $\pm$`slack` of the RDKit-ideal value, quadratic outside (`slack = 0` $\Rightarrow$ pure harmonic).
 
-`distance` is CG-minimised like every other restraint (it used to be a closed-form shift; it is now
-part of the optimiser objective). To keep large groups moving as a rigid body under CG — a plain
+`distance` is CG-minimized like every other restraint (it used to be a closed-form shift; it is now
+part of the optimizer objective). To keep large groups moving as a rigid body under CG — a plain
 centroid's per-atom gradient is diluted by `1/N` — its centroid uses the same `_move_centroid`
 N×-rescale as the group angle/dihedral terms, with a reduced-mass scale `N1·N2/(N1+N2)` that
 reproduces the old **minimal-displacement** split (`s1 : s2 = N2 : N1`) for a single / disjoint
@@ -171,12 +171,12 @@ cross the moving group past the other to the reflected, equal-energy solution �
 always reaches the target**, but the split direction is not guaranteed for big moves; harmless in
 the multi-step diffusion loop.) Its `weight` is a **no-op for a single restraint or restraints with disjoint groups** —
 CG reaches the target regardless. For **over-constrained coupled** restraints sharing an atom,
-`weight` is now the usual least-squares weight (CG jointly minimises `Σ wᵢ·δᵢ²`), which replaces the
+`weight` is now the usual least-squares weight (CG jointly minimizes `Σ wᵢ·δᵢ²`), which replaces the
 old closed-form weighted-average; the single/disjoint behaviour is unchanged.
 
 ## `distance_restraints_config` (list)
 
-Pulls the **centroid distance** between two atom groups toward a target. CG-minimised with a
+Pulls the **centroid distance** between two atom groups toward a target. CG-minimized with a
 reduced-mass `_move_centroid` rescale so each group translates as a rigid body and reaches the
 target. `weight` is a **no-op for a single / disjoint restraint**; it only re-balances atoms shared
 by **over-constrained coupled** restraints (see `weight` below).
@@ -321,7 +321,6 @@ Targets in **degrees** by default (`unit: radians` to override).
 | `move` | `"all"` / int / list / `"1,4"` | ends (1,4) free, axis (2,3) pinned | which groups are free; the rest are pinned (stop-gradient). `"all"` frees every group |
 | one restraint-type block | dict | — (required) | `harmonic {target_dihedral}` or `flat-bottomed{,1,2}` with `target_dihedral1` / `target_dihedral2` (degrees, or radians if `unit: radians`) |
 
-
 ### Reference groups
 
 A dihedral entry may use up to three distinct references. Write each reference group as
@@ -435,7 +434,7 @@ ideal reference conformer. Canonical inter-residue geometry is added explicitly:
 plus `CA-C-N`, `O-C-N`, and `C-N-CA` angles; and DNA/RNA `O3'-P` phosphodiester bonds plus
 `C3'-O3'-P` and `O3'-P-O5'` angles. The adjacent `P-O5'-C5'` angle comes from the current residue's
 reference conformer. Together these prevent an RMSD restraint from repairing a selected residue while
-breaking the covalent link to its neighbour. Polymer `plane` **is** built (opt-in via the `plane`
+breaking the covalent link to its neighbor. Polymer `plane` **is** built (opt-in via the `plane`
 sub-block): residue-local aromatic rings — His/Phe/Tyr/Trp side chains and nucleic-acid bases — plus
 the protein **peptide plane**, the canonical inter-residue 5-atom group `{C, CA, O}` (previous
 residue) `+ {N, CA}` (current), scored by the best-fit-plane `plane` term (this replaces the old
@@ -456,7 +455,7 @@ not configured" rule the other restraint types follow.
 | `bond` | `weight` (1.0), `slack` (0.0 Å) | bond lengths toward ideal; flat-bottomed by `slack` |
 | `angle` | `weight` (1.0), `slack` (0.0 rad) | bond angles toward ideal |
 | `chiral` | `weight` (1.0), `slack` (0.05) | chiral volume (stereochemistry) — holds each stereocentre's handedness |
-| `plane` | `weight` (1.0), `slack` (0.0 Å) | **best-fit-plane** flatness of whole planar atom groups ([servalcat](https://github.com/keitaroyam/servalcat)-style) — penalises each group's out-of-plane RMS deviation toward 0. Fires on (a) aromatic/conjugated rings (whole ring) and (b) non-ring sp2 groups (an acyclic double-bond centre + its heavy neighbours: carbonyl / amide / ester / carboxyl / trisubstituted alkene). Group membership is confirmed by the reference conformer being coplanar (not the RDKit aromaticity flag). Add a `plane:` block to activate |
+| `plane` | `weight` (1.0), `slack` (0.0 Å) | **best-fit-plane** flatness of whole planar atom groups ([servalcat](https://github.com/keitaroyam/servalcat)-style) — penalises each group's out-of-plane RMS deviation toward 0. Fires on (a) aromatic/conjugated rings (whole ring) and (b) non-ring sp2 groups (an acyclic double-bond centre + its heavy neighbors: carbonyl / amide / ester / carboxyl / trisubstituted alkene). Group membership is confirmed by the reference conformer being coplanar (not the RDKit aromaticity flag). Add a `plane:` block to activate |
 | `cistrans` | `weight` (1.0), `slack` (0.0 rad) | **cis/trans (E/Z)** of acyclic, non-aromatic double bonds (needs real bond orders; detects 0 for ligands with none, e.g. ATP/NAD/GLN) |
 | `vdw` | `weight` (1.0), `mode` (`"both"`), `scale` (0.75), `dmax` (5.0 Å), `max_neighbors` (32) | non-bonded clash avoidance |
 
@@ -489,7 +488,7 @@ are their VdW radii.
 
 - `"intramolecular"` — clashes **within** a ligand (static ligand-internal pairs, all backends).
 - `"intermolecular"` — clashes between the ligand and **every other molecule**: the **fixed
-  background** (every non-padding atom not being optimised — protein, DNA/RNA, any **non-restrained**
+  background** (every non-padding atom not being optimized — protein, DNA/RNA, any **non-restrained**
   ligand; dynamic, torch/jax) **and** other **restrained** ligands (≥2 ligands that each set
   `conformer_restraints: true` + `vdw` both move, so neither is in the other's background — every
   cross-molecule atom pair gets the same one-sided penalty, scored in the energy layer on all
@@ -506,14 +505,14 @@ migration error pointing to `intermolecular`.
 
 ### Polymer neighbor lists
 
-For selected polymers, a fixed-width active-active neighbour list is rebuilt once from the current
+For selected polymers, a fixed-width active-active neighbor list is rebuilt once from the current
 coordinates at each diffusion step and held fixed during CG. Energy evaluation is therefore
 `O(N * max_neighbors)` rather than all-pairs on every CG iteration. Covalent 1-2 and 1-3 pairs,
 including peptide and phosphodiester links, are excluded. Polymer atoms are also checked against
 non-active fixed-background atoms on torch and JAX. Omit `start_sigma` (the default `+inf`) to keep
 VdW active from the first denoising step; setting `start_sigma` delays all conformer terms together.
 
-`max_neighbors` (default 32) caps each atom's neighbour list: a buried atom with more than
+`max_neighbors` (default 32) caps each atom's neighbor list: a buried atom with more than
 `max_neighbors` partners within `dmax` keeps only its nearest `max_neighbors`. The nearest are the
 most clash-relevant, so this is a deliberate approximation — raise it for very dense cores. Under
 JAX the pair codes are int32 (JAX runs with x64 disabled by default), so a **single restrained
@@ -664,9 +663,9 @@ Reference-backed selections work with the normal geometry vocabulary: `distance(
 selection in the custom entry must come from the prediction; an all-reference expression is a
 constant and raises.
 
-* **`kabsch(A, B)`** returns A after rigid-body superposition onto B. Both arguments are bare
+- **`kabsch(A, B)`** returns A after rigid-body superposition onto B. Both arguments are bare
   selection identifiers and must contain the same number of atoms. Either may be reference-backed.
-* **`rmsd(A, B)`** returns Kabsch-superposed RMSD from prediction selection A to reference-backed
+- **`rmsd(A, B)`** returns Kabsch-superposed RMSD from prediction selection A to reference-backed
   selection B. Atom correspondence is resolved at setup with `pairing: align` (default) or
   `identity`; `best_effort: true` skips atoms missing from the reference. A must be prediction-backed
   and B must start with `refN and`; both must be bare selection identifiers.

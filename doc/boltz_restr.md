@@ -181,10 +181,7 @@ boltz predict restr_example.yaml \
 With `verbose: true`, the `setup` log prints `built spec: n_active=.. bonds=.. angles=.. chirals=..
 plane=.. cistrans=.. distances=.. rmsd=.. group_angle=.. group_dihedral=.. ...` — confirm the counts are non-zero for
 what you requested (a `finalize` term reading `0.00000` because the spec has 0 of that restraint is
-a silent no-op, not "satisfied"). The workspace root carries helper scripts (run with any
-gemmi/rdkit-enabled venv):
-
-```bash
-.venv/bin/python ../check_dist.py out_restr_example/**/*.cif    # centroid dist of the two groups vs 25 Å
-.venv/bin/python ../check_conf.py out_restr_example/**/*.cif GLN # ligand bond/angle RMS vs RDKit ideal
-```
+a silent no-op, not "satisfied"). Cross-check with the workspace helper scripts (run with any
+gemmi/rdkit-enabled venv): `.venv/bin/python ../check_dist.py out_restr_example/**/*.cif` (centroid
+dist of the two groups vs 25 Å) and `.venv/bin/python ../check_conf.py out_restr_example/**/*.cif
+GLN` (ligand bond/angle RMS vs RDKit ideal).
