@@ -162,6 +162,49 @@ def test_ctx_vocabulary_parity():
     assert abs(e_np - e_t) < 1e-6 and abs(e_np - e_j) < 1e-6
 
 
+def test_custom_dihedral_wrap_periodicity():
+    """``wrap`` folds a dihedral deviation into [-pi, pi], so a penalty is periodicity-safe
+    like the built-in ``group_dihedral`` / ``cistrans``. Contract: with the deviation set to
+    straddle +-180 deg (358 deg), ``wrap(dihedral - t)**2`` reads it as ~2 deg while the naive
+    ``harmonic(dihedral, t)`` reads it as ~358 deg (huge) — this is exactly what the fix buys.
+    """
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    sels = {"A": "resid 1", "B": "resid 2", "C": "resid 3", "D": "resid 4"}
+
+    # phi of the four single-atom centroids, computed on the SAME active-site ordering the
+    # closures use (energy == dihedral(...) -> ops.sum(scalar) == scalar), so the target can
+    # be placed exactly 358 deg away without tracking the A/B/C/D -> local-index mapping.
+    # All specs here reference the same four atoms, so they share n_active == 4 and one
+    # ``pos`` maps consistently across them.
+    phi_spec = _spec_from_entries([{"energy": "dihedral(A,B,C,D)", "selections": sels}])
+    pos = _positions(phi_spec, seed=7)
+    phi = float(build_terms(phi_spec.custom, "numpy")[0][-1](pos))
+    d = np.radians(358.0)
+    t = phi - d  # so dihedral(...) - t == 358 deg, which wraps to -2 deg
+
+    wrapped = _spec_from_entries(
+        [{"energy": f"wrap(dihedral(A,B,C,D) - ({t}))**2", "selections": sels}]
+    )
+    naive = _spec_from_entries(
+        [{"energy": f"harmonic(dihedral(A,B,C,D), ({t}))", "selections": sels}]
+    )
+    e_wrapped = float(build_terms(wrapped.custom, "numpy")[0][-1](pos))
+    e_naive = float(build_terms(naive.custom, "numpy")[0][-1](pos))
+    assert abs(e_wrapped - np.radians(2.0) ** 2) < 1e-6, e_wrapped  # ~ (2 deg)^2
+    assert abs(e_naive - d**2) < 1e-6, e_naive  # ~ (358 deg)^2, the periodicity bug
+    assert e_naive / e_wrapped > 1000.0  # the fix collapses a huge false penalty
+
+    # the wrapped form agrees across all three backends (structural parity of ``wrap``)
+    pt = torch.tensor(pos, dtype=torch.float64)
+    e_t = float(build_terms(wrapped.custom, "torch")[0][-1](pt))
+    e_j = float(build_terms(wrapped.custom, "jax")[0][-1](jnp.asarray(pos)))
+    assert abs(e_wrapped - e_t) < 1e-6 and abs(e_wrapped - e_j) < 1e-6
+
+
 # --------------------------------------------------------------------------------------
 # (b) torch eager CG + (c) jax minimizer: a custom distance restraint converges to target
 # --------------------------------------------------------------------------------------

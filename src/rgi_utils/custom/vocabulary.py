@@ -62,6 +62,18 @@ def dihedral(ops, coords, idx_a, idx_b, idx_c, idx_d):
     return ops.arctan2(y, x)
 
 
+def wrap(ops, x):
+    """Wrap an angle / angular deviation (radians) into ``[-pi, pi]`` via
+    ``arctan2(sin x, cos x)``. This is the SAME periodicity fold the built-in
+    ``cistrans_energy`` / ``group_dihedral_energy`` apply internally to a dihedral
+    deviation, exposed here so a custom formula can be periodicity-safe:
+    ``wrap(dihedral(A,B,C,D) - target)**2`` treats +179deg and -179deg as a 2deg
+    difference (not 358). Unlike those built-ins it needs NO atan2(0,0) guard, because
+    ``sin(x)**2 + cos(x)**2 == 1`` so the two args are never simultaneously zero (the
+    guard there is for a raw cross product that can vanish at collinear geometry)."""
+    return ops.arctan2(ops.sin(x), ops.cos(x))
+
+
 def rg(ops, coords, idx):
     """Radius of gyration: RMS distance of the selected atoms from their centroid -> (...)."""
     pos = ops.gather(coords, idx)  # (..., k, 3)

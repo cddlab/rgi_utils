@@ -455,7 +455,7 @@ $\lVert\cdot\rVert$ is the Euclidean norm:
 | `centroid(A)` | vector | $c_A$ = mean of $A$'s atoms | a building block — subtract two, or feed one to `norm` / `dot` |
 | `distance(A,B)` | scalar | $\lVert c_A - c_B \rVert$ | a separation between two groups; a **difference of two distances** encodes symmetry / equidistance |
 | `angle(A,B,C)` | scalar (rad) | $\arccos\big( (c_A - c_B)\cdot(c_C - c_B) / (\lVert c_A - c_B \rVert\,\lVert c_C - c_B \rVert) \big)$, vertex $B$ | the bend of three groups about the vertex $B$ |
-| `dihedral(A,B,C,D)` | scalar (rad) | torsion about the B–C centroid axis, range $\pm\pi$ | the twist / handedness across four groups |
+| `dihedral(A,B,C,D)` | scalar (rad) | torsion about the B–C centroid axis, range $\pm\pi$ | the twist / handedness across four groups — a **periodic** quantity: wrap its deviation, see below |
 | `rg(A)` | scalar | $\sqrt{\frac{1}{\lvert A\rvert}\sum_i \lVert x_i - c_A \rVert^2}$ — radius of gyration | the compactness of one group (collapse vs extension) |
 | `norm(v)` | scalar | $\lVert v \rVert$ | the length of a vector you built, e.g. `centroid(A) - centroid(B)` |
 | `dot(u,v)` | scalar | $u \cdot v$ | projections and cosine-like terms |
@@ -465,6 +465,19 @@ coincident centroids, a collinear A–B–C for `angle`, or a `dihedral` whose c
 to an arm. The value stays finite but its gradient is near-zero, so the term cannot push the
 structure; choose groups whose centroids are distinct and non-collinear. (`distance` / `rg` have no
 such caveat.)
+
+**Periodicity — wrap every `dihedral` deviation.** A dihedral is periodic ($\phi$ and $\phi + 2\pi$
+are the same geometry), so a penalty on its **deviation** must fold that deviation into
+$[-\pi, \pi]$ first. Write `wrap(dihedral(A,B,C,D) - t)**2` (harmonic), **not** the naïve
+`harmonic(dihedral(A,B,C,D), t)`: the naïve form counts $\phi = +179^\circ$ against $t = -179^\circ$
+as a $358^\circ$ deviation (huge energy, and a gradient pointing the *long way* round) instead of the
+correct $2^\circ$. `wrap(x)` $= \operatorname{atan2}(\sin x, \cos x)$ is exactly the fold the
+built-in `dihedral_restraints_config` / conformer `cistrans` apply internally — see the Math table.
+For a window, wrap relative to the centre: `flat_bottomed(wrap(dihedral(...) - centre), -w, w)` — and
+because the deviation is wrapped, this window **can straddle $\pm 180^\circ$** (the built-in
+flat-bottomed dihedral cannot). Note `t` / `centre` are in **radians** (a custom formula does no degree
+conversion, unlike the built-in `dihedral_restraints_config`). (`angle` is bounded to $[0, \pi]$ by
+`arccos`, so it needs no wrap.)
 
 **Penalty** — convenience squared penalties (you may also write the algebra directly). Use
 `harmonic` to drive a quantity **to** a value, and the `flat_bottomed` family to **bound** it — leave
@@ -484,7 +497,7 @@ it free inside a window, above a floor, or below a ceiling:
 
 | group | names |
 |---|---|
-| elementwise | `sqrt` `exp` `log` `abs` `sin` `cos` `clip(x, lo, hi)` |
+| elementwise | `sqrt` `exp` `log` `abs` `sin` `cos` `clip(x, lo, hi)` `wrap(x)` = $\operatorname{atan2}(\sin x, \cos x)$, folds an angle/deviation into $[-\pi, \pi]$ (use on `dihedral` deviations — see Periodicity above) |
 | reductions | `sum` `minimum` `maximum` |
 | branching | `where(cond, a, b)` — there is **no `if`** (keeps the closure jax-traceable, since it must trace inside `lax.scan`) |
 
@@ -506,6 +519,10 @@ custom_restraints_config:
   - name: compact
     energy: "harmonic(rg(dom), 12.0)"            # (rg - 12)**2
     selections: {dom: "chain A and resid 1 to 80"}
+  # periodicity-safe dihedral toward 180deg (pi rad): wrap the deviation, NOT harmonic(dihedral, t)
+  - name: planar_dihedral
+    energy: "wrap(dihedral(A, B, C, D) - 3.14159)**2"
+    selections: {A: "resid 10", B: "resid 11", C: "resid 12", D: "resid 13"}
 ```
 
 Code (reusable via `use:`, or passed directly with `add_custom`):

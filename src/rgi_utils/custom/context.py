@@ -19,7 +19,9 @@ import numpy as np
 from rgi_utils.custom import vocabulary as V
 
 # every name a custom formula / ctx function may call (the DSL Call whitelist). geometry +
-# penalty come from the vocabulary; the rest are elementwise math passthroughs.
+# penalty come from the vocabulary; the rest are mostly elementwise math passthroughs to
+# ``ops`` — EXCEPT ``wrap``, which is a small composite (arctan2(sin, cos)) living in the
+# vocabulary so it runs on every backend.
 MATH_CALLS = (
     "sqrt",
     "exp",
@@ -27,6 +29,7 @@ MATH_CALLS = (
     "abs",
     "sin",
     "cos",
+    "wrap",
     "clip",
     "minimum",
     "maximum",
@@ -117,6 +120,10 @@ class RestraintContext:
 
     def cos(self, x):
         return self._ops.cos(x)
+
+    def wrap(self, x):
+        # composite (not a bare ops passthrough): fold an angle/deviation into [-pi, pi]
+        return V.wrap(self._ops, x)
 
     def clip(self, x, lo, hi):
         return self._ops.clip(x, lo, hi)
@@ -209,6 +216,10 @@ class ResolveContext:
 
     def cos(self, x):
         return 1.0
+
+    def wrap(self, x):
+        # identity dummy: only needs to stay finite while selections are recorded
+        return x
 
     def clip(self, x, lo, hi):
         return x
