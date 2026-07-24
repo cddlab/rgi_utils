@@ -1,19 +1,34 @@
 # `restraints_config` reference
 
+[Documentation index](README.md)
+
 Every RGI tool is driven by one `restraints_config` dict (a YAML/JSON block for boltz / protenix /
 chai / AF3 / openfold, or a Python dict for ESMFold2 — see each tool's page for where it lives).
 This page documents **every variable**: its type, default, allowed values, and meaning.
 
-The parser reads keys with `.get(key, default)`, so **omitted keys fall back to the default** and
-**unknown keys are silently ignored** (a typo neither errors nor takes effect — check spelling
-against this page). Source of truth: `rgi_utils/src/rgi_utils/{config,distance_restr_data,
-group_geom_restr_data,featurizer,rmsd_restr_data,selection}.py`.
+Omitted keys fall back to their documented defaults. Unknown top-level keys and unknown conformer
+keys raise an error. Unknown keys inside individual restraint entries are logged and ignored, so
+check their spelling against this page. Source of truth:
+`src/rgi_utils/{config,distance_restr_data,group_geom_restr_data,featurizer,rmsd_restr_data,selection}.py`.
 
 > **Don't want to hand-write this?** Run the `generate-rgi-config` skill in Claude Code
 > (`/generate-rgi-config`) or Codex (`$generate-rgi-config`). It turns a plain-language
 > goal into a validated `restraints_config` (correct restraint type, atom-selection DSL,
 > target, sigma window) and places it where your tool expects it. Reach for it whenever
 > the schema below is more than you need.
+
+## Quick navigation
+
+- [Config shape and global options](#shape)
+- [Activation windows](#sigma-gating-start_sigma--stop_sigma)
+- [Atom-selection DSL](#atom-selection-dsl) and [penalty shapes](#penalty-shapes-shared)
+- [Distance](#distance_restraints_config-list), [group angle](#angle_restraints_config-list), and
+  [group dihedral](#dihedral_restraints_config-list)
+- [Reference-anchored geometry](#reference-anchored-distance--angle--dihedral)
+- [Base pairs](#base_pair_restraints_config-list)
+- [Conformer geometry and VdW](#conformer_restraints_config-single-dict)
+- [RMSD](#rmsd_restraints_config-list)
+- [Custom restraints](#custom_restraints_config-list)
 
 ## Shape
 
@@ -37,9 +52,9 @@ restraints_config:
 A restraint type is active only if its block is present (and, for conformer terms, the term's
 `weight > 0`).
 
-The five blocks above (distance / angle / dihedral / conformer / rmsd) are the **built-ins**.
-`custom_restraints_config` lets you define an **original** restraint as a math formula — see the
-last section.
+Distance, angle, dihedral, conformer, and RMSD are direct built-ins. Base-pair entries are macros
+that expand into distance and plane terms. `custom_restraints_config` defines an original
+restraint as a math formula or Python callable.
 
 ## Top-level keys
 
@@ -263,7 +278,7 @@ Targets in **degrees** by default (`unit: radians` to override).
 | `move` | `"all"` / int / list / `"1,4"` | ends (1,4) free, axis (2,3) pinned | which groups are free; the rest are pinned (stop-gradient). `"all"` frees every group |
 | one restraint-type block | dict | — (required) | `harmonic {target_dihedral}` or `flat-bottomed{,1,2}` with `target_dihedral1` / `target_dihedral2` (degrees, or radians if `unit: radians`) |
 
-### Reference-anchored distance / angle / dihedral
+## Reference-anchored distance / angle / dihedral
 
 Any `distance` / `angle` / `dihedral` entry can measure between **prediction** groups and
 **fitted-reference** groups: fit an external reference onto the prediction (Kabsch), then a
@@ -288,7 +303,7 @@ Each group index uses **exactly one** of `atom_selectionN` (prediction) or `atom
 zero-gradient constant and raises). The whole fit is stop-gradient'd, so the reference landmark
 never pulls the anchor — the restraint moves only the prediction group(s). `move` is not supported
 here (prediction groups are all free, reference groups all fixed); for finer control use the
-custom-DSL `ref(sel, r)` primitive (above). Because the fit rotation is frozen, its gradient is
+custom-DSL `ref(sel, r)` primitive (below). Because the fit rotation is frozen, its gradient is
 torch/jax-consistent but not numpy-FD-equal (the same carve-out as `rmsd`).
 
 ```yaml
@@ -352,14 +367,19 @@ base_pair_restraints_config:
 | `start_sigma` / `stop_sigma` | float | `+inf` / `-1` | sigma gating of the H-bond distances |
 | `start_step` / `stop_step` | int | `-inf` / `+inf` | step gating (mutually exclusive with the sigma window) |
 
-**Gating note.** The gate window applies to the **H-bond distances**. The coplanarity plane rides the
+### Gating
+
+The gate window applies to the **H-bond distances**. The coplanarity plane rides the
 **shared conformer gate** (`conformer_restraints_config.start_sigma`, default always-on) because it is
 built on the same `plane` term as ligand/polymer planarity — so a per-entry `start_sigma` here does not
 move the coplanarity release point. Per-base planarity is already maintained by
 [`conformer_restraints_config`](#conformer_restraints_config-single-dict) when polymer geometry is
 enabled; `coplanar` here additionally makes the **two** bases of the pair share one plane.
 
-**Fail-loud** (never a silent no-op): a `residue` selector matching zero or more than one residue, an
+### Validation
+
+The parser fails loudly rather than creating a silent no-op: a `residue` selector matching zero or
+more than one residue, an
 auto-detected non-Watson-Crick pair (e.g. G-G, or a G-U without `pair: GU`), a `resname`-less residue
 with no `pair`, or a missing WC atom all raise. Verbose setup logs
 `base_pair=P pairs -> H h-bonds + C coplanar groups` (the generated restraints also show up in the
@@ -414,7 +434,9 @@ not configured" rule the other restraint types follow.
 | `cistrans` | `weight` (1.0), `slack` (0.0 rad) | **cis/trans (E/Z)** of acyclic, non-aromatic double bonds (needs real bond orders; detects 0 for ligands with none, e.g. ATP/NAD/GLN) |
 | `vdw` | `weight` (1.0), `mode` (`"both"`), `scale` (0.75), `dmax` (5.0 Å), `max_neighbors` (32) | non-bonded clash avoidance |
 
-**Energy.** Each term applies the shared flat-bottomed squared penalty ($\delta = 0$ within
+### Energy terms
+
+Each term applies the shared flat-bottomed squared penalty ($\delta = 0$ within
 $\pm$`slack` of the RDKit-ideal value, quadratic outside — see Penalty shapes) to a per-tuple
 quantity $x$:
 
@@ -435,6 +457,8 @@ E = w \sum_{(i,j)} \min\big(0,\; d_{ij} - \text{scale}\cdot(r_i + r_j)\big)^2,
 over non-bonded atom pairs closer than `dmax`, where $d_{ij}$ is the pair distance and $r_i, r_j$
 are their VdW radii.
 
+### Van der Waals modes
+
 `vdw.mode` picks **two categories** (default `"both"` = both):
 
 - `"intramolecular"` — clashes **within** a ligand (static ligand-internal pairs, all backends).
@@ -453,6 +477,8 @@ clamp zeroes non-contacts). Like every conformer term, `vdw` is built only when 
 present (then `weight` defaults to 1.0); omit the block to leave it off. **The old
 `mode: ligand_protein` was removed** (it was only the fixed-background half) — it now raises a
 migration error pointing to `intermolecular`.
+
+### Polymer neighbor lists
 
 For selected polymers, a fixed-width active-active neighbour list is rebuilt once from the current
 coordinates at each diffusion step and held fixed during CG. Energy evaluation is therefore
@@ -501,8 +527,10 @@ from a Kabsch SVD on the **fit** atoms. $\hat{R}$ (and the centroids) are treate
 | `pairing` | `"align"` / `"identity"` | `"align"` | how reference and prediction residues correspond. `align` = sequence-align polymer chains (BLOSUM62) so a **homolog** ref maps on despite substitutions/indels/renumbering; non-polymer atoms always pair by ordinal. `identity` = strict (chain, resid, name) ordinal pairing. |
 | `best_effort` | bool | `true` | skip atoms with no match in the ref (instead of raising); `false` = strict |
 
-**Atom selection** (all optional; omit all → whole structure, best-effort). The superposed ("fit")
-and measured ("calc") atom sets are chosen independently:
+### Atom pairing and selection
+
+All selection keys are optional; omit all of them to use the whole structure in best-effort mode.
+The superposed ("fit") and measured ("calc") atom sets are chosen independently:
 
 | key | sets |
 |---|---|
@@ -516,12 +544,14 @@ superpose on the backbone but measure over a pocket. Under `pairing: align`, res
 
 ## `custom_restraints_config` (list)
 
+### Authoring methods
+
 Define your **own** restraint — not one of the five built-ins — as a differentiable energy. Two
 ways, same vocabulary, both run on every backend (torch / jax):
 
-* **config only (expression DSL)**: write the energy as a math **formula** string over named atom
+- **config only (expression DSL)**: write the energy as a math **formula** string over named atom
   selections. No Python.
-* **code (ctx function)**: write `energy(ctx) -> scalar` in Python and either register it
+- **code (ctx function)**: write `energy(ctx) -> scalar` in Python and either register it
   (`@custom_restraint("name")`, then reference it here with `use:`) or pass the callable directly
   (`CombinedRestraints.add_custom(fn=...)`, or a `fn:` entry for the Python-dict tools).
 
@@ -540,17 +570,23 @@ Each entry's energy (× `weight`) is added to the CG objective, gated by the usu
 | `start_sigma` / `stop_sigma` | float | `+inf` / `-1` | sigma gating (as everywhere) |
 | `start_step` / `stop_step` | int | `-inf` / `+inf` | step gating (mutually exclusive with the sigma window; see Step gating) |
 
-**How it works.** Each entry compiles to a closure `energy(active_coords) → scalar`. A selection name
+### Evaluation model
+
+Each entry compiles to a closure `energy(active_coords) → scalar`. A selection name
 in a formula (`A`) is resolved from the entry's `selections` map to that group's atoms; a string
 literal (`"chain A"`) is a raw selection. Selection names resolve to their group **centroids** at
 setup (a dry run records which names the energy touches). The formula must reduce to a **scalar** (a
 `sum` over any batch dimension). It is parsed safely — no `eval`, and `import` / attribute access /
 subscripting / `lambda` all raise — so only the vocabulary below is callable.
 
+### Vocabulary
+
 The vocabulary has three groups — **geometry** (coordinates → a number), **penalty** (a number → an
 energy), and **math** (elementwise / reduction helpers) — plus operators.
 
-**Geometry** — all operate on selection **centroids**; angular results are in **radians** (note: the
+#### Geometry
+
+Geometry functions operate on selection **centroids**; angular results are in **radians** (note: the
 built-in `angle` / `dihedral` configs take *degrees*, but a custom formula is in radians).
 $\lVert\cdot\rVert$ is the Euclidean norm:
 
@@ -571,7 +607,9 @@ $\lVert\cdot\rVert$ is the Euclidean norm:
 Most geometry consumes selection **centroids**; `coords` / `kabsch` instead flow a whole
 **$(k,3)$ coordinate block**, so they compose: `centroid(kabsch(A,B))`, `norm(kabsch(A,B) - coords(B))`.
 
-**Superposition (`kabsch` / `rmsd`).** Both do a Kabsch fit with the optimal rotation **frozen**
+#### Superposition (`kabsch` / `rmsd`)
+
+Both functions do a Kabsch fit with the optimal rotation **frozen**
 (stop-gradient — the SVD is never differentiated), exactly like the built-in `rmsd_restraints_config`.
 
 * **`kabsch(A, B)`** returns $A$'s coordinates after rigid-body superposition onto $B$ (both are
@@ -607,13 +645,17 @@ numpy finite-difference** (the SVD's own gradient is dropped) — the same trade
 term accepts. It is exact when the outer expression is the superposed-deviation-to-target (the two
 uses above); for arbitrary downstream geometry it is a well-behaved approximation.
 
-**Degenerate geometry.** `angle` and `dihedral` are ill-defined when the centroids collapse —
+#### Degenerate geometry
+
+`angle` and `dihedral` are ill-defined when the centroids collapse —
 coincident centroids, a collinear A–B–C for `angle`, or a `dihedral` whose central axis runs parallel
 to an arm. The value stays finite but its gradient is near-zero, so the term cannot push the
 structure; choose groups whose centroids are distinct and non-collinear. (`distance` / `rg` have no
 such caveat.)
 
-**Periodicity — wrap every `dihedral` deviation.** A dihedral is periodic ($\phi$ and $\phi + 2\pi$
+#### Dihedral periodicity
+
+Wrap every `dihedral` deviation. A dihedral is periodic ($\phi$ and $\phi + 2\pi$
 are the same geometry), so a penalty on its **deviation** must fold that deviation into
 $[-\pi, \pi]$ first. Write `wrap(dihedral(A,B,C,D) - t)**2` (harmonic), **not** the naïve
 `harmonic(dihedral(A,B,C,D), t)`: the naïve form counts $\phi = +179^\circ$ against $t = -179^\circ$
@@ -626,7 +668,9 @@ flat-bottomed dihedral cannot). Note `t` / `centre` are in **radians** (a custom
 conversion, unlike the built-in `dihedral_restraints_config`). (`angle` is bounded to $[0, \pi]$ by
 `arccos`, so it needs no wrap.)
 
-**Penalty** — convenience squared penalties (you may also write the algebra directly). Use
+#### Penalties
+
+These are convenience squared penalties; you may also write the algebra directly. Use
 `harmonic` to drive a quantity **to** a value, and the `flat_bottomed` family to **bound** it — leave
 it free inside a window, above a floor, or below a ceiling:
 
@@ -640,7 +684,9 @@ it free inside a window, above a floor, or below a ceiling:
 `flat_bottomed` / `flat_bottomed1` / `flat_bottomed2` are the same maths (and names) as the built-in
 `flat-bottomed` / `flat-bottomed1` / `flat-bottomed2` blocks.
 
-**Math** — elementwise and reductions, dispatched to the active backend:
+#### Math and operators
+
+Math functions are dispatched to the active backend:
 
 | group | names |
 |---|---|
@@ -648,8 +694,10 @@ it free inside a window, above a floor, or below a ceiling:
 | reductions | `sum` `minimum` `maximum` |
 | branching | `where(cond, a, b)` — there is **no `if`** (keeps the closure jax-traceable, since it must trace inside `lax.scan`) |
 
-**Operators**: `+ - * / ** %`, unary `-`, comparisons (`<` `<=` …), and `&` `|` (combine boolean
-masks for `where`).
+Supported operators are `+ - * / ** %`, unary `-`, and comparisons (`<` `<=` …). Use `&` and `|`
+to combine boolean masks for `where`.
+
+### Examples
 
 ```yaml
 custom_restraints_config:
@@ -683,7 +731,9 @@ custom_restraints_config:
       r2: {ref_pdb: "state2.pdb"}
 ```
 
-Code (reusable via `use:`, or passed directly with `add_custom`):
+#### Registered Python function
+
+The function can be reused via `use:` or passed directly with `add_custom`:
 
 ```python
 from rgi_utils import custom_restraint, CombinedRestraints

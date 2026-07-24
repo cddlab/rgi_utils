@@ -1,11 +1,16 @@
-# openfold-3_restr — Restraint-Guided Inference (RGI)
+# OpenFold 3 — Restraint-Guided Inference (RGI)
+
+[Documentation index](README.md) · [Configuration reference](config.md)
 
 OpenFold3-preview + [`rgi_utils`](https://github.com/cddlab/rgi_utils) restraint-guided inference.
 Full `restraints_config` schema & atom-selection DSL: [`config.md`](config.md).
 
-> **Or generate it automatically:** the `generate-rgi-config` skill in Claude Code (`/generate-rgi-config`) or Codex (`$generate-rgi-config`) interviews you about the goal and writes a validated `restraints_config` placed where this tool expects it — handy when hand-writing the config below is more than you need.
+> **Or generate it automatically:** the `generate-rgi-config` skill in Claude Code
+> (`/generate-rgi-config`) or Codex (`$generate-rgi-config`) interviews you about the goal and
+> writes a validated `restraints_config` where this tool expects it. Use it when hand-writing the
+> full config below is unnecessary.
 
-## Install
+## Installation
 
 The RGI code lives in the `cddlab/openfold-3_restr` fork — install **that fork**, not the upstream
 PyPI `openfold3`. The `rgi_utils` engine is declared in `pixi.toml` (no `[torch]` extra — it uses the
@@ -23,7 +28,7 @@ export OPENFOLD_CACHE="$HOME/.openfold3"
 > For co-development of the engine, override with a local editable checkout AFTER pixi install:
 > `pixi run -e openfold3-cuda12 python -m pip install -e ../rgi_utils` (sibling clone).
 
-## Configuring restraints
+## Configuration
 
 OpenFold reads RGI from a **`restraints_config` field per query** in the input JSON
 (`queries.<name>.restraints_config`). Two things turn conformer restraints on:
@@ -35,10 +40,11 @@ OpenFold reads RGI from a **`restraints_config` field per query** in the input J
 
 The example below writes **every usable variable** with a concrete value (distance / angle /
 dihedral / conformer / RMSD, plus config-only `custom`); see [`config.md`](config.md) for the alternatives
-(restraint types, RMSD `atom_selection` shorthand). `resid` is the **per-chain 1-based ordinal**
-(qualify protein groups with `chain A and (...)`). There is **no top-level `start_sigma`**.
+(restraint types and the RMSD `atom_selection_ref` / `atom_selection_target` shorthand). `resid` is
+the **per-chain 1-based ordinal** (qualify protein groups with `chain A and (...)`). There is **no
+top-level `start_sigma`**.
 
-## Full config (input file)
+## Complete example (input JSON)
 
 Save this as `restr_example.json`. Folds QBP + GLN **plus a short DNA duplex and an RNA duplex** with
 a centroid distance, group angle, group dihedral, GLN conformer, whole-structure RMSD, a custom
@@ -164,9 +170,7 @@ from the ColabFold server.
 }
 ```
 
-## How to run
-
-### Run
+## Run
 
 Save as `run_restr_example.sh` and run it on a GPU machine (`bash run_restr_example.sh`):
 
@@ -183,7 +187,7 @@ pixi run -e openfold3-cuda12 run_openfold predict \
     --num-diffusion-samples 2 --use-msa-server true --use-templates false
 ```
 
-## Verify
+## Verify results
 
 With `verbose: true`, the log prints `built spec: n_active=.. bonds=.. ... distances=.. rmsd=..
 group_angle=.. group_dihedral=..` — confirm the counts are non-zero for what you requested.

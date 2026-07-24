@@ -1,11 +1,16 @@
-# boltz_restr — Restraint-Guided Inference (RGI)
+# Boltz — Restraint-Guided Inference (RGI)
+
+[Documentation index](README.md) · [Configuration reference](config.md)
 
 Boltz-1/2 + [`rgi_utils`](https://github.com/cddlab/rgi_utils) restraint-guided inference. Full
 `restraints_config` schema & atom-selection DSL: [`config.md`](config.md).
 
-> **Or generate it automatically:** the `generate-rgi-config` skill in Claude Code (`/generate-rgi-config`) or Codex (`$generate-rgi-config`) interviews you about the goal and writes a validated `restraints_config` placed where this tool expects it — handy when hand-writing the config below is more than you need.
+> **Or generate it automatically:** the `generate-rgi-config` skill in Claude Code
+> (`/generate-rgi-config`) or Codex (`$generate-rgi-config`) interviews you about the goal and
+> writes a validated `restraints_config` where this tool expects it. Use it when hand-writing the
+> full config below is unnecessary.
 
-## Install
+## Installation
 
 The RGI code lives in the `cddlab/boltz_restr` fork — install **that fork**, not the upstream PyPI
 `boltz`, which has no RGI hooks. Run on a machine with a CUDA GPU (RTX 4090 / sm_89 works).
@@ -20,7 +25,7 @@ uv pip install -e ".[cuda]"                     # also pulls the rgi_utils engin
 > For co-development of the engine, override the pinned dependency with a local editable
 > checkout in a SEPARATE step: `uv pip install -e ../rgi_utils` (sibling clone).
 
-## Configuring restraints
+## Configuration
 
 boltz reads RGI from a **top-level `restraints_config:` key nested inside the input YAML** (the
 same YAML that lists the sequences). Two things turn restraints on:
@@ -37,7 +42,7 @@ at each chain; a ligand atom gets its own ordinal), so qualify protein groups wi
 (...)` to avoid sweeping in the ligand. There is **no top-level `start_sigma`** — it is set per
 distance/RMSD/group entry and once for all conformer terms.
 
-## Full config (input file)
+## Complete example (input YAML)
 
 Save this as `restr_example.yaml`. It folds QBP (glutamine-binding protein) with its natural ligand
 GLN **plus a short DNA duplex and an RNA duplex**, and the full RGI restraint set — centroid
@@ -157,9 +162,7 @@ restraints_config:
       weight: 1.0
 ```
 
-## How to run
-
-### Run
+## Run
 
 Save this as `run_restr_example.sh` and run it on a GPU machine (`bash run_restr_example.sh`):
 
@@ -173,7 +176,7 @@ boltz predict restr_example.yaml \
     --seed 0 --out_dir out_restr_example --model boltz2 --use_msa_server
 ```
 
-## Verify
+## Verify results
 
 With `verbose: true`, the `setup` log prints `built spec: n_active=.. bonds=.. angles=.. chirals=..
 plane=.. cistrans=.. distances=.. rmsd=.. group_angle=.. group_dihedral=.. ...` — confirm the counts are non-zero for

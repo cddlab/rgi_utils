@@ -1,9 +1,14 @@
-# esmfold2_restr — Restraint-Guided Inference (RGI)
+# ESMFold2 — Restraint-Guided Inference (RGI)
+
+[Documentation index](README.md) · [Configuration reference](config.md)
 
 ESMFold2 + [`rgi_utils`](https://github.com/cddlab/rgi_utils) restraint-guided inference. Full
 `restraints_config` schema & atom-selection DSL: [`config.md`](config.md).
 
-> **Or generate it automatically:** the `generate-rgi-config` skill in Claude Code (`/generate-rgi-config`) or Codex (`$generate-rgi-config`) interviews you about the goal and writes a validated `restraints_config` placed where this tool expects it — handy when hand-writing the config below is more than you need.
+> **Or generate it automatically:** the `generate-rgi-config` skill in Claude Code
+> (`/generate-rgi-config`) or Codex (`$generate-rgi-config`) interviews you about the goal and
+> writes a validated `restraints_config` where this tool expects it. Use it when hand-writing the
+> full config below is unnecessary.
 
 ESMFold2 (ESM3-based) folds in **single-sequence mode** (a language-model folder — no MSA, hence no
 MSA-server option).
@@ -15,7 +20,7 @@ ESMFold2 spans **two** repos — install both on `rgi-integration`:
 - **`esm_restr`** — the user API `ESMFold2InputBuilder.fold` (`esm/models/esmfold2/`), which builds
   the adapter + `CombinedRestraints` and threads restraints through `forward()` into `sample()`.
 
-## Install
+## Installation
 
 ESMFold2 uses a **pixi** environment. Both engines are declared as dependencies in `esm_restr`'s
 `pyproject.toml`: the **`transformers_restr`** fork (installed as the `transformers` package — it
@@ -45,7 +50,7 @@ cp -rf ../transformers_restr/src/transformers/models/esmfold2/. "$SP/models/esmf
 pixi run python -c "import inspect; from transformers.models.esmfold2 import modeling_esmfold2_common as m; assert 'restraints.minimize' in inspect.getsource(m), 'esmfold2 hook missing — copy-over failed'"
 ```
 
-## Configuring restraints
+## Configuration
 
 ESMFold2's API is **Pythonic**: `restraints_config` is a plain **Python dict** passed to
 `ESMFold2InputBuilder().fold(model, spi, restraints_config=...)` — not a YAML/JSON sidecar. The dict
@@ -63,10 +68,11 @@ bond orders.
 
 The `RESTRAINTS_CONFIG` dict below writes **every usable variable** with a concrete value (distance
 / angle / dihedral / conformer / RMSD, plus config-only `custom`); see [`config.md`](config.md) for the
-alternatives (restraint types, RMSD `atom_selection` shorthand). `resid` is the **per-chain 1-based
-ordinal** (qualify protein groups with `chain A and (...)`). There is **no top-level `start_sigma`**.
+alternatives (restraint types and the RMSD `atom_selection_ref` / `atom_selection_target`
+shorthand). `resid` is the **per-chain 1-based ordinal** (qualify protein groups with `chain A and
+(...)`). There is **no top-level `start_sigma`**.
 
-## Full config (Python script)
+## Complete example (Python script)
 
 Save this as `restr_example.py`. Folds QBP + its GLN ligand **plus a short DNA duplex and an RNA
 duplex** with a centroid distance, group angle, group dihedral, GLN conformer, whole-structure RMSD,
@@ -228,9 +234,7 @@ if __name__ == "__main__":
     main()
 ```
 
-## How to run
-
-### Run
+## Run
 
 Save as `run_restr_example.sh` and run it on a GPU machine (`bash run_restr_example.sh`). A fresh
 `pixi install` ships the hooked transformers (the `transformers_restr` dep), so the runner is just
@@ -246,7 +250,7 @@ pixi install                     # pulls transformers_restr (hooked) + rgi_utils
 pixi run python restr_example.py
 ```
 
-## Verify
+## Verify results
 
 With `verbose: True`, the `setup` log prints `built spec: n_active=.. bonds=.. ... distances=..
 rmsd=.. group_angle=.. group_dihedral=..` — confirm the counts are non-zero. The esm pixi env has no

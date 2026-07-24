@@ -1,11 +1,16 @@
-# chai-lab_restr — Restraint-Guided Inference (RGI)
+# Chai-1 — Restraint-Guided Inference (RGI)
+
+[Documentation index](README.md) · [Configuration reference](config.md)
 
 Chai-1 + [`rgi_utils`](https://github.com/cddlab/rgi_utils) restraint-guided inference. Full
 `restraints_config` schema & atom-selection DSL: [`config.md`](config.md).
 
-> **Or generate it automatically:** the `generate-rgi-config` skill in Claude Code (`/generate-rgi-config`) or Codex (`$generate-rgi-config`) interviews you about the goal and writes a validated `restraints_config` placed where this tool expects it — handy when hand-writing the config below is more than you need.
+> **Or generate it automatically:** the `generate-rgi-config` skill in Claude Code
+> (`/generate-rgi-config`) or Codex (`$generate-rgi-config`) interviews you about the goal and
+> writes a validated `restraints_config` where this tool expects it. Use it when hand-writing the
+> full config below is unnecessary.
 
-## Install
+## Installation
 
 The RGI code lives in the `cddlab/chai-lab_restr` fork — install **that fork**, not the upstream
 PyPI `chai_lab`, which has no RGI hooks. Run on a CUDA GPU with bfloat16 support (RTX 4090 / sm_89
@@ -23,7 +28,7 @@ uv pip install pyyaml                                                           
 > For co-development of the engine, override the pinned dependency with a local editable
 > checkout in a SEPARATE step: `uv pip install -e ../rgi_utils` (sibling clone).
 
-## Configuring restraints
+## Configuration
 
 chai is the **odd one out**: the file you pass to `--restraints-config-path` **IS** the
 `restraints_config` dict at top level — do **not** nest it under a `restraints_config:` key (that is
@@ -38,10 +43,11 @@ intra-ligand bond orders at every layer, so the adapter rebuilds the molecule fr
 
 The sidecar below writes **every usable variable** with a concrete value; see
 [`config.md`](config.md) for the alternatives (restraint types, config-only `custom`
-restraints, RMSD `atom_selection` shorthand). `resid` is the **per-chain 1-based ordinal** (qualify protein groups with `chain A and
-(...)`). There is **no top-level `start_sigma`**.
+restraints, and the RMSD `atom_selection_ref` / `atom_selection_target` shorthand). `resid` is the
+**per-chain 1-based ordinal** (qualify protein groups with `chain A and (...)`). There is **no
+top-level `start_sigma`**.
 
-## Full config (sidecar + FASTA)
+## Complete example (FASTA and sidecar YAML)
 
 Save the FASTA as `restr_example.fasta`. chai assigns chain letters **by record order**, so here the
 chains are protein **A**, ligand **B**, DNA strands **C**/**D**, RNA strands **E**/**F** (the
@@ -159,9 +165,7 @@ custom_restraints_config:
     weight: 1.0
 ```
 
-## How to run
-
-### Run
+## Run
 
 Save as `run_restr_example.sh` and run it on a GPU machine (`bash run_restr_example.sh`). Note that
 the FASTA and out_dir are **positional** arguments:
@@ -185,7 +189,7 @@ python -m chai_lab.main fold \
     --use-msa-server --use-templates-server --no-use-esm-embeddings
 ```
 
-## Verify
+## Verify results
 
 With `verbose: true`, `setup` logs `built spec: n_active=.. bonds=.. angles=.. chirals=..
 plane=.. cistrans=.. distances=.. rmsd=.. group_angle=.. group_dihedral=..` — confirm the counts are non-zero for what

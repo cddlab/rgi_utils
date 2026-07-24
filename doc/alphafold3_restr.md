@@ -1,14 +1,19 @@
-# alphafold3_restr — Restraint-Guided Inference (RGI)
+# AlphaFold 3 — Restraint-Guided Inference (RGI)
+
+[Documentation index](README.md) · [Configuration reference](config.md)
 
 AlphaFold 3 + [`rgi_utils`](https://github.com/cddlab/rgi_utils) restraint-guided inference. Full
 `restraints_config` schema & atom-selection DSL: [`config.md`](config.md).
 
-> **Or generate it automatically:** the `generate-rgi-config` skill in Claude Code (`/generate-rgi-config`) or Codex (`$generate-rgi-config`) interviews you about the goal and writes a validated `restraints_config` placed where this tool expects it — handy when hand-writing the config below is more than you need.
+> **Or generate it automatically:** the `generate-rgi-config` skill in Claude Code
+> (`/generate-rgi-config`) or Codex (`$generate-rgi-config`) interviews you about the goal and
+> writes a validated `restraints_config` where this tool expects it. Use it when hand-writing the
+> full config below is unnecessary.
 
 AF3 is the **JAX** tool: the restraint spec is built outside the `hk.scan` sampler and the pure
 JIT-able minimizer closure (`get_minimizer()`) runs inside the compiled loop on each x0 prediction.
 
-## Install
+## Installation
 
 The RGI code lives in the `cddlab/alphafold3_restr` fork. The base AF3 env is involved (it compiles
 C++ components via scikit-build-core, and the model parameters must be obtained from Google) —
@@ -29,7 +34,7 @@ uv pip install -e .                            # compiles the C++ chem component
   `WEIGHTS_TERMS_OF_USE.md`) and point `--model_dir` at them.
 - Run on a CUDA GPU.
 
-## Configuring restraints
+## Configuration
 
 AF3 reads RGI from a **`restraints_config` key inside the fold-input JSON** (beside
 `sequences`/`modelSeeds`). Turn restraints on with:
@@ -38,10 +43,11 @@ AF3 reads RGI from a **`restraints_config` key inside the fold-input JSON** (bes
    or ligand object enables only that chain.
 2. **The `restraints_config` object** — the distance / angle / dihedral / conformer /
    RMSD restraints, plus config-only `custom` restraints (define your own — see config.md). The example below writes **every usable variable** with a concrete value; see
-   [`config.md`](config.md) for the alternatives (restraint types, RMSD `atom_selection`
-   shorthand).
+   [`config.md`](config.md) for the alternatives (restraint types and the RMSD
+   `atom_selection_ref` / `atom_selection_target` shorthand).
 
-AF3-specific notes:
+### AlphaFold 3 notes
+
 - **MSA**: AF3 has no ColabFold-style MSA *server*; it builds MSAs with a local genetic-search data
   pipeline. The run command passes `--run_data_pipeline=True` with `--db_dir` pointing at the
   sequence databases, so the JSON below carries **no `unpairedMsa`/`pairedMsa`/`templates`
@@ -55,7 +61,7 @@ AF3-specific notes:
 
 `resid` is the **per-chain 1-based ordinal**; there is **no top-level `start_sigma`**.
 
-## Full config (input file)
+## Complete example (input JSON)
 
 Save this as `restr_example.json`. The genetic-search data pipeline builds the MSA, so the JSON has
 no MSA/template fields. It folds QBP + GLN **plus a short DNA duplex and an RNA duplex** and sets a
@@ -184,9 +190,7 @@ JAX minimizer (`lax.scan`) like every other restraint.
 }
 ```
 
-## How to run
-
-### Run
+## Run
 
 Save as `run_restr_example.sh` and run it on a GPU machine (`bash run_restr_example.sh`). Set
 `MODEL_DIR` to your AF3 parameters directory and `DB_DIR` to the sequence databases:
@@ -211,7 +215,7 @@ python run_alphafold.py \
     --output_dir=out_restr_example
 ```
 
-## Verify
+## Verify results
 
 With `verbose: true`, the log prints `built spec: n_active=.. bonds=.. ... distances=.. rmsd=..
 group_angle=.. group_dihedral=..` — confirm the counts are non-zero for what you requested. AF3's

@@ -1,11 +1,16 @@
-# protenix_restr — Restraint-Guided Inference (RGI)
+# Protenix — Restraint-Guided Inference (RGI)
+
+[Documentation index](README.md) · [Configuration reference](config.md)
 
 Protenix + [`rgi_utils`](https://github.com/cddlab/rgi_utils) restraint-guided inference. Full
 `restraints_config` schema & atom-selection DSL: [`config.md`](config.md).
 
-> **Or generate it automatically:** the `generate-rgi-config` skill in Claude Code (`/generate-rgi-config`) or Codex (`$generate-rgi-config`) interviews you about the goal and writes a validated `restraints_config` placed where this tool expects it — handy when hand-writing the config below is more than you need.
+> **Or generate it automatically:** the `generate-rgi-config` skill in Claude Code
+> (`/generate-rgi-config`) or Codex (`$generate-rgi-config`) interviews you about the goal and
+> writes a validated `restraints_config` where this tool expects it. Use it when hand-writing the
+> full config below is unnecessary.
 
-## Install
+## Installation
 
 The RGI code lives in the `cddlab/protenix_restr` fork — install **that fork**, not the upstream
 PyPI `protenix`, which has no RGI hooks.
@@ -25,7 +30,7 @@ uv pip install -e .                             # also pulls the rgi_utils engin
 > bare fold with no restraints. A NaN output is almost always this, not the restraint; confirm by
 > re-running on an sm_89 GPU. Run on a machine with a CUDA GPU.
 
-## Configuring restraints
+## Configuration
 
 protenix reads RGI from a **`restraints_config` key nested inside each fold-input object** of the
 input JSON (the input is a JSON *list* of fold jobs; the key sits beside `name`/`sequences`). Turn
@@ -41,7 +46,7 @@ restraints on with:
 `resid` is the **per-chain 1-based ordinal** (qualify protein groups with `chain A and (...)`).
 There is **no top-level `start_sigma`**.
 
-## Full config (input file)
+## Complete example (input JSON)
 
 Save this as `restr_example.json`. Folds QBP + GLN **plus a short DNA duplex and an RNA duplex** with
 a centroid distance, group angle, group dihedral, GLN conformer, whole-structure RMSD, a custom
@@ -157,9 +162,7 @@ command passes `--use_msa true`, so protenix runs its (ColabFold-compatible) MSA
 ]
 ```
 
-## How to run
-
-### Run
+## Run
 
 Save as `run_restr_example.sh` and run it on a GPU machine (`bash run_restr_example.sh`):
 
@@ -173,7 +176,7 @@ protenix pred -i restr_example.json -o out_restr_example \
     --use_default_params true --use_msa true --seeds 0 --step 200 --sample 1 --cycle 4
 ```
 
-## Verify
+## Verify results
 
 With `verbose: true`, `setup` logs `built spec: n_active=.. bonds=.. angles=.. chirals=.. plane=..
 cistrans=.. distances=.. rmsd=.. group_angle=.. group_dihedral=..` — confirm the counts are non-zero for what you requested.
