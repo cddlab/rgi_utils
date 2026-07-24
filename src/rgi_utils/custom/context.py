@@ -43,13 +43,24 @@ class RestraintContext:
     """Backend-bound evaluation context. ``selections`` maps identifier -> backend int
     index array (LOCAL indices into active_sites). ``coords`` is ``(..., n_active, 3)``.
     ``refs`` maps ``(selection_identifier, ref_name) -> constant reference coord block`` (a
-    backend array row-aligned to the selection's atoms) for the ``rmsd`` primitive."""
+    backend array row-aligned to the selection's atoms) for the ``rmsd`` primitive.
 
-    def __init__(self, ops, selections, coords, refs=None):
+    Reference-anchored geometry (the ``ref`` primitive) uses two more maps: ``ref_fits`` maps
+    ``ref_name -> (fit_target_local_idx, fit_ref_coords)`` (the prediction anchor's LOCAL
+    indices + the constant reference anchor block, for the per-eval Kabsch fit), and
+    ``ref_blocks`` maps ``(reference_selection, ref_name) -> ref_group_coords`` (the constant
+    ``(k, 3)`` block of atoms selected ON THE REFERENCE, in the reference frame). A ref with no
+    fit selections has no ``ref_fits`` entry and is used in its own frame."""
+
+    def __init__(
+        self, ops, selections, coords, refs=None, ref_fits=None, ref_blocks=None
+    ):
         self._ops = ops
         self._sel = selections
         self._coords = coords
         self._refs = refs or {}
+        self._ref_fits = ref_fits or {}
+        self._ref_blocks = ref_blocks or {}
 
     def _idx(self, sel):
         try:
@@ -130,6 +141,41 @@ class RestraintContext:
         ref = self._ops.const_like(ref_np, block)
         return V.rmsd(self._ops, block, ref)
 
+    def _ref_block_entry(self, sel, r):
+        try:
+            return self._ref_blocks[(sel, r)]
+        except KeyError:
+            raise KeyError(
+                f"custom ref({sel!r}, {r!r}) was not resolved (define {r!r} in the entry's "
+                "'refs' map and reference it in the formula)"
+            ) from None
+
+    def ref(self, sel, r):
+        """The ``(..., k, 3)`` coordinate block of atoms selected by ``sel`` ON REFERENCE ``r``,
+        placed into the PREDICTION frame by ``r``'s Kabsch fit (defined in the entry's ``refs``
+        map via ``atom_selection_target_fit`` / ``atom_selection_ref_fit``). ``sel`` is a raw
+        selection string (or a name from ``selections``) evaluated on the REFERENCE, not the
+        prediction — so the returned block is a FIXED landmark that tracks the fit anchor but
+        exerts no force on it. Composes with every geometry primitive:
+        ``distance(A, ref("chain B", r))``, ``angle(A, ref(B, r), C)``, …. A ref with no fit
+        selections yields the block in its own frame (still fixed)."""
+        if not isinstance(sel, str):
+            raise TypeError(
+                "custom ref(sel, r): the first argument must be a bare reference selection "
+                "string (evaluated on the reference structure), not a coord expression"
+            )
+        block_np = self._ref_block_entry(
+            sel, r
+        )  # (k, 3) reference-frame coords (const)
+        block = self._ops.const_like(block_np, self._coords)
+        fit = self._ref_fits.get(r)
+        if fit is None:  # no fit selection -> use the reference block in its own frame
+            return block
+        fit_idx, fit_ref_np = fit
+        fit_ref = self._ops.const_like(fit_ref_np, self._coords)
+        p_fit = self._ops.gather(self._coords, fit_idx)  # (..., m, 3) moving anchor
+        return V.superpose_ref(self._ops, block, fit_ref, p_fit)
+
     def norm(self, v):
         return V.norm(self._ops, v)
 
@@ -202,6 +248,10 @@ class ResolveContext:
         self.selections: list = []  # ordered-unique identifiers seen
         self.refs: list = []  # ordered-unique (selection_identifier, ref_name) pairs
         self.kabsch_pairs: list = []  # (a, b) selection-identifier pairs for count checks
+        # ordered-unique (reference_selection, ref_name) pairs for the ref() primitive. The
+        # selection is evaluated on the REFERENCE, so it is NOT a prediction selection (not
+        # recorded in self.selections); the fit's prediction anchor lives in the refs map.
+        self.ref_groups: list = []
 
     def _rec(self, *sels):
         for s in sels:
@@ -267,6 +317,24 @@ class ResolveContext:
         if (a, r) not in self.refs:
             self.refs.append((a, r))
         return 1.0
+
+    def ref(self, sel, r):
+        if not isinstance(sel, str):
+            raise TypeError(
+                "custom ref(sel, r): the first argument must be a bare reference selection "
+                "string (evaluated on the reference), not a coord expression such as kabsch(...)"
+            )
+        if not isinstance(r, str):
+            raise TypeError(
+                "custom ref(sel, r): the second argument (ref) must be a bare reference name "
+                "from the entry's 'refs' map"
+            )
+        if (sel, r) not in self.ref_groups:
+            self.ref_groups.append((sel, r))
+        # a (2, 3) dummy BLOCK standing in for the fitted reference group (so it composes into
+        # centroid/distance/angle/…). `sel` is a REFERENCE selection — deliberately NOT recorded
+        # as a prediction selection (self.selections); its atoms are resolved on the ref instead.
+        return np.array([[1.0, 1.0, 1.0], [2.0, 2.0, 2.0]])
 
     def norm(self, v):
         return float(np.sqrt(np.sum(np.asarray(v, dtype=float) ** 2))) + 1.0

@@ -273,12 +273,23 @@ class CombinedRestraints:
                 f"chiral={_nrow(self.spec.chiral)} plane={_nrow(self.spec.plane)} "
                 f"cistrans={_nrow(self.spec.cistrans)}"
             )
+            # ref-anchored built-in distance/angle/dihedral live in spec.custom (kind ref_geom);
+            # break them out so they are visibly built (they do not show in the distances= count).
+            _rg = [c for c in self.spec.custom if getattr(c, "kind", "") == "ref_geom"]
+            ref_geom_s = (
+                f" ref_distance={sum(c.geom == 'distance' for c in _rg)}"
+                f" ref_angle={sum(c.geom == 'angle' for c in _rg)}"
+                f" ref_dihedral={sum(c.geom == 'dihedral' for c in _rg)}"
+                if _rg
+                else ""
+            )
             msg = (
                 f"[rgi_utils] setup: "
                 f"n_active={self.spec.n_active} "
                 f"conformer={self.spec.has_conformer()} {conf_counts} n_distance={n_dist} "
                 f"n_rmsd={n_rmsd} n_group_angle={n_grp_angle} "
-                f"n_group_dihedral={n_grp_dihedral} n_custom={len(self.spec.custom)} "
+                f"n_group_dihedral={n_grp_dihedral} n_custom={len(self.spec.custom)}"
+                f"{ref_geom_s} "
                 f"vdw={vdw_s} conf_start_sigma={self.spec.conf_start_sigma:g} "
                 f"dist_start_sigma={dist_ss}"
             )

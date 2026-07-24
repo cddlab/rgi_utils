@@ -23,14 +23,35 @@ from rgi_utils._config_util import (
     warn_unknown_keys,
 )
 from rgi_utils._moltype import polymer_type
+from rgi_utils.atom_context import candidate_dict
 from rgi_utils.custom.context import ResolveContext
 from rgi_utils.custom.dsl import eval_formula, parse_formula
 from rgi_utils.custom.registry import get_custom_fn
 from rgi_utils.group_geom_restr_data import _resolve_group_sites
 from rgi_utils.pdb_ref import read_cif_atoms, read_pdb_atoms
 from rgi_utils.rmsd_restr_data import build_resid_map, pair_target_to_ref
+from rgi_utils.selection import AtomSelector
 
 logger = logging.getLogger(__name__)
+
+
+def _select_ref_coords(ref_atoms, sel_string, tag, ref_path):
+    """``(k, 3)`` coordinates of the reference atoms matched by ``sel_string`` (the atom-
+    selection DSL evaluated ON THE REFERENCE, so the same vocabulary picks ref atoms as it does
+    prediction atoms). Raises loudly if nothing matches (a ref() over an empty group is a
+    silent no-op otherwise)."""
+    sr = AtomSelector(sel_string)
+    coords = [
+        (a.x, a.y, a.z)
+        for a in ref_atoms
+        if sr.eval(candidate_dict(a, resname_attr="res_name"))
+    ]
+    if not coords:
+        raise ValueError(
+            f"{tag}: reference selection matched no atoms: {sel_string!r} in {ref_path!r}"
+        )
+    return np.asarray(coords, dtype=np.float64)
+
 
 _KNOWN_CUSTOM_KEYS = {
     "name",
@@ -45,8 +66,18 @@ _KNOWN_CUSTOM_KEYS = {
     "start_step",
     "stop_step",
 }
-# one reference definition inside a custom entry's 'refs' map (for the rmsd() primitive).
-_KNOWN_REF_KEYS = {"ref_pdb", "ref_cif", "atom_selection_ref", "pairing", "best_effort"}
+# one reference definition inside a custom entry's 'refs' map. ``atom_selection_ref`` is the
+# rmsd() calc selection; ``atom_selection_{ref,target}_fit`` are the ref() Kabsch-fit anchor
+# selections (reference side / prediction side). A ref may carry both (used by rmsd() and ref()).
+_KNOWN_REF_KEYS = {
+    "ref_pdb",
+    "ref_cif",
+    "atom_selection_ref",
+    "atom_selection_ref_fit",
+    "atom_selection_target_fit",
+    "pairing",
+    "best_effort",
+}
 
 
 @dataclass
@@ -76,6 +107,28 @@ class CustomSpec:
     refs: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]] = field(
         default_factory=dict
     )
+    # reference-anchored geometry (the ref() primitive), empty unless it is used:
+    #   ref_fits[ref_name] = (fit_target_local_idx, fit_ref_coords) — the prediction anchor's
+    #     LOCAL indices (into active_sites) + the constant reference anchor block, for the
+    #     per-eval Kabsch fit of the reference onto the prediction. A ref with no fit selections
+    #     has no entry here (its ref() blocks are used in the reference's own frame).
+    #   ref_blocks[(reference_selection, ref_name)] = (k, 3) constant block of atoms selected
+    #     ON THE REFERENCE (reference frame), placed into the prediction frame at eval time.
+    ref_fits: dict[str, tuple[np.ndarray, np.ndarray]] = field(default_factory=dict)
+    ref_blocks: dict[tuple[str, str], np.ndarray] = field(default_factory=dict)
+    # ref-anchored BUILT-IN geometry (kind == "ref_geom"): a distance/angle/dihedral over group
+    # centroids where some groups are prediction (RIGID centroid, so weight=1 moves a large group
+    # as a body) and some are fitted reference groups (fixed). Routed here from the distance /
+    # angle / dihedral config sections when they carry reference keys, so the closure path is
+    # reused (no 3-backend energy change) while the prediction-group rigid-translation of the
+    # built-in group terms is preserved. Empty for the formula / fn kinds.
+    geom: str = ""  # "distance" | "angle" | "dihedral"
+    groups: list = field(
+        default_factory=list
+    )  # [("pred", local_idx_ndarray) | ("ref", (sel, ref_name))]
+    geom_type_code: int = 0  # spec.DIST_TYPE_CODES (0=harmonic .. 3=flat-bottomed2)
+    target1: float = 0.0  # radians for angle/dihedral, Angstrom for distance
+    target2: float = 0.0
 
 
 class CustomData:
@@ -101,6 +154,12 @@ class CustomData:
         self.ref_defs: dict[str, dict] = {}
         self._ref_pairs: list[tuple[str, str]] = []
         self._ref_resolved: dict[tuple[str, str], tuple[list[int], np.ndarray]] = {}
+        # reference-anchored geometry (the ref() primitive), filled at resolve:
+        #   _ref_group_resolved[(sel, ref)] = (k,3) ref-frame coords of that ref selection
+        #   _ref_fit_resolved[ref] = (fit_target_globals, fit_ref_coords) | None (no fit)
+        self._ref_group_pairs: list[tuple[str, str]] = []
+        self._ref_group_resolved: dict[tuple[str, str], np.ndarray] = {}
+        self._ref_fit_resolved: dict[str, tuple[list[int], np.ndarray] | None] = {}
 
     def set_config(self, config: dict) -> None:
         warn_unknown_keys(
@@ -162,6 +221,10 @@ class CustomData:
                 "ref_cif": ref_cif,
                 "ref_path": ref_pdb if ref_pdb is not None else ref_cif,
                 "sel_ref": rcfg.get("atom_selection_ref"),
+                # ref() Kabsch-fit anchor: prediction side (target) + reference side. Both None
+                # -> ref() uses the reference in its own frame (no superposition).
+                "sel_ref_fit": rcfg.get("atom_selection_ref_fit"),
+                "sel_target_fit": rcfg.get("atom_selection_target_fit"),
                 "pairing": pairing,
                 "best_effort": coerce_bool(rcfg.get("best_effort"), True),
             }
@@ -187,6 +250,14 @@ class CustomData:
         self._evaluate_resolve(rc)
         self._identifiers = list(rc.selections)
         if not self._identifiers:
+            if rc.ref_groups:
+                # every measured group is a ref(...) -> a constant (the fitted reference is
+                # stop-gradient'd), so the restraint has zero gradient and can't move anything.
+                raise ValueError(
+                    f"custom restraint {self.name!r} measures only reference atoms (every "
+                    "group is ref(...)) — at least one group must be a PREDICTION selection, "
+                    "else the energy is constant with zero gradient"
+                )
             raise ValueError(
                 f"custom restraint {self.name!r} references no atom selection "
                 "(use distance/angle/.../centroid/rg over named or string selections)"
@@ -210,6 +281,7 @@ class CustomData:
                     f"counts (positional correspondence), got |{a}|={na} != |{b}|={nb}"
                 )
         self._resolve_refs(adapter, rc.refs)
+        self._resolve_ref_groups(adapter, rc.ref_groups)
 
     def _resolve_refs(self, adapter, ref_pairs) -> None:
         """For each ``rmsd(sel, ref)`` call recorded in the resolve pass, load the reference
@@ -268,6 +340,88 @@ class CustomData:
                 rdef["ref_path"],
             )
 
+    def _resolve_ref_groups(self, adapter, ref_group_pairs) -> None:
+        """For each ``ref(sel, r)`` call recorded in the resolve pass: (1) resolve ``sel`` on the
+        REFERENCE structure to its ``(k,3)`` coords, and (2) resolve each used reference's Kabsch
+        FIT once (the prediction anchor ``atom_selection_target_fit`` paired to the reference
+        anchor ``atom_selection_ref_fit`` via the shared ``pair_target_to_ref``). The fit is
+        shared by every ``ref(sel, r)`` with the same ``r``; a ref with no fit selections is used
+        in its own frame (``_ref_fit_resolved[r] = None``)."""
+        self._ref_group_pairs = list(ref_group_pairs)
+        self._ref_group_resolved = {}
+        self._ref_fit_resolved = {}
+        if not self._ref_group_pairs:
+            return
+        atoms = list(adapter.iter_atoms())
+        has_polymer = any(
+            polymer_type(a.mol_type, a.resname) is not None for a in atoms
+        )
+        cache: dict[str, tuple] = {}  # ref_name -> (ref_atoms, align, resid_map)
+        used_refs: list[str] = []
+        for sel_name, ref_name in self._ref_group_pairs:
+            rdef = self.ref_defs.get(ref_name)
+            if rdef is None:
+                raise ValueError(
+                    f"custom restraint {self.name!r}: ref() uses reference {ref_name!r} "
+                    "which is not defined in the entry's 'refs' map"
+                )
+            if ref_name not in cache:
+                reader = (
+                    read_cif_atoms if rdef["ref_cif"] is not None else read_pdb_atoms
+                )
+                ref_atoms = reader(rdef["ref_path"])
+                align = rdef["pairing"] == "align" and has_polymer
+                resid_map = (
+                    build_resid_map(atoms, ref_atoms, rdef["ref_path"])
+                    if align
+                    else None
+                )
+                cache[ref_name] = (ref_atoms, align, resid_map)
+                used_refs.append(ref_name)
+            ref_atoms, align, resid_map = cache[ref_name]
+            # ref() selection is a REFERENCE selection (a config name maps via 'selections' to
+            # its string, then it is evaluated on the reference atoms, not the prediction).
+            sel_string = self.selections.get(sel_name, sel_name)
+            self._ref_group_resolved[(sel_name, ref_name)] = _select_ref_coords(
+                ref_atoms,
+                sel_string,
+                f"custom {self.name!r} ref({sel_name}->{ref_name})",
+                rdef["ref_path"],
+            )
+        # resolve each used reference's fit ONCE (shared across its ref(sel, r) calls).
+        for ref_name in used_refs:
+            rdef = self.ref_defs[ref_name]
+            ref_atoms, align, resid_map = cache[ref_name]
+            if rdef["sel_target_fit"] is None and rdef["sel_ref_fit"] is None:
+                self._ref_fit_resolved[ref_name] = None  # no fit -> reference own frame
+                continue
+            fit_target_globals, fit_ref_coords = pair_target_to_ref(
+                atoms,
+                ref_atoms,
+                rdef["sel_target_fit"],
+                rdef["sel_ref_fit"],
+                f"custom {self.name!r} fit->{ref_name}",
+                ref_path=rdef["ref_path"],
+                best_effort=rdef["best_effort"],
+                align=align,
+                resid_map=resid_map,
+            )
+            if len(fit_target_globals) < 3:
+                raise ValueError(
+                    f"custom restraint {self.name!r}: ref fit for {ref_name!r} paired only "
+                    f"{len(fit_target_globals)} anchor atom(s); the Kabsch superposition needs "
+                    "at least 3 non-collinear atoms (widen atom_selection_target_fit / "
+                    "atom_selection_ref_fit)"
+                )
+            self._ref_fit_resolved[ref_name] = (fit_target_globals, fit_ref_coords)
+            logger.info(
+                "custom restraint (%s) ref fit -> %s: %d anchor atoms paired to ref %s",
+                self.name,
+                ref_name,
+                len(fit_target_globals),
+                rdef["ref_path"],
+            )
+
     def iter_global_sites(self):
         out: list[int] = []
         for s in self._global.values():
@@ -276,6 +430,11 @@ class CustomData:
         # explicitly so they are guaranteed in active_sites (hence resolvable via g2l).
         for tgt_globals, _ref in self._ref_resolved.values():
             out.extend(int(x) for x in tgt_globals)
+        # ref() fit anchors are prediction atoms the Kabsch fit reads at eval time -> they must
+        # be in active_sites so the closure can gather them (by their local index).
+        for fit in self._ref_fit_resolved.values():
+            if fit is not None:
+                out.extend(int(x) for x in fit[0])
         return out
 
     def build_spec(self, g2l: dict[int, int]) -> CustomSpec:
@@ -291,6 +450,18 @@ class CustomData:
             )
             for key, (tgt_globals, ref_coords) in self._ref_resolved.items()
         }
+        # ref() primitive: fit-anchor prediction globals -> LOCAL indices; ref-group coords
+        # kept as numpy constants (converted to the live dtype/device at eval via const_like).
+        ref_fits = {}
+        for rname, fit in self._ref_fit_resolved.items():
+            if fit is None:
+                continue
+            fit_target_globals, fit_ref_coords = fit
+            ref_fits[rname] = (
+                np.array([g2l[int(x)] for x in fit_target_globals], dtype=np.int64),
+                fit_ref_coords,
+            )
+        ref_blocks = dict(self._ref_group_resolved)
         return CustomSpec(
             name=self.name,
             selections=local,
@@ -305,4 +476,6 @@ class CustomData:
             start_step=float(self.start_step),
             stop_step=float(self.stop_step),
             refs=refs,
+            ref_fits=ref_fits,
+            ref_blocks=ref_blocks,
         )

@@ -14,6 +14,7 @@ from rgi_utils.base_pair_restr_data import BasePairData
 from rgi_utils.custom.data import CustomData
 from rgi_utils.distance_restr_data import DistanceData
 from rgi_utils.group_geom_restr_data import AngleRestraintData, DihedralRestraintData
+from rgi_utils.ref_geom_restr_data import RefGeomData, is_ref_anchored
 from rgi_utils.rmsd_restr_data import RmsdData
 
 
@@ -193,7 +194,16 @@ class RestraintsConfig:
             conf_stop_step=conf_stop_step,
             conformer_config=conformer_config,
         )
+        # a distance/angle/dihedral entry carrying reference keys (ref_pdb/ref_cif or any
+        # atom_selectionN_ref) is REFERENCE-ANCHORED: it fits the reference onto the prediction
+        # and measures between prediction + fitted-reference groups. Route it to RefGeomData
+        # (a kind="ref_geom" CustomSpec on the custom-closure path) instead of the array term.
         for entry in config.get("distance_restraints_config", []) or []:
+            if is_ref_anchored(entry):
+                rg = RefGeomData("distance")
+                rg.set_config(entry)
+                cfg.custom_data.append(rg)
+                continue
             dd = DistanceData()
             dd.set_config(entry)
             # start_sigma is optional; omitted -> active at every step (+inf gate).
@@ -210,12 +220,22 @@ class RestraintsConfig:
         # group-centroid angle (3 groups) / dihedral (4 groups) restraints — same
         # per-entry start_sigma convention as distance/rmsd (None -> +inf = every step).
         for entry in config.get("angle_restraints_config", []) or []:
+            if is_ref_anchored(entry):
+                rg = RefGeomData("angle")
+                rg.set_config(entry)
+                cfg.custom_data.append(rg)
+                continue
             ad = AngleRestraintData()
             ad.set_config(entry)
             if ad.start_sigma is None:
                 ad.start_sigma = _ALWAYS_ON
             cfg.angle_data.append(ad)
         for entry in config.get("dihedral_restraints_config", []) or []:
+            if is_ref_anchored(entry):
+                rg = RefGeomData("dihedral")
+                rg.set_config(entry)
+                cfg.custom_data.append(rg)
+                continue
             dd = DihedralRestraintData()
             dd.set_config(entry)
             if dd.start_sigma is None:

@@ -38,6 +38,7 @@ GEOMETRY = (
     "coords",
     "kabsch",
     "rmsd",
+    "ref",
 )
 
 
@@ -123,6 +124,30 @@ def rmsd(ops, block_a, ref_block):
     diff = a_sup - ref_block
     msd = ops.mean_last(ops.vdot(diff, diff))  # mean over atoms of |diff|^2 -> (...)
     return ops.sqrt(msd + EPS)
+
+
+def superpose_ref(ops, ref_block, fit_ref, p_fit):
+    """Place a CONSTANT reference block ``ref_block`` (``(k, 3)``, atoms selected on the
+    reference) into the PREDICTION frame, by the Kabsch superposition that best maps the
+    constant reference anchor ``fit_ref`` (``(m, 3)``) onto the MOVING prediction anchor
+    ``p_fit`` (``(..., m, 3)``). Returns the fitted block ``(..., k, 3)``.
+
+    This is the INVERSE of ``kabsch`` (which moves a group onto a constant reference); here a
+    constant reference is moved onto the moving prediction, so a reference atom becomes a fixed
+    landmark in the prediction's frame. The WHOLE transform is stop-gradient'd (the rotation via
+    ``_kabsch_R`` is already frozen; the result is ``stop_gradient``'d as well), so the fitted
+    landmark TRACKS the anchor's current value but exerts NO force on it — the gradient of a
+    restraint using ``ref(...)`` flows only through the *other* (prediction) group. Its grad is
+    therefore torch/jax-consistent but not numpy-FD-equal (the same carve-out as
+    ``kabsch``/``rmsd``)."""
+    cp = ops.mean_atoms(p_fit)  # (..., 3) — moving anchor centroid
+    cq = ops.mean_atoms(fit_ref)  # (3,) — constant reference anchor centroid
+    q0 = fit_ref - cq[..., None, :]  # (m, 3)
+    p0 = p_fit - cp[..., None, :]  # (..., m, 3)
+    r = _kabsch_R(ops, q0, p0)  # R q0 ~ p0 (rotation frozen inside)
+    g0 = ref_block - cq[..., None, :]  # (k, 3) in the reference's centred frame
+    fitted = ops.matmul(g0, ops.swapaxes_last2(r)) + cp[..., None, :]
+    return ops.stop_gradient(fitted)
 
 
 def wrap(ops, x):
