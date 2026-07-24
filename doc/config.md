@@ -28,6 +28,7 @@ restraints_config:
   distance_restraints_config: [ ... ]   # list
   angle_restraints_config:    [ ... ]   # list  (group-centroid angle)
   dihedral_restraints_config: [ ... ]   # list  (group-centroid dihedral)
+  base_pair_restraints_config: [ ... ]  # list  (nucleic-acid Watson-Crick base pairs)
   conformer_restraints_config: { ... }  # single dict (ligand/polymer local geometry)
   rmsd_restraints_config:     [ ... ]   # list
   custom_restraints_config:   [ ... ]   # list  (define your OWN restraint — see below)
@@ -261,6 +262,68 @@ Targets in **degrees** by default (`unit: radians` to override).
 | `weight` | float | `1.0` | energy scale |
 | `move` | `"all"` / int / list / `"1,4"` | ends (1,4) free, axis (2,3) pinned | which groups are free; the rest are pinned (stop-gradient). `"all"` frees every group |
 | one restraint-type block | dict | — (required) | `harmonic {target_dihedral}` or `flat-bottomed{,1,2}` with `target_dihedral1` / `target_dihedral2` (degrees, or radians if `unit: radians`) |
+
+## `base_pair_restraints_config` (list)
+
+Restrain two nucleotides into **Watson-Crick base-pair geometry**. This is a config-time
+**macro**, not a new energy term: each entry EXPANDS into the primitives above — one
+[`distance`](#distance_restraints_config-list) restraint per WC hydrogen bond, plus (optionally)
+one best-fit [`plane`](#conformer_restraints_config-single-dict) restraint over both bases so the
+pair stays coplanar. It mirrors what servalcat/Refmac do (base pairing is imposed as H-bond
+distance + planarity restraints, there is no dedicated base-pair potential).
+
+You name the two paired residues; the engine looks up the WC donor/acceptor atoms and their ideal
+H-bond distance from a built-in table:
+
+| pair | H-bond atom pairs (residue1, residue2) |
+|---|---|
+| G·C | `(N1,N3)` `(N2,O2)` `(O6,N4)` |
+| A·T / A·U | `(N1,N3)` `(N6,O4)` |
+| G·U wobble | `(N1,O2)` `(O6,N3)` — **opt-in via `pair: GU`** (never auto-detected) |
+
+The base identity is auto-detected from each residue's `resname` (DNA `D`-prefix stripped; DNA and
+RNA share base-atom names). Pairs are **user-specified only** — auto-detecting which bases pair from
+coordinates is intentionally NOT done (coordinates are pure noise at high sigma). Reverse orders
+(C·G, T·A, …) are handled automatically.
+
+```yaml
+base_pair_restraints_config:
+  - residue1: "chain A and resid 5"   # each selector must match EXACTLY one residue
+    residue2: "chain B and resid 12"
+    # pair: GC          # optional: override auto-detection (needed if resname is
+    #                   # unavailable, or for a G-U wobble). Two letters from ACGTU.
+    # coplanar: true    # add the inter-base coplanarity plane (default true)
+    # target: [2.7, 3.1]  # H-bond distance: [low, high] -> flat-bottomed (default),
+    #                   # or a scalar -> harmonic
+    # weight: 1.0       # strength of the H-bonds AND the coplanarity plane
+    # move: both        # both / 1 / 2 — 1 docks residue1 onto a fixed residue2
+    # start_sigma / stop_sigma   # sigma gating (applies to the H-bond distances)
+    # start_step / stop_step     # step gating (mutually exclusive with sigma)
+```
+
+| key | type | default | meaning |
+|---|---|---|---|
+| `residue1` / `residue2` | str | — (required) | selection-DSL strings, each matching exactly one nucleotide (else it raises) |
+| `pair` | str | auto from `resname` | override the detected bases, e.g. `"GC"`, `"AU"`, `"GU"`. Required when `resname` is unavailable or for a wobble pair |
+| `coplanar` | bool | `true` | also add a best-fit-plane restraint over both bases' atoms (keeps the pair coplanar) |
+| `target` | `[low, high]` or float | `[2.7, 3.1]` | WC H-bond distance: a `[low, high]` window → flat-bottomed; a scalar → harmonic (Å) |
+| `weight` | float | `1.0` | energy scale for the generated H-bond distances and the coplanarity plane |
+| `move` | `both` / `1` / `2` | `both` | which residue the H-bonds pull; `1` moves only residue1 (dock a strand onto a fixed template), `2` only residue2 |
+| `start_sigma` / `stop_sigma` | float | `+inf` / `-1` | sigma gating of the H-bond distances |
+| `start_step` / `stop_step` | int | `-inf` / `+inf` | step gating (mutually exclusive with the sigma window) |
+
+**Gating note.** The gate window applies to the **H-bond distances**. The coplanarity plane rides the
+**shared conformer gate** (`conformer_restraints_config.start_sigma`, default always-on) because it is
+built on the same `plane` term as ligand/polymer planarity — so a per-entry `start_sigma` here does not
+move the coplanarity release point. Per-base planarity is already maintained by
+[`conformer_restraints_config`](#conformer_restraints_config-single-dict) when polymer geometry is
+enabled; `coplanar` here additionally makes the **two** bases of the pair share one plane.
+
+**Fail-loud** (never a silent no-op): a `residue` selector matching zero or more than one residue, an
+auto-detected non-Watson-Crick pair (e.g. G-G, or a G-U without `pair: GU`), a `resname`-less residue
+with no `pair`, or a missing WC atom all raise. Verbose setup logs
+`base_pair=P pairs -> H h-bonds + C coplanar groups` (the generated restraints also show up in the
+`distances=` / `plane=` counts).
 
 ## `conformer_restraints_config` (single dict)
 

@@ -152,6 +152,22 @@ class CombinedRestraints:
         for cd in custom_data:
             cd.resolve_sites(adapter)
 
+        # nucleic-acid base-pair restraints: expand each entry into pre-resolved WC H-bond
+        # DistanceData (+ an optional coplanarity plane group). Build a LOCAL merged
+        # distance list — NOT cfg.distance_data in place: a config-less re-setup() reuses
+        # the same config object, so an in-place extend would re-append every call and
+        # silently duplicate (the same reasoning as custom_data above). The generated
+        # distances are ALREADY resolved (target_sites filled), so they intentionally
+        # bypass the distance resolve loop above.
+        bp_plane_groups = []
+        bp_distances = []
+        for bp in cfg.base_pair_data:
+            dists, plane_grp = bp.resolve_sites(adapter)
+            bp_distances.extend(dists)
+            if plane_grp is not None:
+                bp_plane_groups.append(plane_grp)
+        distance_data = list(cfg.distance_data) + bp_distances
+
         ligand_confs = []
         if hasattr(adapter, "iter_ligand_confs"):
             ligand_confs = list(adapter.iter_ligand_confs())
@@ -177,7 +193,7 @@ class CombinedRestraints:
 
         self.spec = build_spec(
             ligand_confs,
-            cfg.distance_data,
+            distance_data,
             cfg.conformer_config,
             elements=elements,
             conf_start_sigma=cfg.conf_start_sigma,
@@ -189,6 +205,7 @@ class CombinedRestraints:
             dihedral_restraints=cfg.dihedral_data,
             custom_restraints=custom_data,
             polymer_geometry=polymer_geometry,
+            extra_plane_groups=bp_plane_groups,
         )
         # backend is inferred lazily (get_minimizer() -> jax; minimize(coords) -> from
         # the coords type) and the matching optimizer built on first use; reset here so a
@@ -239,11 +256,13 @@ class CombinedRestraints:
                     if float(ss.min()) == float(ss.max())
                     else f"{float(ss.min()):g}..{float(ss.max()):g}"
                 )
+
             # per-term conformer counts so a silently-empty sub-restraint (e.g. plane=0 when
             # the caller expected polymer aromatic/peptide planes) is visible at setup, not
             # only inferable from a 0.00000 finalize energy (which also reads 0 when built).
             def _nrow(arr):
                 return int(arr.mask.sum()) if arr is not None else 0
+
             conf_counts = (
                 f"bond={_nrow(self.spec.bond)} angle={_nrow(self.spec.angle)} "
                 f"chiral={_nrow(self.spec.chiral)} plane={_nrow(self.spec.plane)} "
@@ -260,6 +279,17 @@ class CombinedRestraints:
             )
             logger.info(msg)
             print(msg, flush=True)
+            # base pairs expand INTO the distance/plane counts above, so their own
+            # firing signal would otherwise be invisible. Report pairs -> h-bonds +
+            # coplanar groups explicitly (the CLAUDE.md verification recipe relies on
+            # per-term counts to confirm a restraint was actually built).
+            if cfg.base_pair_data:
+                bp_msg = (
+                    f"[rgi_utils] setup: base_pair={len(cfg.base_pair_data)} pairs -> "
+                    f"{len(bp_distances)} h-bonds + {len(bp_plane_groups)} coplanar groups"
+                )
+                logger.info(bp_msg)
+                print(bp_msg, flush=True)
 
     def _warn_never_active(self) -> None:
         """Flag restraints that are built (non-zero weights/counts) but can never fire.

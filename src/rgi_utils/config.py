@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from rgi_utils._config_util import check_window_exclusive, coerce_bool
+from rgi_utils.base_pair_restr_data import BasePairData
 from rgi_utils.custom.data import CustomData
 from rgi_utils.distance_restr_data import DistanceData
 from rgi_utils.group_geom_restr_data import AngleRestraintData, DihedralRestraintData
@@ -42,6 +43,9 @@ class RestraintsConfig:
     custom_data: list = field(
         default_factory=list
     )  # custom restraints (rgi_utils.custom)
+    base_pair_data: list = field(
+        default_factory=list
+    )  # nucleic-acid base-pair restraints (expand to distance + plane)
 
     @classmethod
     def from_dict(cls, config: dict | None) -> "RestraintsConfig":
@@ -65,6 +69,7 @@ class RestraintsConfig:
             "angle_restraints_config",
             "dihedral_restraints_config",
             "custom_restraints_config",
+            "base_pair_restraints_config",
         }
         _unknown_top = set(config) - _KNOWN_TOP_LEVEL - {"start_sigma"}
         if _unknown_top:
@@ -222,4 +227,14 @@ class RestraintsConfig:
             cd = CustomData()
             cd.set_config(entry)
             cfg.custom_data.append(cd)
+        # nucleic-acid base-pair restraints: a config-time macro that expands into WC
+        # H-bond distance restraints (+ optional coplanarity plane) at resolve time. The
+        # per-entry start_sigma applies to the generated distance restraints, so it uses
+        # the same None -> +inf (every step) default as distance/rmsd.
+        for entry in config.get("base_pair_restraints_config", []) or []:
+            bp = BasePairData()
+            bp.set_config(entry)
+            if bp.start_sigma is None:
+                bp.start_sigma = _ALWAYS_ON
+            cfg.base_pair_data.append(bp)
         return cfg
