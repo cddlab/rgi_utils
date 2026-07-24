@@ -1,4 +1,4 @@
 interface:
-  display_name: "Create GitHub Release"
-  short_description: "Create verified tags and Releases with curated notes"
-  default_prompt: "Use $create-github-release to verify the version, write release notes, get my approval, and publish its tag and GitHub Release."
+  display_name: "Create GitHub Releases"
+  short_description: "Publish verified coordinated GitHub Releases"
+  default_prompt: "Use $create-github-release to verify versions, choose companion *_restr repositories, obtain approval, and publish coordinated GitHub Releases."

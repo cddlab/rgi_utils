@@ -1,20 +1,22 @@
 ---
 name: create-github-release
 description: >-
-  Safely create and push a SemVer Git tag such as v1.0.0, then publish the
-  matching GitHub Release with curated notes using gh. Use when the user asks
-  to tag a version, cut or publish a release, or create a GitHub Release. Always
-  inspect and report the repository's current version, proposed tag, and target
-  commit, then obtain the user's explicit final approval before creating any tag or
-  Release. If the current version already has both a tag and a GitHub Release,
-  ask whether to increment the version.
+  Safely create and push SemVer Git tags such as v1.0.0, then publish matching
+  GitHub Releases with curated notes using gh. Use when the user asks to tag a
+  version, cut or publish a release, or create a GitHub Release, including a
+  coordinated rgi_utils and sibling *_restr release. Discover eligible *_restr
+  repositories and explicitly ask which to include. Always inspect and report
+  each repository's current version, proposed tag, and target commit, then
+  obtain the user's explicit final approval before creating any tag or Release.
+  If a current version already has both a tag and a GitHub Release, ask whether
+  to increment the version.
 ---
 
 # Create a GitHub Release
 
-Create one immutable version tag and its matching GitHub Release. Treat the
-version declared by the repository, the Git tag, and the Release tag as one
-version.
+Create one immutable version tag and its matching GitHub Release, or a
+user-selected coordinated set of them. Treat the version declared by each
+repository, its Git tag, and its Release tag as one version.
 
 ## Hard rules
 
@@ -22,8 +24,13 @@ version.
   to create a release does not count as final approval.
 - Before approval, do not create a local or remote tag and do not create a
   draft or published Release.
+- For an RGI release, always ask whether to include detected sibling Git
+  repositories whose names end in `_restr`. Do not infer the answer from the
+  initial release request.
 - If the current version already has both its tag and GitHub Release, stop and
   ask whether to increment the version.
+- Inspect and approve every repository independently. Never assume companion
+  repositories use the primary repository's version, tag, branch, or commit.
 - Write complete, evidence-based release notes and show the full draft before
   requesting approval.
 - Never guess the version, silently change a manifest version, move an existing
@@ -70,7 +77,30 @@ Keep this phase read-only with respect to tags and Releases.
    differs from the requested tag, stop and ask whether the manifest should be
    updated; never perform the bump implicitly.
 
-## 2. Handle an existing current version
+## 2. Choose companion `*_restr` repositories
+
+When releasing `rgi_utils`, inspect its immediate sibling directories whose
+names end in `_restr`. Do not use `find`. Retain only directories that resolve
+to distinct Git worktrees, and resolve each repository's exact GitHub
+`owner/name` from its remote.
+
+Show the detected repository list and ask in the user's language, equivalent
+to: **"Should I also create releases for these `*_restr` repositories? Reply
+with all, specific repository names, or none."**
+
+Wait for the answer before preparing releases. This companion-selection answer
+is not the final publication approval. Treat the primary repository and the
+selected companions as the release set. Apply every inspection, existing-state
+check, verification, release-note, approval, recheck, and publication rule in
+this skill to each member independently. If a selected repository has no
+authoritative version, has an ambiguous release state, or needs a version bump,
+ask for that repository's exact disposition; allow the user to remove it from
+the release set.
+
+Skip this section when there are no sibling Git repositories ending in
+`_restr`.
+
+## 3. Handle an existing current version
 
 If both the exact tag for the authoritative current version and its GitHub
 Release already exist, report the version, tag, tagged commit, and Release URL.
@@ -89,7 +119,7 @@ If only the tag or only the Release exists, report the partial state and ask
 whether to repair the missing artifact or increment the version. Never
 overwrite or retarget the existing artifact.
 
-## 3. Verify before approval
+## 4. Verify before approval
 
 Run the repository-prescribed lint and non-GPU tests. Do not publish a release
 with failing checks unless the user explicitly accepts the named failures after
@@ -103,10 +133,10 @@ Confirm mechanically that:
 - the target commit and version declaration contain the intended release
   contents.
 
-## 4. Write release notes
+## 5. Write release notes
 
-Before the approval gate, write a complete Markdown release-note draft to a
-temporary path outside the worktree, such as
+Before the approval gate, write a complete Markdown release-note draft for each
+repository to a separate temporary path outside every worktree, such as
 `/tmp/<repo>-<tag>-release-notes.md`. Determine the previous published Release
 or version tag and inspect the complete range through the target commit:
 
@@ -130,9 +160,10 @@ Incorporate any notes supplied by the user, then verify every claim against the
 release range. Show the full draft in the mandatory approval summary. Any
 subsequent edit to the notes invalidates approval and requires approval again.
 
-## 5. Mandatory approval gate
+## 6. Mandatory approval gate
 
-Present the approval summary in the user's language and include:
+Present one approval summary for the complete release set in the user's
+language. For every repository, include:
 
 - repository;
 - version found in the authoritative file and that file's path;
@@ -144,26 +175,29 @@ Present the approval summary in the user's language and include:
 - Release title, the full release-note draft, and stable/prerelease status.
 
 Then ask explicitly in the user's language, equivalent to:
-**"The current version is `<version>` and the release tag will be `<tag>`. May I
-create and push this tag and publish the GitHub Release with this version and
-the release notes shown above?"**
+**"May I create and push all tags listed above and publish all corresponding
+GitHub Releases with the shown versions and release notes?"**
 
 Wait for an unambiguous yes. Do not combine this question with tag or Release
 creation in the same step. A response that changes the version is not approval;
-repeat inspection and ask again with the new version.
+repeat inspection and ask again with the new version. Approval for only part of
+the release set authorizes only that explicitly named subset; rebuild and show
+the summary for the reduced set before publishing.
 
-## 6. Recheck and publish
+## 7. Recheck and publish
 
-After approval, recalculate the version, `HEAD`, branch, worktree state, and
-remote branch SHA, and release-note content. Continue only if they exactly
-match the approved summary.
+After approval, recalculate the version, `HEAD`, branch, worktree state, remote
+branch SHA, and release-note content for every approved repository before
+creating any tag. Continue only if the complete set exactly matches the
+approved summary.
 
-Use an annotated tag and push only that tag:
+Use explicit repository paths and GitHub `owner/name` values. For each
+repository, create an annotated tag and push only that tag:
 
 ```bash
-git tag -a "<tag>" "<approved-sha>" -m "Release <tag>"
-git push origin "refs/tags/<tag>"
-gh release create "<tag>" --verify-tag --title "<tag>" --notes-file "<notes-file>"
+git -C "<repo-path>" tag -a "<tag>" "<approved-sha>" -m "Release <tag>"
+git -C "<repo-path>" push origin "refs/tags/<tag>"
+gh release create "<tag>" -R "<owner/name>" --verify-tag --title "<tag>" --notes-file "<notes-file>"
 ```
 
 For an explicitly approved prerelease, add `--prerelease`. Use the exact
@@ -173,15 +207,19 @@ Run each mutating command separately and inspect its result before continuing.
 If local tag creation succeeds but the push fails, keep the tag and report the
 failure. If the tag push succeeds but Release creation fails, report that the
 tag is already public and retry only the Release step after resolving the
-error. Never delete or retarget the tag as automatic cleanup.
+error. Never delete or retarget the tag as automatic cleanup. Coordinated
+publication is not atomic: if any repository fails, stop before mutating the
+next repository, report which repositories completed, and ask whether to
+continue the remaining approved set after the failure is resolved.
 
-## 7. Verify and report
+## 8. Verify and report
 
-Verify the exact remote tag and Release:
+Verify every exact remote tag and Release:
 
 ```bash
-git ls-remote --tags origin "refs/tags/<tag>" "refs/tags/<tag>^{}"
-gh release view "<tag>" --json url,tagName,name,isDraft,isPrerelease,targetCommitish
+git -C "<repo-path>" ls-remote --tags origin "refs/tags/<tag>" "refs/tags/<tag>^{}"
+gh release view "<tag>" -R "<owner/name>" --json url,tagName,name,isDraft,isPrerelease,targetCommitish
 ```
 
-Report the version, tag, tagged commit, Release URL, and verification results.
+For every repository, report the version, tag, tagged commit, Release URL, and
+verification results.
