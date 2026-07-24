@@ -46,6 +46,18 @@ Variants (swap the penalty block):
 `move` (optional): `both` (default, both groups move toward each other) / `1` / `2` (move
 only that group, **pin** the other — e.g. move a ligand toward a fixed pocket).
 
+A distance may use at most one external reference. Keep the normal group key, prefix its value
+with `ref1 and`, and define the entry-local reference:
+
+```yaml
+distance_restraints_config:
+  - atom_selection1: "chain A and resid 120"
+    atom_selection2: "ref1 and chain A and resid 200"
+    refs:
+      ref1: {ref_cif: "template.cif"}
+    harmonic: {target_distance: 5.0}
+```
+
 ---
 
 ## 2. Angle / dihedral — "set the bend / twist between regions"
@@ -77,7 +89,9 @@ Same four penalty shapes as distance (`target_angle1/2`, `target_dihedral1/2` fo
 flat-bottomed family). `weight: 1.0` drives any group size (the engine moves a whole group
 rigidly). `move` picks which groups are free; default frees the arms/ends and pins the
 vertex/axis. Pick groups whose centroids are **not collinear** (a collinear arrangement has
-an ill-defined gradient — see config.md).
+an ill-defined gradient — see config.md). Angle entries may use up to two distinct references and
+dihedral entries up to three; write a reference group as `refN and <selection>` in its normal
+`atom_selectionN` key and define `refs.refN`.
 
 ---
 
@@ -165,12 +179,21 @@ custom_restraints_config:
   - name: compact
     energy: "harmonic(rg(dom), 12.0)"        # pull radius of gyration toward 12 Å
     selections: {dom: "chain A and resid 1 to 80"}
+  - name: reference_distance
+    energy: "harmonic(distance(moving, landmark), 8.0)"
+    selections:
+      moving: "chain A and resid 50"
+      landmark: "ref1 and chain A and resid 90"
+    refs:
+      ref1: {ref_pdb: "reference.pdb"}
 ```
 
 Vocabulary (geometry on centroids; **angles here are in radians**, unlike the built-in
 configs): `centroid` `distance` `angle` `dihedral` `rg` `norm` `dot`; penalties `harmonic`
 `flat_bottomed{,1,2}`; math `sqrt exp log abs sin cos clip sum minimum maximum where`. No
-`if`, no imports — it is parsed safely. The formula must reduce to a scalar. Full list +
+`if`, no imports — it is parsed safely. The formula must reduce to a scalar. A reference-backed selection
+uses `refN and <selection>` and works with every geometry
+primitive; external-reference RMSD is `rmsd(A,B)` with prediction A and reference-backed B. Full list +
 semantics: config.md "custom_restraints_config".
 
 ---

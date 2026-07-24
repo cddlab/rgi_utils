@@ -194,10 +194,9 @@ class RestraintsConfig:
             conf_stop_step=conf_stop_step,
             conformer_config=conformer_config,
         )
-        # a distance/angle/dihedral entry carrying reference keys (ref_pdb/ref_cif or any
-        # atom_selectionN_ref) is REFERENCE-ANCHORED: it fits the reference onto the prediction
-        # and measures between prediction + fitted-reference groups. Route it to RefGeomData
-        # (a kind="ref_geom" CustomSpec on the custom-closure path) instead of the array term.
+        # A distance/angle/dihedral entry with an entry-local refs map or an
+        # ``atom_selectionN: "refN and ..."`` group is routed through RefGeomData. Each
+        # named reference is fitted independently; ordinary entries keep the array path.
         for entry in config.get("distance_restraints_config", []) or []:
             if is_ref_anchored(entry):
                 rg = RefGeomData("distance")

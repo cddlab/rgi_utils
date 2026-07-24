@@ -212,6 +212,9 @@ Beyond the five built-ins, a user can define an **original** restraint as a back
 energy `energy(ctx) -> scalar`. Two authoring paths, ONE mechanism:
 - **config (expression DSL)**: a `custom_restraints_config` entry with an `energy` formula string
   over a shared vocabulary + named `selections` (e.g. `"(distance(A,B) - distance(C,D))**2"`).
+  A selection value may be reference-backed as `refN and <selection>` with an entry-local
+  `refs.refN` definition; the same geometry vocabulary consumes it, and external-reference RMSD
+  is `rmsd(A,B)` (prediction A, reference-backed B).
 - **code (ctx fn)**: a Python `energy(ctx)` — passed directly (`CombinedRestraints.add_custom(fn=…)`
   / config `{"fn": …}`) or registered (`@custom_restraint("name")`, config `{"use": "name"}`).
 
@@ -276,7 +279,9 @@ safety). Full config surface: `doc/config.md`.
   in both optimizers (hand-maintained — not a `_TERMS` entry), and `torch_optim._gated_prepared`'s
   cache key. AF3 threads `istep` via a `jnp.arange(steps)` added to the diffusion `hk.scan` xs.
 - Distance restraints: `harmonic`, `flat-bottomed`, `flat-bottomed1`,
-  `flat-bottomed2`; only `calc_method=unfixed-absolute` (centroid-based). **CG-minimised** like
+  `flat-bottomed2`; only `calc_method=unfixed-absolute` (centroid-based). A distance entry may
+  replace at most one group with `ref1 and <selection>` and define it under `refs.ref1`; the
+  normal `atom_selectionN` keys are retained. **CG-minimised** like
   the group terms (no longer closed-form): `distance_energy` builds each group's centroid via
   `_move_centroid` with a **reduced-mass scale `N1·N2/(N1+N2)`**, so the per-atom gradient is
   `O(1)` (no `1/N` dilution → rigid translation) AND the two groups' gradient magnitudes are in
@@ -305,7 +310,9 @@ safety). Full config surface: `doc/config.md`.
   CG objective and the GPU pre-gate; its finalize energy comes from the same `energy_breakdown`.
 - Group angle/dihedral restraints (`angle_restraints_config` 3 groups / vertex=group2;
   `dihedral_restraints_config` 4 groups / axis=group2-3): restrain the angle/dihedral of
-  the groups' centroids. The config surface MIRRORS the distance restraint — the four types
+  the groups' centroids. Reference groups use the same `refN and <selection>` values: angle
+  entries allow up to two distinct refs and dihedral entries up to three, each fitted
+  independently. The config surface MIRRORS the distance restraint — the four types
   `harmonic{target_angle}` / `flat-bottomed{target_angle1,target_angle2}` / `flat-bottomed1`
   / `flat-bottomed2` (dihedral uses `target_dihedral*`), plus the `move` key. Targets are in
   **DEGREES** by default — set `unit: radians` on the entry to give them in radians instead

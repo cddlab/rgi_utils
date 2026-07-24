@@ -59,6 +59,7 @@ except ImportError:
 
 try:
     from rgi_utils.config import RestraintsConfig
+    from rgi_utils.ref_config import split_ref_selection
     from rgi_utils.selection import AtomSelector
 except ImportError as exc:  # pragma: no cover
     sys.exit(
@@ -144,12 +145,36 @@ def _collect_selection_strings(cfg: dict):
             for key in _SELECTION_KEYS:
                 if key in entry and isinstance(entry[key], str):
                     yield (f"{section}[{i}].{key}", entry[key])
+            for ref_name, ref_def in (entry.get("refs", {}) or {}).items():
+                if not isinstance(ref_def, dict):
+                    continue
+                for key in (
+                    "atom_selection_ref_fit",
+                    "atom_selection_target_fit",
+                ):
+                    if key in ref_def and isinstance(ref_def[key], str):
+                        yield (
+                            f"{section}[{i}].refs.{ref_name}.{key}",
+                            ref_def[key],
+                        )
     # custom: the named selections map
     for i, entry in enumerate(cfg.get("custom_restraints_config", []) or []):
         if isinstance(entry, dict):
             for name, sel in (entry.get("selections", {}) or {}).items():
                 if isinstance(sel, str):
                     yield (f"custom_restraints_config[{i}].selections.{name}", sel)
+            for ref_name, ref_def in (entry.get("refs", {}) or {}).items():
+                if not isinstance(ref_def, dict):
+                    continue
+                for key in (
+                    "atom_selection_ref_fit",
+                    "atom_selection_target_fit",
+                ):
+                    if key in ref_def and isinstance(ref_def[key], str):
+                        yield (
+                            f"custom_restraints_config[{i}].refs.{ref_name}.{key}",
+                            ref_def[key],
+                        )
 
 
 def _has_conformer_optin(enclosing: dict, cfg: dict) -> bool:
@@ -207,7 +232,8 @@ def _validate_one(location: str, cfg: dict, enclosing: dict) -> int:
     # 2. selection-DSL syntax
     for key, sel in _collect_selection_strings(cfg):
         try:
-            AtomSelector(sel)
+            ref_selection = split_ref_selection(sel, key)
+            AtomSelector(ref_selection[1] if ref_selection is not None else sel)
         except Exception as exc:  # noqa: BLE001
             print(f"  ✗ SELECTION SYNTAX ERROR in {key}: {sel!r} — {exc}")
             errors += 1

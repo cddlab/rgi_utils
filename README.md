@@ -163,6 +163,9 @@ The per-entry `move` key picks which group the CG moves toward the target: `both
 (default, both move — minimal-displacement split) / `1` / `2` (pin the other group via
 `stop_gradient` — e.g. move only a ligand toward a fixed pocket).
 
+A distance entry may use one external reference group: keep `atom_selection1/2`, write the
+reference-side value as `ref1 and <selection>`, and define `refs.ref1` with `ref_pdb` or `ref_cif`.
+
 ### Angle / dihedral restraints
 
 `angle_restraints_config` (3 groups, vertex = group 2) and `dihedral_restraints_config`
@@ -209,7 +212,10 @@ def energy(ctx): ...
 `rg` `norm` `dot`), penalty (`harmonic` `flat_bottomed` `flat_bottomed1` `flat_bottomed2`), and math
 (`sqrt` `exp` `log` `abs` `sin` `cos` `clip` `minimum` `maximum` `where` `sum` + arithmetic). Use `where(cond, a, b)`,
 not `if` (keeps it jax-traceable). The energy (× `weight`) is added to the CG objective with the
-usual `start_sigma` / `stop_sigma` gating. Formulas are parsed safely (no `eval`). Full reference:
+usual `start_sigma` / `stop_sigma` gating. Formulas are parsed safely (no `eval`). A custom
+selection can use
+`refN and <selection>`; all geometry functions accept it, and `rmsd(A,B)` requires prediction
+selection A and reference-backed selection B. Full reference:
 [`doc/config.md`](doc/config.md) (the `custom_restraints_config` section).
 
 ### Implementing a framework adapter

@@ -82,9 +82,10 @@ class CombinedRestraints:
         Pass exactly one of: ``fn`` (a callable ``energy(ctx) -> scalar``) or ``energy``
         (a formula string in the same DSL as config) + a ``selections`` map. Both use the
         shared ctx vocabulary (geometry + math + penalty) and run on every backend.
-        ``refs`` (``{ref_name -> {ref_pdb`` | ``ref_cif, ...}}``) supplies the external
-        reference structures a ``ctx.rmsd(A, ref)`` / ``rmsd(A, ref)`` call needs, mirroring
-        the config ``refs`` map. Equivalent to one ``custom_restraints_config`` entry; merged
+        ``refs`` defines ``ref1``, ``ref2``, ... structures. Mark a selection as
+        reference-backed with ``refN and <selection>``; all geometry functions consume it
+        normally, and external-reference RMSD is ``rmsd(A, B)`` with B reference-backed.
+        Equivalent to one ``custom_restraints_config`` entry; merged
         into the spec at ``setup``. Gate on EITHER a sigma window (``start_sigma`` /
         ``stop_sigma``) OR a step window (``start_step`` / ``stop_step``) — not both (mutually
         exclusive); each window key is forwarded only when given (omitted -> the always-on

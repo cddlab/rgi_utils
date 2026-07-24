@@ -9,7 +9,7 @@ This page documents **every variable**: its type, default, allowed values, and m
 Omitted keys fall back to their documented defaults. Unknown top-level keys and unknown conformer
 keys raise an error. Unknown keys inside individual restraint entries are logged and ignored, so
 check their spelling against this page. Source of truth:
-`src/rgi_utils/{config,distance_restr_data,group_geom_restr_data,featurizer,rmsd_restr_data,selection}.py`.
+`src/rgi_utils/{config,distance_restr_data,group_geom_restr_data,ref_geom_restr_data,ref_config,featurizer,rmsd_restr_data,selection}.py`.
 
 > **Don't want to hand-write this?** Run the `generate-rgi-config` skill in Claude Code
 > (`/generate-rgi-config`) or Codex (`$generate-rgi-config`). It turns a plain-language
@@ -24,7 +24,6 @@ check their spelling against this page. Source of truth:
 - [Atom-selection DSL](#atom-selection-dsl) and [penalty shapes](#penalty-shapes-shared)
 - [Distance](#distance_restraints_config-list), [group angle](#angle_restraints_config-list), and
   [group dihedral](#dihedral_restraints_config-list)
-- [Reference-anchored geometry](#reference-anchored-distance--angle--dihedral)
 - [Base pairs](#base_pair_restraints_config-list)
 - [Conformer geometry and VdW](#conformer_restraints_config-single-dict)
 - [RMSD](#rmsd_restraints_config-list)
@@ -211,6 +210,28 @@ Restraint-type block (exactly one):
 | `flat-bottomed1` | `target_distance1` | penalise only below `d1` |
 | `flat-bottomed2` | `target_distance2` | penalise only above `d2` |
 
+### Reference groups
+
+A distance entry may use one external structure. Keep both normal group keys; prefix the
+reference-side value with `ref1 and`, then define `refs.ref1`. The suffix is evaluated on
+the reference structure. At least one group must remain a prediction selection. Reference
+groups are fitted independently, held fixed, and do not pull their fit anchors; `move` is
+therefore unavailable on entries using a reference.
+
+```yaml
+distance_restraints_config:
+  - atom_selection1: "chain A and resid 120"
+    atom_selection2: "ref1 and chain A and resid 200"
+    refs:
+      ref1:
+        ref_cif: template.cif
+        atom_selection_target_fit: "chain A and resid 1 to 80 and backbone"
+        atom_selection_ref_fit: "chain A and resid 1 to 80 and backbone"
+        pairing: align
+        best_effort: true
+    harmonic: {target_distance: 5.0}
+```
+
 ## `angle_restraints_config` (list)
 
 The **angle of 3 group centroids**, with the vertex at group 2 — the group-centroid analogue of the
@@ -237,6 +258,25 @@ either way).
 | `weight` | float | `1.0` | energy scale |
 | `move` | `"all"` / int / list / `"1,3"` | arms (1,3) free, vertex (2) pinned | which groups are free; the rest are pinned (stop-gradient). `"all"` frees every group |
 | one restraint-type block | dict | — (required) | `harmonic {target_angle}` or `flat-bottomed{,1,2}` with `target_angle1` / `target_angle2` (degrees, or radians if `unit: radians`) |
+
+### Reference groups
+
+An angle entry may use up to two distinct references. Write each reference group as
+`refN and <selection>` and define the corresponding `refs.refN`. Each reference has its own
+structure and optional fit configuration, so groups from different fitted structures can be
+combined in one angle. At least one of the three groups must use prediction atoms; `move` is
+unavailable when references are present.
+
+```yaml
+angle_restraints_config:
+  - atom_selection1: "chain A and resid 10"
+    atom_selection2: "ref1 and chain A and resid 20"
+    atom_selection3: "ref2 and chain B and resid 30"
+    refs:
+      ref1: {ref_cif: state1.cif}
+      ref2: {ref_pdb: state2.pdb}
+    harmonic: {target_angle: 90.0}
+```
 
 ## `dihedral_restraints_config` (list)
 
@@ -278,44 +318,26 @@ Targets in **degrees** by default (`unit: radians` to override).
 | `move` | `"all"` / int / list / `"1,4"` | ends (1,4) free, axis (2,3) pinned | which groups are free; the rest are pinned (stop-gradient). `"all"` frees every group |
 | one restraint-type block | dict | — (required) | `harmonic {target_dihedral}` or `flat-bottomed{,1,2}` with `target_dihedral1` / `target_dihedral2` (degrees, or radians if `unit: radians`) |
 
-## Reference-anchored distance / angle / dihedral
 
-Any `distance` / `angle` / `dihedral` entry can measure between **prediction** groups and
-**fitted-reference** groups: fit an external reference onto the prediction (Kabsch), then a
-reference group becomes a fixed landmark in the prediction frame. Add reference keys to a normal
-entry and it is routed to the reference-anchored path automatically (it becomes a `ref_geom` custom
-term internally; verbose setup logs `ref_distance=/ref_angle=/ref_dihedral=` counts).
+### Reference groups
 
-An entry is reference-anchored if it carries **`ref_pdb`** / **`ref_cif`** or any
-**`atom_selectionN_ref`**. Extra keys (on top of the normal ones — penalty block, `weight`, sigma /
-step gating, and for angle/dihedral `unit`):
-
-| key | meaning |
-|---|---|
-| `ref_pdb` / `ref_cif` | the reference structure (one required, mutually exclusive; read via gemmi) |
-| `atom_selection_target_fit` / `atom_selection_ref_fit` | the Kabsch-fit anchor: prediction side / reference side (paired like `rmsd_restraints_config`; omit both to use the reference in its own frame) |
-| `pairing` / `best_effort` | anchor pairing, as in `rmsd_restraints_config` (`align` default) |
-| `atom_selectionN` | group `N` is a **prediction** group (moving; measured with a rigid centroid so `weight: 1` drives any group size) |
-| `atom_selectionN_ref` | group `N` is a **reference** group (atoms selected on the reference, fitted, held fixed) |
-
-Each group index uses **exactly one** of `atom_selectionN` (prediction) or `atom_selectionN_ref`
-(reference). At least one group must be a prediction group (an all-reference measurement is a
-zero-gradient constant and raises). The whole fit is stop-gradient'd, so the reference landmark
-never pulls the anchor — the restraint moves only the prediction group(s). `move` is not supported
-here (prediction groups are all free, reference groups all fixed); for finer control use the
-custom-DSL `ref(sel, r)` primitive (below). Because the fit rotation is frozen, its gradient is
-torch/jax-consistent but not numpy-FD-equal (the same carve-out as `rmsd`).
+A dihedral entry may use up to three distinct references. Write each reference group as
+`refN and <selection>` and define the corresponding `refs.refN`. Each reference is fitted
+independently, so one dihedral may combine prediction atoms with groups from up to three
+external structures. At least one group must use prediction atoms; `move` is unavailable
+when references are present.
 
 ```yaml
-distance_restraints_config:
-  # pull a predicted loop 5 A from where a template residue lands after fitting the
-  # template onto a stable anchor domain
-  - ref_cif: template.cif
-    atom_selection_target_fit: "chain A and resid 1 to 80 and backbone"   # Kabsch anchor
-    atom_selection_ref_fit:    "chain A and resid 1 to 80 and backbone"
-    atom_selection1:     "chain A and resid 120"          # prediction group (moves)
-    atom_selection2_ref: "chain A and resid 200"          # fitted-reference landmark (fixed)
-    harmonic: {target_distance: 5.0}
+dihedral_restraints_config:
+  - atom_selection1: "chain A and resid 10"
+    atom_selection2: "ref1 and chain A and resid 20"
+    atom_selection3: "ref2 and chain B and resid 30"
+    atom_selection4: "ref3 and chain C and resid 40"
+    refs:
+      ref1: {ref_cif: state1.cif}
+      ref2: {ref_pdb: state2.pdb}
+      ref3: {ref_cif: state3.cif}
+    harmonic: {target_dihedral: 180.0}
 ```
 
 ## `base_pair_restraints_config` (list)
@@ -563,8 +585,8 @@ Each entry's energy (× `weight`) is added to the CG objective, gated by the usu
 | `energy` | str | — | the formula (DSL). Exactly one of `energy` / `use` / `fn` is required |
 | `use` | str | — | name of a function registered with `@custom_restraint` |
 | `fn` | callable | — | a Python `energy(ctx) -> scalar` (Python-dict input only) |
-| `selections` | dict | `{}` | `name -> selection string` for the names used in an `energy` formula |
-| `refs` | dict | `{}` | `ref_name -> {ref_pdb`\|`ref_cif, atom_selection_ref, atom_selection_ref_fit, atom_selection_target_fit, pairing, best_effort}` — external reference structures for the `rmsd(A, ref)` and `ref(sel, r)` primitives (see **Superposition** below). `atom_selection_ref` is the `rmsd()` calc selection; `atom_selection_{ref,target}_fit` are the `ref()` Kabsch-fit anchors (reference side / prediction side) |
+| `selections` | dict | `{}` | `name -> selection string`; use `refN and <selection>` for a group selected from `refs.refN` |
+| `refs` | dict | `{}` | `refN -> {ref_pdb`\|`ref_cif, atom_selection_ref_fit, atom_selection_target_fit, pairing, best_effort}`; names are reserved as `ref1`, `ref2`, ... |
 | `weight` | float | `1.0` | scales the whole energy |
 | `name` | str | `"custom"` | label shown in the `finalize` per-term log |
 | `start_sigma` / `stop_sigma` | float | `+inf` / `-1` | sigma gating (as everywhere) |
@@ -600,50 +622,49 @@ $\lVert\cdot\rVert$ is the Euclidean norm:
 | `norm(v)` | scalar | $\lVert v \rVert$ | the length of a vector you built, e.g. `centroid(A) - centroid(B)` |
 | `dot(u,v)` | scalar | $u \cdot v$ | projections and cosine-like terms |
 | `coords(A)` | block $(k,3)$ | $A$'s atom coordinates | feed a bare selection into arithmetic with `kabsch` output (a bare name alone is a *selection identifier*, not coordinates) |
-| `kabsch(A,B)` | block $(k,3)$ | $A$ rigid-body-superposed onto $B$ (Kabsch) | align two moving groups, then measure the leftover per-atom deviation — see **Superposition** |
-| `rmsd(A, ref)` | scalar | superposed RMSD of $A$ vs an external reference | pull a group onto a reference structure (the composable form of `rmsd_restraints_config`) — see **Superposition** |
-| `ref(sel, r)` | block $(k,3)$ | atoms selected by `sel` **on reference `r`**, placed into the prediction frame by `r`'s Kabsch fit (fixed) | a **fitted-reference landmark** — measure a distance/angle/dihedral between a prediction group and a reference group: `distance(A, ref("chain B", r))` — see **Superposition** |
+| `kabsch(A,B)` | block $(k,3)$ | $A$ rigid-body-superposed onto $B$ (Kabsch) | align two moving groups, then measure the leftover per-atom deviation — see **Reference-backed selections** |
+| `rmsd(A,B)` | scalar | superposed RMSD of prediction selection `A` vs reference-backed selection `B` | pull a group onto an external reference; `B` must map to `refN and <selection>` — see **Reference-backed selections** |
 
 Most geometry consumes selection **centroids**; `coords` / `kabsch` instead flow a whole
 **$(k,3)$ coordinate block**, so they compose: `centroid(kabsch(A,B))`, `norm(kabsch(A,B) - coords(B))`.
 
-#### Superposition (`kabsch` / `rmsd`)
+#### Reference-backed selections and superposition
 
-Both functions do a Kabsch fit with the optimal rotation **frozen**
-(stop-gradient — the SVD is never differentiated), exactly like the built-in `rmsd_restraints_config`.
+A reference-backed selection is declared in the ordinary `selections` map:
 
-* **`kabsch(A, B)`** returns $A$'s coordinates after rigid-body superposition onto $B$ (both are
-  moving groups in the structure). It needs a **positional 1:1 atom correspondence**, so
-  $\lvert A\rvert = \lvert B\rvert$ (a mismatch raises at setup). Use it for symmetry / NCS: the
-  natural measure is the **post-superposition per-atom deviation**, `norm(kabsch(A, B) - coords(B))`
-  (drive two copies to the same shape). Note `centroid(kabsch(A, B))` collapses to `centroid(B)` by
-  construction, so centroid-of-kabsch is not a useful quantity.
-* **`rmsd(A, ref)`** returns the scalar Kabsch-superposed RMSD of moving group $A$ against a **fixed
-  external reference** named `ref`, defined in the entry's `refs` map. Composable —
-  `rmsd(A, r1) - rmsd(B, r2)` weighs two references against each other. The reference is paired to
-  $A$'s atoms at setup (reusing the built-in RMSD pairing: `pairing: align` by default, or `identity`;
-  `best_effort` skips atoms missing from the reference), and the RMSD is measured over the **matched
-  subset**. $A$ must be a **bare selection** (the reference is row-aligned to it), so
-  `rmsd(kabsch(...), ref)` is rejected. Each `refs` entry takes `ref_pdb` **xor** `ref_cif`, an
-  optional `atom_selection_ref`, `pairing` (`align` default / `identity`), and `best_effort` (default
-  true) — the same reference keys as `rmsd_restraints_config`.
-* **`ref(sel, r)`** returns the $(k,3)$ coordinate block of atoms selected by `sel` **on reference
-  `r`**, placed into the prediction frame by `r`'s Kabsch fit and held **fixed** — a
-  fitted-reference **landmark**. Unlike `rmsd`, the fit is the *inverse*: the constant reference is
-  superposed onto the **moving prediction anchor** (`atom_selection_target_fit`, paired to the
-  reference's `atom_selection_ref_fit`), so a reference atom tracks the anchor's current position.
-  The whole transform is stop-gradient'd, so `ref(...)` exerts **no** force on the anchor — the
-  gradient of a restraint flows only through its *prediction* group(s). It flows a block, so it
-  composes with every geometry primitive: `distance(A, ref("chain B and resid 5", r))`,
-  `angle(A, ref(B, r), C)`, `norm(centroid(A) - centroid(ref(B, r)))`. `sel` is a **reference**
-  selection (evaluated on `r`, not the prediction). Omit both fit selections in the `refs` entry to
-  use the reference in its own frame (still fixed). At least one group in the restraint must be a
-  prediction selection (an all-`ref` measurement is a zero-gradient constant and raises).
+```yaml
+selections:
+  moving: "chain A and resid 1 to 80"
+  state1: "ref1 and chain A and resid 1 to 80"
+refs:
+  ref1:
+    ref_cif: state1.cif
+    atom_selection_target_fit: "chain A and backbone"
+    atom_selection_ref_fit: "chain A and backbone"
+    pairing: align
+    best_effort: true
+```
 
-The frozen rotation makes the gradient of `kabsch` / `rmsd` **torch/jax-consistent but NOT equal to a
-numpy finite-difference** (the SVD's own gradient is dropped) — the same trade-off the built-in `rmsd`
-term accepts. It is exact when the outer expression is the superposed-deviation-to-target (the two
-uses above); for arbitrary downstream geometry it is a well-behaved approximation.
+`ref1`, `ref2`, ... are reserved entry-local names. Each definition requires exactly one of
+`ref_pdb` / `ref_cif`. Its optional target/ref fit selections place all selections from that
+reference into the current prediction frame. The fitted reference coordinates and transform are
+stop-gradient values: they act as fixed landmarks and do not pull the fit anchor. If both fit
+selections are omitted, the reference is used in its own coordinate frame.
+
+Reference-backed selections work with the normal geometry vocabulary: `distance(A,B)`,
+`angle(A,B,C)`, `dihedral(A,B,C,D)`, `centroid(A)`, `coords(A)`, and `kabsch(A,B)`. At least one
+selection in the custom entry must come from the prediction; an all-reference expression is a
+constant and raises.
+
+* **`kabsch(A, B)`** returns A after rigid-body superposition onto B. Both arguments are bare
+  selection identifiers and must contain the same number of atoms. Either may be reference-backed.
+* **`rmsd(A, B)`** returns Kabsch-superposed RMSD from prediction selection A to reference-backed
+  selection B. Atom correspondence is resolved at setup with `pairing: align` (default) or
+  `identity`; `best_effort: true` skips atoms missing from the reference. A must be prediction-backed
+  and B must start with `refN and`; both must be bare selection identifiers.
+
+The frozen rotation makes `kabsch` / `rmsd` gradients torch/jax-consistent but different from a
+numpy finite-difference through the SVD, matching the built-in RMSD restraint.
 
 #### Degenerate geometry
 
@@ -722,13 +743,16 @@ custom_restraints_config:
   - name: ncs
     energy: "norm(kabsch(A, B) - coords(B))"
     selections: {A: "chain A and name CA", B: "chain B and name CA"}
-  # composable RMSD: pull a domain onto a reference, biased against a second reference
+  # composable RMSD: compare one moving domain with two reference states
   - name: rmsd_compose
-    energy: "rmsd(dom, r1) - rmsd(dom, r2)"
-    selections: {dom: "chain A and resid 1 to 80"}
+    energy: "rmsd(dom, state1) - rmsd(dom, state2)"
+    selections:
+      dom: "chain A and resid 1 to 80"
+      state1: "ref1 and chain A and resid 1 to 80"
+      state2: "ref2 and chain A and resid 1 to 80"
     refs:
-      r1: {ref_cif: "state1.cif", atom_selection_ref: "chain A and name CA", pairing: align}
-      r2: {ref_pdb: "state2.pdb"}
+      ref1: {ref_cif: "state1.cif", pairing: align}
+      ref2: {ref_pdb: "state2.pdb", pairing: align}
 ```
 
 #### Registered Python function

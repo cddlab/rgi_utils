@@ -2,7 +2,8 @@
 
 * **config (expression DSL)**: a ``custom_restraints_config`` entry with an ``energy``
   formula string over a shared geometry+math+penalty vocabulary and named selections,
-  e.g. ``energy: "(distance(A,B) - distance(C,D))**2"``. No Python.
+  e.g. ``energy: "(distance(A,B) - distance(C,D))**2"``. Reference-backed
+  selections use ``refN and <selection>`` and work with the same geometry vocabulary.
 * **code (ctx function)**: a function ``energy(ctx) -> scalar`` using the same vocabulary
   via ``ctx`` — passed directly (``CombinedRestraints.add_custom(fn)`` / config
   ``{"fn": ...}``) or registered with ``@custom_restraint("name")`` and referenced from

@@ -575,7 +575,7 @@ def test_custom_kabsch_requires_equal_counts():
 
 
 # --------------------------------------------------------------------------------------
-# rmsd(A, ref): Kabsch-superposed RMSD against a per-call external reference structure
+# rmsd(A, B): Kabsch-superposed RMSD against a per-call external reference structure
 # --------------------------------------------------------------------------------------
 def _write_ca_pdb(path, coords, chain="A"):
     """One CA atom per coord (its own ALA residue, chain ``chain``); the per-chain resid
@@ -609,9 +609,9 @@ def _rmsd_spec(pdb, energy, *, pairing="identity", best_effort=True, n=12):
             {
                 "name": "rmsd",
                 "energy": energy,
-                "selections": {"g": "chain A"},
+                "selections": {"g": "chain A", "r": "ref1 and chain A"},
                 "refs": {
-                    "r1": {
+                    "ref1": {
                         "ref_pdb": str(pdb),
                         "pairing": pairing,
                         "best_effort": best_effort,
@@ -642,8 +642,8 @@ def test_custom_rmsd_alignment_matched_subset(tmp_path):
     pdb = tmp_path / "ref.pdb"
     _write_ca_pdb(pdb, ref_full)
 
-    spec = _rmsd_spec(pdb, "rmsd(g, r1)", n=n)
-    tgt_idx, ref_coords = spec.custom[0].refs[("g", "r1")]
+    spec = _rmsd_spec(pdb, "rmsd(g, r)", n=n)
+    tgt_idx, ref_coords = spec.custom[0].refs[("g", "r")]
     assert len(tgt_idx) == 8, f"expected the 8 matched atoms, got {len(tgt_idx)}"
     # ref rows are aligned to the matched target subset (resid 1..8 -> local 0..7)
     assert np.array_equal(tgt_idx, np.arange(8))
@@ -667,7 +667,7 @@ def test_custom_rmsd_energy_parity_3backend(tmp_path):
     ref = rng.standard_normal((n, 3)) * 3.0
     pdb = tmp_path / "ref.pdb"
     _write_ca_pdb(pdb, ref)
-    spec = _rmsd_spec(pdb, "rmsd(g, r1)", n=n)
+    spec = _rmsd_spec(pdb, "rmsd(g, r)", n=n)
 
     e_np = float(build_terms(spec.custom, "numpy")[0][-1](pos))
     e_t = float(
@@ -677,12 +677,12 @@ def test_custom_rmsd_energy_parity_3backend(tmp_path):
     assert e_np > 0.0
     assert abs(e_np - e_t) < 1e-6 and abs(e_np - e_j) < 1e-6
     # compare to the ref the closure actually uses (read back from the PDB, 3-decimal)
-    _, ref_coords = spec.custom[0].refs[("g", "r1")]
+    _, ref_coords = spec.custom[0].refs[("g", "r")]
     assert e_np == pytest.approx(_superposed_rmsd(pos, ref_coords), abs=1e-5)
 
 
 def test_custom_rmsd_minimize_converges(tmp_path):
-    """rmsd(g, r1)**2 (target 0) drives the moving group's superposed RMSD onto the ref down
+    """rmsd(g, r)**2 (target 0) drives the moving group's superposed RMSD onto the ref down
     under the torch CG (the same convergence contract as the built-in RMSD restraint)."""
     torch = pytest.importorskip("torch")
     from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
@@ -692,7 +692,7 @@ def test_custom_rmsd_minimize_converges(tmp_path):
     ref = rng.standard_normal((n, 3)) * 3.0
     pdb = tmp_path / "ref.pdb"
     _write_ca_pdb(pdb, ref)
-    spec = _rmsd_spec(pdb, "rmsd(g, r1)**2", n=n)
+    spec = _rmsd_spec(pdb, "rmsd(g, r)**2", n=n)
 
     tgt = ref @ np.eye(3) + rng.standard_normal((n, 3)) * 1.5  # ref + noise
     coords = torch.tensor(tgt.reshape(1, n, 3), dtype=torch.float64)
@@ -703,7 +703,7 @@ def test_custom_rmsd_minimize_converges(tmp_path):
 
 
 def test_custom_rmsd_jax_minimize_nan_free(tmp_path):
-    """rmsd(g, r1)**2 under the pure-jax CG minimizer (the AF3 lax.scan closure path): the
+    """rmsd(g, r)**2 under the pure-jax CG minimizer (the AF3 lax.scan closure path): the
     ``jnp.linalg.svd`` inside the stop-gradient Kabsch stays finite + converges. This covers
     the SVD-under-jax risk on CPU, so the GPU AF3 path is de-risked before it runs."""
     jax = pytest.importorskip("jax")
@@ -717,7 +717,7 @@ def test_custom_rmsd_jax_minimize_nan_free(tmp_path):
     ref = rng.standard_normal((n, 3)) * 3.0
     pdb = tmp_path / "ref.pdb"
     _write_ca_pdb(pdb, ref)
-    spec = _rmsd_spec(pdb, "rmsd(g, r1)**2", n=n)
+    spec = _rmsd_spec(pdb, "rmsd(g, r)**2", n=n)
 
     tgt = ref + rng.standard_normal((n, 3)) * 1.5
     coords = tgt.reshape(1, n, 3)
@@ -728,7 +728,7 @@ def test_custom_rmsd_jax_minimize_nan_free(tmp_path):
 
 def test_custom_rmsd_add_custom_fn_with_refs(tmp_path):
     """The programmatic add_custom(fn=..., refs=...) path forwards refs, so a Python ctx
-    function calling ctx.rmsd(sel, ref) resolves its reference (regression: refs must flow
+    function calling ctx.rmsd(prediction, reference_selection) resolves its reference (regression: refs must flow
     through add_custom like selections, not only via a config entry)."""
     torch = pytest.importorskip("torch")
     from rgi_utils import CombinedRestraints
@@ -740,10 +740,10 @@ def test_custom_rmsd_add_custom_fn_with_refs(tmp_path):
     _write_ca_pdb(pdb, ref)
 
     def energy(ctx):
-        return ctx.rmsd("chain A", "r1") ** 2
+        return ctx.rmsd("chain A", "ref1 and chain A") ** 2
 
     restr = CombinedRestraints()
-    restr.add_custom(fn=energy, refs={"r1": {"ref_pdb": str(pdb)}})
+    restr.add_custom(fn=energy, refs={"ref1": {"ref_pdb": str(pdb)}})
     restr.setup(_FakeAdapter(n), config={"gpu": False, "max_iter": 200})
     assert restr.spec.has_custom()
     tgt = ref + rng.standard_normal((n, 3)) * 1.2
@@ -757,13 +757,16 @@ def test_custom_rmsd_undefined_ref_raises(tmp_path):
     ref = np.zeros((4, 3))
     pdb = tmp_path / "ref.pdb"
     _write_ca_pdb(pdb, ref)
-    with pytest.raises(ValueError, match="not defined in the entry's 'refs'"):
+    with pytest.raises(ValueError, match="undefined reference name"):
         _spec_from_entries(
             [
                 {
                     "energy": "rmsd(g, missing)",
-                    "selections": {"g": "chain A"},
-                    "refs": {"r1": {"ref_pdb": str(pdb)}},
+                    "selections": {
+                        "g": "chain A",
+                        "missing": "ref2 and chain A",
+                    },
+                    "refs": {"ref1": {"ref_pdb": str(pdb)}},
                 }
             ],
             n=4,
@@ -780,9 +783,13 @@ def test_custom_rmsd_first_arg_must_be_selection(tmp_path):
         _spec_from_entries(
             [
                 {
-                    "energy": "rmsd(kabsch(A, B), r1)",
-                    "selections": {"A": "resid 1", "B": "resid 2"},
-                    "refs": {"r1": {"ref_pdb": str(pdb)}},
+                    "energy": "rmsd(kabsch(A, B), R)",
+                    "selections": {
+                        "A": "resid 1",
+                        "B": "resid 2",
+                        "R": "ref1 and resid 1",
+                    },
+                    "refs": {"ref1": {"ref_pdb": str(pdb)}},
                 }
             ],
             n=4,
@@ -790,13 +797,13 @@ def test_custom_rmsd_first_arg_must_be_selection(tmp_path):
 
 
 # --------------------------------------------------------------------------------------
-# ref(sel, r): a fitted-reference coordinate BLOCK — reference atoms placed in the
+# reference-backed selections: fitted-reference coordinate blocks — reference atoms placed in the
 # prediction frame by a Kabsch fit, usable in distance/angle/dihedral alongside prediction
 # groups. Like kabsch/rmsd the whole transform is stop-gradient'd (the fit anchor gets NO
 # gradient), so these are checked torch-vs-jax, NOT under the numpy-FD test.
 # --------------------------------------------------------------------------------------
 def _ref_spec(pdb, energy, *, selections, fit=True, pairing="identity", n=12):
-    """A custom entry using ref(); the fit anchor is prediction/ref resid 1..6 (identity)."""
+    """A custom entry using a reference-backed selection; the fit anchor is prediction/ref resid 1..6 (identity)."""
     rdef = {"ref_pdb": str(pdb), "pairing": pairing}
     if fit:
         rdef["atom_selection_target_fit"] = "chain A and resid 1 to 6"
@@ -806,8 +813,8 @@ def _ref_spec(pdb, energy, *, selections, fit=True, pairing="identity", n=12):
             {
                 "name": "refgeom",
                 "energy": energy,
-                "selections": selections,
-                "refs": {"r1": rdef},
+                "selections": {**selections, "B": "ref1 and chain A and resid 8"},
+                "refs": {"ref1": rdef},
             }
         ],
         n=n,
@@ -826,9 +833,9 @@ def _rigid_ref(pred, seed=31):
 
 
 def test_custom_ref_rigid_invariance_and_parity(tmp_path):
-    """WITH a fit, ref("resid 8", r1) lands on the prediction's resid-8 atom (the reference is
+    """WITH a fit, B lands on the prediction's resid-8 atom (the reference is
     a rigid transform of the prediction, so the fit recovers the inverse), hence
-    distance(A, ref(B, r1)) == ||pred_A - pred_B||. Also checks 3-backend energy parity."""
+    distance(A, B) == ||pred_A - pred_B||. Also checks 3-backend energy parity."""
     torch = pytest.importorskip("torch")
     jax = pytest.importorskip("jax")
     jax.config.update("jax_enable_x64", True)
@@ -843,7 +850,7 @@ def test_custom_ref_rigid_invariance_and_parity(tmp_path):
 
     spec = _ref_spec(
         pdb,
-        'distance(A, ref("chain A and resid 8", r1))',
+        "distance(A, B)",
         selections={"A": "chain A and resid 10"},
         n=n,
     )
@@ -882,7 +889,7 @@ def test_custom_ref_grad_torch_vs_jax_and_anchor_frozen(tmp_path):
     _write_ca_pdb(pdb, _rigid_ref(pred))
     spec = _ref_spec(
         pdb,
-        'harmonic(distance(A, ref("chain A and resid 8", r1)), 2.0)',
+        "harmonic(distance(A, B), 2.0)",
         selections={"A": "chain A and resid 10"},
         n=n,
     )
@@ -900,7 +907,7 @@ def test_custom_ref_grad_torch_vs_jax_and_anchor_frozen(tmp_path):
 
 def test_custom_ref_no_fit_own_frame(tmp_path):
     """Without fit selections the reference block is used in its OWN frame (still fixed), so
-    distance(A, ref(B, r1)) == ||pred_A - ref_B||."""
+    distance(A, B) == ||pred_A - ref_B||."""
     rng = np.random.default_rng(41)
     n = 12
     pred = rng.standard_normal((n, 3)) * 3.0
@@ -909,7 +916,7 @@ def test_custom_ref_no_fit_own_frame(tmp_path):
     _write_ca_pdb(pdb, ref)
     spec = _ref_spec(
         pdb,
-        'distance(A, ref("chain A and resid 8", r1))',
+        "distance(A, B)",
         selections={"A": "chain A and resid 10"},
         fit=False,
         n=n,
@@ -921,7 +928,7 @@ def test_custom_ref_no_fit_own_frame(tmp_path):
 
 
 def test_custom_ref_minimize_converges(tmp_path):
-    """harmonic(distance(A, ref(B, r1)), 5.0) under the torch CG drives the measured prediction
+    """harmonic(distance(A, B), 5.0) under the torch CG drives the measured prediction
     group to 5 A from the fitted reference landmark."""
     torch = pytest.importorskip("torch")
     from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
@@ -931,7 +938,7 @@ def test_custom_ref_minimize_converges(tmp_path):
     pred = rng.standard_normal((n, 3)) * 3.0
     pdb = tmp_path / "ref.pdb"
     _write_ca_pdb(pdb, _rigid_ref(pred))
-    energy = 'harmonic(distance(A, ref("chain A and resid 8", r1)), 5.0)'
+    energy = "harmonic(distance(A, B), 5.0)"
     spec = _ref_spec(pdb, energy, selections={"A": "chain A and resid 10"}, n=n)
 
     # the optimizer takes the FULL coordinate tensor and slices active_sites out of it.
@@ -940,7 +947,7 @@ def test_custom_ref_minimize_converges(tmp_path):
     # measure the achieved distance with a distance-only closure on the minimized active coords
     dspec = _ref_spec(
         pdb,
-        'distance(A, ref("chain A and resid 8", r1))',
+        "distance(A, B)",
         selections={"A": "chain A and resid 10"},
         n=n,
     )
@@ -950,7 +957,7 @@ def test_custom_ref_minimize_converges(tmp_path):
 
 
 def test_custom_ref_jax_minimize_nan_free(tmp_path):
-    """The ref() fit (jnp.linalg.svd inside the stop-gradient Kabsch) stays finite + converges
+    """The reference-selection fit (jnp.linalg.svd inside the stop-gradient Kabsch) stays finite + converges
     under the pure-jax CG (the AF3 lax.scan closure path) — de-risks the GPU AF3 run."""
     jax = pytest.importorskip("jax")
     jax.config.update("jax_enable_x64", True)
@@ -963,17 +970,17 @@ def test_custom_ref_jax_minimize_nan_free(tmp_path):
     pred = rng.standard_normal((n, 3)) * 3.0
     pdb = tmp_path / "ref.pdb"
     _write_ca_pdb(pdb, _rigid_ref(pred))
-    energy = 'harmonic(distance(A, ref("chain A and resid 8", r1)), 5.0)'
+    energy = "harmonic(distance(A, B), 5.0)"
     spec = _ref_spec(pdb, energy, selections={"A": "chain A and resid 10"}, n=n)
 
     coords = pred.reshape(
         1, n, 3
     )  # FULL coordinate tensor (the minimizer slices active_sites)
     out = np.asarray(make_minimizer(spec, max_iter=300)(jnp.asarray(coords), 0.0))
-    assert np.all(np.isfinite(out)), "ref() produced NaN/Inf under jax"
+    assert np.all(np.isfinite(out)), "reference selection produced NaN/Inf under jax"
     dspec = _ref_spec(
         pdb,
-        'distance(A, ref("chain A and resid 8", r1))',
+        "distance(A, B)",
         selections={"A": "chain A and resid 10"},
         n=n,
     )
@@ -982,7 +989,7 @@ def test_custom_ref_jax_minimize_nan_free(tmp_path):
 
 
 def test_custom_ref_all_reference_raises(tmp_path):
-    """A restraint whose every group is ref(...) is a constant (the fitted ref is
+    """A restraint whose every group is reference-backed is a constant (the fitted ref is
     stop-gradient'd) -> zero gradient; it must raise rather than silently do nothing."""
     pdb = tmp_path / "ref.pdb"
     _write_ca_pdb(pdb, np.zeros((6, 3)))
@@ -990,8 +997,12 @@ def test_custom_ref_all_reference_raises(tmp_path):
         _spec_from_entries(
             [
                 {
-                    "energy": 'distance(ref("resid 1", r1), ref("resid 2", r1))',
-                    "refs": {"r1": {"ref_pdb": str(pdb), "pairing": "identity"}},
+                    "energy": "distance(A, B)",
+                    "selections": {
+                        "A": "ref1 and resid 1",
+                        "B": "ref1 and resid 2",
+                    },
+                    "refs": {"ref1": {"ref_pdb": str(pdb), "pairing": "identity"}},
                 }
             ],
             n=6,
@@ -1007,10 +1018,13 @@ def test_custom_ref_fit_needs_three_atoms(tmp_path):
         _spec_from_entries(
             [
                 {
-                    "energy": 'distance(A, ref("resid 8", r1))',
-                    "selections": {"A": "chain A and resid 10"},
+                    "energy": "distance(A, B)",
+                    "selections": {
+                        "A": "chain A and resid 10",
+                        "B": "ref1 and resid 8",
+                    },
                     "refs": {
-                        "r1": {
+                        "ref1": {
                             "ref_pdb": str(pdb),
                             "pairing": "identity",
                             "atom_selection_target_fit": "chain A and resid 1 to 2",
@@ -1026,13 +1040,16 @@ def test_custom_ref_fit_needs_three_atoms(tmp_path):
 def test_custom_ref_undefined_raises(tmp_path):
     pdb = tmp_path / "ref.pdb"
     _write_ca_pdb(pdb, np.zeros((6, 3)))
-    with pytest.raises(ValueError, match="not defined in the entry's 'refs'"):
+    with pytest.raises(ValueError, match="undefined reference name"):
         _spec_from_entries(
             [
                 {
-                    "energy": 'distance(A, ref("resid 2", missing))',
-                    "selections": {"A": "chain A and resid 4"},
-                    "refs": {"r1": {"ref_pdb": str(pdb), "pairing": "identity"}},
+                    "energy": "distance(A, B)",
+                    "selections": {
+                        "A": "chain A and resid 4",
+                        "B": "ref2 and resid 2",
+                    },
+                    "refs": {"ref1": {"ref_pdb": str(pdb), "pairing": "identity"}},
                 }
             ],
             n=6,
@@ -1040,34 +1057,34 @@ def test_custom_ref_undefined_raises(tmp_path):
 
 
 # --------------------------------------------------------------------------------------
-# Reference-anchored BUILT-IN distance/angle/dihedral (ref_geom): a distance/angle/dihedral
+# Built-in reference-group distance/angle/dihedral (ref_geom): a distance/angle/dihedral
 # config entry carrying reference keys is routed to a kind="ref_geom" CustomSpec closure.
 # Prediction groups use a RIGID centroid (weight=1 moves a large group), reference groups are
 # fitted-and-fixed. Grad is torch-vs-jax (the rigid-centroid + stop-gradient carve-out).
 # --------------------------------------------------------------------------------------
 def _refgeom_spec(cfgdict, n=12):
     cfg = RestraintsConfig.from_dict(cfgdict)
-    for cd in cfg.custom_data:  # ref-anchored entries are routed into custom_data
+    for cd in cfg.custom_data:  # reference-group entries are routed into custom_data
         cd.resolve_sites(_FakeAdapter(n))
     return build_spec(custom_restraints=cfg.custom_data)
 
 
 def _refgeom_dist_entry(pdb, sel1, sel2_ref, block, *, fit=True):
+    ref_def = {"ref_pdb": str(pdb), "pairing": "identity"}
+    if fit:
+        ref_def["atom_selection_target_fit"] = "chain A and resid 1 to 6"
+        ref_def["atom_selection_ref_fit"] = "chain A and resid 1 to 6"
     entry = {
         "atom_selection1": sel1,
-        "atom_selection2_ref": sel2_ref,
-        "ref_pdb": str(pdb),
-        "pairing": "identity",
+        "atom_selection2": f"ref1 and {sel2_ref}",
+        "refs": {"ref1": ref_def},
         **block,
     }
-    if fit:
-        entry["atom_selection_target_fit"] = "chain A and resid 1 to 6"
-        entry["atom_selection_ref_fit"] = "chain A and resid 1 to 6"
     return {"distance_restraints_config": [entry]}
 
 
 def test_refgeom_distance_rigid_and_parity(tmp_path):
-    """ref-anchored distance: group1 prediction, group2 fitted reference. The reference is a
+    """reference-group distance: group1 prediction, group2 fitted reference. The reference is a
     rigid transform of the prediction, so the fitted ref landmark lands on the matching
     prediction atom -> the measured distance == ||pred_A - pred_B||. Also 3-backend parity."""
     torch = pytest.importorskip("torch")
@@ -1162,7 +1179,7 @@ def test_refgeom_rigid_centroid_Ntimes_fd_and_anchor_frozen(tmp_path):
 
 
 def test_refgeom_large_group_converges(tmp_path):
-    """A ref-anchored distance with a large (30-atom) prediction group converges to its target
+    """A reference-group distance with a large (30-atom) prediction group converges to its target
     at weight=1 under the torch CG — the rigid centroid gives the whole group a full-step pull."""
     torch = pytest.importorskip("torch")
     from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
@@ -1192,25 +1209,39 @@ def test_refgeom_large_group_converges(tmp_path):
 
 
 def test_refgeom_angle_and_dihedral_energy(tmp_path):
-    """ref-anchored angle (3 groups) and dihedral (4 groups) compute the group-centroid angle /
+    """reference-group angle (3 groups) and dihedral (4 groups) compute the group-centroid angle /
     dihedral with a fitted reference group and apply the degrees->radians harmonic penalty."""
     rng = np.random.default_rng(57)
     n = 12
     pred = rng.standard_normal((n, 3)) * 3.0
     pdb = tmp_path / "ref.pdb"
+    pdb2 = tmp_path / "ref2.pdb"
+    pdb3 = tmp_path / "ref3.pdb"
     _write_ca_pdb(pdb, _rigid_ref(pred))
+    _write_ca_pdb(pdb2, _rigid_ref(pred) + np.array([2.0, -1.0, 3.0]))
+    _write_ca_pdb(pdb3, _rigid_ref(pred) + np.array([-3.0, 2.0, 1.0]))
 
     aspec = _refgeom_spec(
         {
             "angle_restraints_config": [
                 {
                     "atom_selection1": "chain A and resid 10",
-                    "atom_selection2": "chain A and resid 11",
-                    "atom_selection3_ref": "chain A and resid 8",
-                    "ref_pdb": str(pdb),
-                    "pairing": "identity",
-                    "atom_selection_target_fit": "chain A and resid 1 to 6",
-                    "atom_selection_ref_fit": "chain A and resid 1 to 6",
+                    "atom_selection2": "ref1 and chain A and resid 11",
+                    "atom_selection3": "ref2 and chain A and resid 8",
+                    "refs": {
+                        "ref1": {
+                            "ref_pdb": str(pdb),
+                            "pairing": "identity",
+                            "atom_selection_target_fit": "chain A and resid 1 to 6",
+                            "atom_selection_ref_fit": "chain A and resid 1 to 6",
+                        },
+                        "ref2": {
+                            "ref_pdb": str(pdb2),
+                            "pairing": "identity",
+                            "atom_selection_target_fit": "chain A and resid 1 to 6",
+                            "atom_selection_ref_fit": "chain A and resid 1 to 6",
+                        },
+                    },
                     "harmonic": {"target_angle": 90.0},
                 }
             ]
@@ -1227,13 +1258,29 @@ def test_refgeom_angle_and_dihedral_energy(tmp_path):
             "dihedral_restraints_config": [
                 {
                     "atom_selection1": "chain A and resid 10",
-                    "atom_selection2": "chain A and resid 11",
-                    "atom_selection3": "chain A and resid 12",
-                    "atom_selection4_ref": "chain A and resid 8",
-                    "ref_pdb": str(pdb),
-                    "pairing": "identity",
-                    "atom_selection_target_fit": "chain A and resid 1 to 6",
-                    "atom_selection_ref_fit": "chain A and resid 1 to 6",
+                    "atom_selection2": "ref1 and chain A and resid 11",
+                    "atom_selection3": "ref2 and chain A and resid 12",
+                    "atom_selection4": "ref3 and chain A and resid 8",
+                    "refs": {
+                        "ref1": {
+                            "ref_pdb": str(pdb),
+                            "pairing": "identity",
+                            "atom_selection_target_fit": "chain A and resid 1 to 6",
+                            "atom_selection_ref_fit": "chain A and resid 1 to 6",
+                        },
+                        "ref2": {
+                            "ref_pdb": str(pdb2),
+                            "pairing": "identity",
+                            "atom_selection_target_fit": "chain A and resid 1 to 6",
+                            "atom_selection_ref_fit": "chain A and resid 1 to 6",
+                        },
+                        "ref3": {
+                            "ref_pdb": str(pdb3),
+                            "pairing": "identity",
+                            "atom_selection_target_fit": "chain A and resid 1 to 6",
+                            "atom_selection_ref_fit": "chain A and resid 1 to 6",
+                        },
+                    },
                     "harmonic": {"target_dihedral": 45.0},
                 }
             ]
@@ -1281,29 +1328,30 @@ def test_refgeom_config_validation(tmp_path):
     pdb = tmp_path / "ref.pdb"
     _write_ca_pdb(pdb, np.zeros((6, 3)))
 
-    # every group is a reference selection -> constant, must raise
-    with pytest.raises(ValueError, match="at least one group must be a prediction"):
+    ref_def = {"ref_pdb": str(pdb), "pairing": "identity"}
+
+    with pytest.raises(ValueError, match="at least one group must select prediction"):
         _refgeom_spec(
             {
                 "distance_restraints_config": [
                     {
-                        "atom_selection1_ref": "resid 1",
-                        "atom_selection2_ref": "resid 2",
-                        "ref_pdb": str(pdb),
+                        "atom_selection1": "ref1 and resid 1",
+                        "atom_selection2": "ref1 and resid 2",
+                        "refs": {"ref1": ref_def},
                     }
                 ]
             },
             n=6,
         )
-    # 'move' is not supported on a ref-anchored entry
+
     with pytest.raises(ValueError, match="'move' is not supported"):
         _refgeom_spec(
             {
                 "distance_restraints_config": [
                     {
                         "atom_selection1": "resid 5",
-                        "atom_selection2_ref": "resid 2",
-                        "ref_pdb": str(pdb),
+                        "atom_selection2": "ref1 and resid 2",
+                        "refs": {"ref1": ref_def},
                         "move": 1,
                         "harmonic": {"target_distance": 3.0},
                     }
@@ -1311,17 +1359,18 @@ def test_refgeom_config_validation(tmp_path):
             },
             n=6,
         )
-    # a group with BOTH prediction and reference selections is ambiguous
-    with pytest.raises(ValueError, match="exactly one of atom_selection1"):
+
+    with pytest.raises(ValueError, match="at most 1 distinct reference"):
         _refgeom_spec(
             {
                 "distance_restraints_config": [
                     {
-                        "atom_selection1": "resid 5",
-                        "atom_selection1_ref": "resid 1",
-                        "atom_selection2_ref": "resid 2",
-                        "ref_pdb": str(pdb),
-                        "harmonic": {"target_distance": 3.0},
+                        "atom_selection1": "ref1 and resid 1",
+                        "atom_selection2": "ref2 and resid 2",
+                        "refs": {
+                            "ref1": ref_def,
+                            "ref2": ref_def,
+                        },
                     }
                 ]
             },
@@ -1348,12 +1397,16 @@ def test_refgeom_combined_lifecycle(tmp_path, capsys):
         "max_iter": 300,
         "distance_restraints_config": [
             {
-                "ref_pdb": str(pdb),
-                "pairing": "identity",
-                "atom_selection_target_fit": "chain A and resid 1 to 6",
-                "atom_selection_ref_fit": "chain A and resid 1 to 6",
+                "refs": {
+                    "ref1": {
+                        "ref_pdb": str(pdb),
+                        "pairing": "identity",
+                        "atom_selection_target_fit": "chain A and resid 1 to 6",
+                        "atom_selection_ref_fit": "chain A and resid 1 to 6",
+                    }
+                },
                 "atom_selection1": "chain A and resid 10",
-                "atom_selection2_ref": "chain A and resid 8",
+                "atom_selection2": "ref1 and chain A and resid 8",
                 "harmonic": {"target_distance": 5.0},
             }
         ],
@@ -1372,7 +1425,7 @@ def test_refgeom_combined_lifecycle(tmp_path, capsys):
 
     dspec = _ref_spec(
         pdb,
-        'distance(A, ref("chain A and resid 8", r1))',
+        "distance(A, B)",
         selections={"A": "chain A and resid 10"},
         n=n,
     )
