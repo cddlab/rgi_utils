@@ -43,12 +43,16 @@ There is **no top-level `start_sigma`**.
 
 ## Full config (input file)
 
-Save this as `restr_example.json`. Folds QBP + GLN with a centroid distance, group angle, group
-dihedral, GLN conformer, whole-structure RMSD, and a custom (formula) restraint, every variable
-spelled out. The custom entry keeps both lobe-halves equidistant from the central domain — a
-difference of two distances, which no single built-in can express (JSON has no comments, so the
-rationale lives here in prose). The run command passes `--use_msa true`, so protenix runs its
-(ColabFold-compatible) MSA search.
+Save this as `restr_example.json`. Folds QBP + GLN **plus a short DNA duplex and an RNA duplex** with
+a centroid distance, group angle, group dihedral, GLN conformer, whole-structure RMSD, a custom
+(formula) restraint, and **Watson-Crick base pairs on the nucleic acids**, every variable spelled
+out. The custom entry keeps both lobe-halves equidistant from the central domain — a difference of
+two distances, which no single built-in can express (JSON has no comments, so the rationale lives
+here in prose). protenix takes **no `id` field** on sequences — it assigns chain letters **by list
+order**, so here the chains are protein **A**, ligand **B**, DNA strands **C**/**D**, RNA strands
+**E**/**F** (the `base_pair` selectors below reference exactly those). Both duplex strands are
+self-complementary palindromes (`GCATGC` / `GCAUGC`), so identical antiparallel strands pair. The run
+command passes `--use_msa true`, so protenix runs its (ColabFold-compatible) MSA search.
 
 ```json
 [
@@ -56,7 +60,11 @@ rationale lives here in prose). The run command passes `--use_msa true`, so prot
     "name": "qbp_rgi_example",
     "sequences": [
       { "proteinChain": { "sequence": "ADKKLVVATDTAFVPFEFKQGDKYVGFDVDLWAAIAKELKLDYELKPMDFSGIIPALQTKNVDLALAGITITDERKKAIDFSDGYYKSGLLVMVKANNNDVKSVKDLDGKVVAVKSGTGSVDYAKANIKTKDLRQFPNIDNAYMELGTNRADAVLHDTPNILYFIKTAGNGQFKAVGDSLEAQQYGIAFPKGSDELRDKVNGALKTLRENGTYNEIYKKWFGTEPK", "count": 1, "conformer_restraints": true } },
-      { "ligand": { "ligand": "CCD_GLN", "count": 1, "conformer_restraints": true } }
+      { "ligand": { "ligand": "CCD_GLN", "count": 1, "conformer_restraints": true } },
+      { "dnaSequence": { "sequence": "GCATGC", "count": 1 } },
+      { "dnaSequence": { "sequence": "GCATGC", "count": 1 } },
+      { "rnaSequence": { "sequence": "GCAUGC", "count": 1 } },
+      { "rnaSequence": { "sequence": "GCAUGC", "count": 1 } }
     ],
     "restraints_config": {
       "verbose": true,
@@ -73,6 +81,12 @@ rationale lives here in prose). The run command passes `--use_msa true`, so prot
           "weight": 1.0,
           "harmonic": { "target_distance": 25.0 }
         }
+      ],
+      "base_pair_restraints_config": [
+        { "residue1": "chain C and resid 1", "residue2": "chain D and resid 6" },
+        { "residue1": "chain C and resid 3", "residue2": "chain D and resid 4" },
+        { "residue1": "chain E and resid 1", "residue2": "chain F and resid 6" },
+        { "residue1": "chain E and resid 3", "residue2": "chain F and resid 4" }
       ],
       "angle_restraints_config": [
         {

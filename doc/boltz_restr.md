@@ -40,9 +40,12 @@ distance/RMSD/group entry and once for all conformer terms.
 ## Full config (input file)
 
 Save this as `restr_example.yaml`. It folds QBP (glutamine-binding protein) with its natural ligand
-GLN and the full RGI restraint set — centroid distance, group angle, group dihedral, GLN conformer,
-whole-structure RMSD, and a custom (formula) restraint — with every variable spelled out. The run command passes
-`--use_msa_server`, so boltz fetches the MSA from the ColabFold server.
+GLN **plus a short DNA duplex and an RNA duplex**, and the full RGI restraint set — centroid
+distance, group angle, group dihedral, GLN conformer, whole-structure RMSD, a custom (formula)
+restraint, and **Watson-Crick base pairs on the nucleic acids** — with every variable spelled out.
+The two nucleic strands of each duplex are self-complementary palindromes (`GCATGC` / `GCAUGC`), so
+identical antiparallel strands pair up. The run command passes `--use_msa_server`, so boltz fetches
+the MSA from the ColabFold server.
 
 ```yaml
 sequences:
@@ -54,6 +57,18 @@ sequences:
       id: [B]
       ccd: GLN
       conformer_restraints: true
+  - dna:
+      id: [C]
+      sequence: GCATGC        # DNA duplex, strand 1 (self-complementary palindrome)
+  - dna:
+      id: [D]
+      sequence: GCATGC        # DNA duplex, strand 2 (antiparallel partner of C)
+  - rna:
+      id: [E]
+      sequence: GCAUGC        # RNA duplex, strand 1 (self-complementary palindrome)
+  - rna:
+      id: [F]
+      sequence: GCAUGC        # RNA duplex, strand 2 (antiparallel partner of E)
 
 restraints_config:
   verbose: true
@@ -69,6 +84,21 @@ restraints_config:
       weight: 1.0            # no-op for a lone restraint; balances over-constrained coupling only
       harmonic:
         target_distance: 25.0
+  base_pair_restraints_config:
+    # Watson-Crick base pairs on the DNA (C·D) and RNA (E·F) duplexes. This is a
+    # config-time MACRO: each entry expands into one WC H-bond distance restraint per
+    # donor/acceptor pair, plus an inter-base coplanarity plane (coplanar: true default).
+    # The base is auto-detected from resname (DNA D-prefix stripped), so no `pair:`
+    # override is needed. Setup logs `base_pair=4 pairs -> 10 h-bonds + 4 coplanar`
+    # (the h-bonds also land in the `distances=` count, the planes in `plane=`).
+    - residue1: "chain C and resid 1"   # DNA G  -- pairs G-C (3 h-bonds)
+      residue2: "chain D and resid 6"   # DNA C
+    - residue1: "chain C and resid 3"   # DNA A  -- pairs A-T (2 h-bonds)
+      residue2: "chain D and resid 4"   # DNA T
+    - residue1: "chain E and resid 1"   # RNA G  -- pairs G-C (3 h-bonds)
+      residue2: "chain F and resid 6"   # RNA C
+    - residue1: "chain E and resid 3"   # RNA A  -- pairs A-U (2 h-bonds)
+      residue2: "chain F and resid 4"   # RNA U
   angle_restraints_config:
     - atom_selection1: "chain A and (resid 5 to 84)"
       atom_selection2: "chain A and (resid 90 to 180)"

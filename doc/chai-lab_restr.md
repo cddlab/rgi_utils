@@ -43,19 +43,32 @@ restraints, RMSD `atom_selection` shorthand). `resid` is the **per-chain 1-based
 
 ## Full config (sidecar + FASTA)
 
-Save the FASTA as `restr_example.fasta`:
+Save the FASTA as `restr_example.fasta`. chai assigns chain letters **by record order**, so here the
+chains are protein **A**, ligand **B**, DNA strands **C**/**D**, RNA strands **E**/**F** (the
+`base_pair` selectors in the sidecar reference exactly those). Both duplex strands are
+self-complementary palindromes (`GCATGC` / `GCAUGC`):
 
 ```text
 >protein|name=qbp
 ADKKLVVATDTAFVPFEFKQGDKYVGFDVDLWAAIAKELKLDYELKPMDFSGIIPALQTKNVDLALAGITITDERKKAIDFSDGYYKSGLLVMVKANNNDVKSVKDLDGKVVAVKSGTGSVDYAKANIKTKDLRQFPNIDNAYMELGTNRADAVLHDTPNILYFIKTAGNGQFKAVGDSLEAQQYGIAFPKGSDELRDKVNGALKTLRENGTYNEIYKKWFGTEPK
 >ligand|name=gln
 N[C@@H](CCC(N)=O)C(=O)O
+>dna|name=dna_strand1
+GCATGC
+>dna|name=dna_strand2
+GCATGC
+>rna|name=rna_strand1
+GCAUGC
+>rna|name=rna_strand2
+GCAUGC
 ```
 
 Save the sidecar as `restr_example.yaml` (this whole file is the `restraints_config` dict, with a
-centroid distance, group angle, group dihedral, GLN conformer, and whole-structure RMSD restraint).
-The run command passes `--use-msa-server --use-templates-server`, so chai fetches MSAs/templates
-from the ColabFold server.
+centroid distance, group angle, group dihedral, GLN conformer, whole-structure RMSD restraint, and
+**Watson-Crick base pairs on the DNA/RNA duplexes**). The `conformer_restraints` map opts in only
+the protein (A) and ligand (B); the base pairs need no per-chain flag on the nucleic acids (their
+coplanarity plane is injected with its own weight). The run command passes
+`--use-msa-server --use-templates-server`, so chai fetches MSAs/templates from the ColabFold server.
 
 ```yaml
 verbose: true
@@ -71,6 +84,20 @@ distance_restraints_config:
     weight: 1.0            # no-op for a lone restraint; balances over-constrained coupling only
     harmonic:
       target_distance: 25.0
+base_pair_restraints_config:
+  # Watson-Crick base pairs on the DNA (C·D) and RNA (E·F) duplexes. Config-time MACRO:
+  # each entry expands into one WC H-bond distance restraint per donor/acceptor pair, plus
+  # an inter-base coplanarity plane (coplanar: true default). The base is auto-detected
+  # from resname (DNA D-prefix stripped), so no `pair:` override is needed. Setup logs
+  # `base_pair=4 pairs -> 10 h-bonds + 4 coplanar` (h-bonds also land in `distances=`).
+  - residue1: "chain C and resid 1"   # DNA G  -- pairs G-C (3 h-bonds)
+    residue2: "chain D and resid 6"   # DNA C
+  - residue1: "chain C and resid 3"   # DNA A  -- pairs A-T (2 h-bonds)
+    residue2: "chain D and resid 4"   # DNA T
+  - residue1: "chain E and resid 1"   # RNA G  -- pairs G-C (3 h-bonds)
+    residue2: "chain F and resid 6"   # RNA C
+  - residue1: "chain E and resid 3"   # RNA A  -- pairs A-U (2 h-bonds)
+    residue2: "chain F and resid 4"   # RNA U
 angle_restraints_config:
   - atom_selection1: "chain A and (resid 5 to 84)"
     atom_selection2: "chain A and (resid 90 to 180)"

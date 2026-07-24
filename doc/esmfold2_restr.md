@@ -68,9 +68,12 @@ ordinal** (qualify protein groups with `chain A and (...)`). There is **no top-l
 
 ## Full config (Python script)
 
-Save this as `restr_example.py`. Folds QBP + its GLN ligand with a centroid distance, group angle,
-group dihedral, GLN conformer, whole-structure RMSD, and a custom (formula) restraint, every
-variable spelled out. Because ESMFold2's API is already Python, the custom **code path**
+Save this as `restr_example.py`. Folds QBP + its GLN ligand **plus a short DNA duplex and an RNA
+duplex** with a centroid distance, group angle, group dihedral, GLN conformer, whole-structure RMSD,
+a custom (formula) restraint, and **Watson-Crick base pairs on the nucleic acids**, every variable
+spelled out. Chain ids are explicit (`id=`): protein **A**, ligand **B**, DNA strands **C**/**D**,
+RNA strands **E**/**F**; both duplex strands are self-complementary palindromes (`GCATGC` / `GCAUGC`).
+Because ESMFold2's API is already Python, the custom **code path**
 (`CombinedRestraints.add_custom(fn=...)`) is equally available — see config.md.
 
 ```python
@@ -81,9 +84,11 @@ from __future__ import annotations
 from transformers.models.esmfold2.modeling_esmfold2 import ESMFold2Model
 
 from esm.models.esmfold2 import (
+    DNAInput,
     ESMFold2InputBuilder,
     LigandInput,
     ProteinInput,
+    RNAInput,
     StructurePredictionInput,
 )
 
@@ -108,6 +113,17 @@ RESTRAINTS_CONFIG = {
             "weight": 1.0,
             "harmonic": {"target_distance": 25.0},
         }
+    ],
+    # Watson-Crick base pairs on the DNA (C·D) and RNA (E·F) duplexes. Config-time MACRO:
+    # each entry expands into one WC H-bond distance restraint per donor/acceptor pair,
+    # plus an inter-base coplanarity plane (coplanar=True default). The base is
+    # auto-detected from resname (DNA D-prefix stripped), so no "pair" override is needed.
+    # Setup logs `base_pair=4 pairs -> 10 h-bonds + 4 coplanar` (h-bonds also in `distances=`).
+    "base_pair_restraints_config": [
+        {"residue1": "chain C and resid 1", "residue2": "chain D and resid 6"},  # DNA G-C
+        {"residue1": "chain C and resid 3", "residue2": "chain D and resid 4"},  # DNA A-T
+        {"residue1": "chain E and resid 1", "residue2": "chain F and resid 6"},  # RNA G-C
+        {"residue1": "chain E and resid 3", "residue2": "chain F and resid 4"},  # RNA A-U
     ],
     "angle_restraints_config": [
         {
@@ -188,6 +204,10 @@ def main() -> None:
         sequences=[
             ProteinInput(id="A", sequence=QBP, conformer_restraints=True),
             LigandInput(id="B", ccd=["GLN"], conformer_restraints=True),  # glutamine — QBP's natural ligand
+            DNAInput(id="C", sequence="GCATGC"),  # DNA duplex strand 1 (self-complementary palindrome)
+            DNAInput(id="D", sequence="GCATGC"),  # DNA duplex strand 2 (antiparallel partner of C)
+            RNAInput(id="E", sequence="GCAUGC"),  # RNA duplex strand 1 (self-complementary palindrome)
+            RNAInput(id="F", sequence="GCAUGC"),  # RNA duplex strand 2 (antiparallel partner of E)
         ]
     )
 

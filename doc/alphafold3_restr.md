@@ -58,11 +58,14 @@ AF3-specific notes:
 ## Full config (input file)
 
 Save this as `restr_example.json`. The genetic-search data pipeline builds the MSA, so the JSON has
-no MSA/template fields. It sets a centroid distance, group angle, group dihedral, GLN conformer,
-whole-structure RMSD, and a custom (formula) restraint. The custom entry keeps both lobe-halves
-equidistant from the central domain — a difference of two distances, which no single built-in can
-express (JSON has no comments, so the rationale lives here in prose). It runs under the JAX
-minimizer (`lax.scan`) like every other restraint.
+no MSA/template fields. It folds QBP + GLN **plus a short DNA duplex and an RNA duplex** and sets a
+centroid distance, group angle, group dihedral, GLN conformer, whole-structure RMSD, a custom
+(formula) restraint, and **Watson-Crick base pairs on the nucleic acids**. The custom entry keeps
+both lobe-halves equidistant from the central domain — a difference of two distances, which no
+single built-in can express (JSON has no comments, so the rationale lives here in prose). Chain ids
+are explicit (`"id"`): protein **A**, ligand **B**, DNA strands **C**/**D**, RNA strands **E**/**F**;
+both duplex strands are self-complementary palindromes (`GCATGC` / `GCAUGC`). It all runs under the
+JAX minimizer (`lax.scan`) like every other restraint.
 
 ```json
 {
@@ -85,7 +88,11 @@ minimizer (`lax.scan`) like every other restraint.
         "ccdCodes": ["GLN"],
         "conformer_restraints": true
       }
-    }
+    },
+    { "dna": { "id": "C", "sequence": "GCATGC", "modifications": [] } },
+    { "dna": { "id": "D", "sequence": "GCATGC", "modifications": [] } },
+    { "rna": { "id": "E", "sequence": "GCAUGC", "modifications": [] } },
+    { "rna": { "id": "F", "sequence": "GCAUGC", "modifications": [] } }
   ],
   "restraints_config": {
     "verbose": true,
@@ -102,6 +109,12 @@ minimizer (`lax.scan`) like every other restraint.
         "weight": 1.0,
         "harmonic": { "target_distance": 25.0 }
       }
+    ],
+    "base_pair_restraints_config": [
+      { "residue1": "chain C and resid 1", "residue2": "chain D and resid 6" },
+      { "residue1": "chain C and resid 3", "residue2": "chain D and resid 4" },
+      { "residue1": "chain E and resid 1", "residue2": "chain F and resid 6" },
+      { "residue1": "chain E and resid 3", "residue2": "chain F and resid 4" }
     ],
     "angle_restraints_config": [
       {
