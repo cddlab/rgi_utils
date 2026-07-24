@@ -16,6 +16,14 @@ from rgi_utils.custom.dsl import eval_formula
 def build_closure(cspec, ops):
     """``(active_coords) -> scalar`` for one CustomSpec on the given backend ``ops``."""
     sel = {k: ops.asint(v) for k, v in cspec.selections.items()}
+    # rmsd primitive references: (matched-target LOCAL index array -> backend int; raw numpy
+    # ref coords kept as a constant). The index array is baked ONCE (like the selections, so
+    # jax stays lax.scan-safe); the ref coords are converted to the LIVE coords' dtype/device
+    # at eval time via ops.const_like in the ctx (a captured numpy const is a jax constant, so
+    # still scan-safe, and it can't dtype-mismatch). Empty unless the restraint uses rmsd().
+    refs = {
+        k: (ops.asint(idx), ref_coords) for k, (idx, ref_coords) in cspec.refs.items()
+    }
     weight = cspec.weight
     # ``ops.sum`` reduces over ALL leading/batch dims to a scalar (like the built-in
     # energies), so the energy a batch/multiplicity tensor produces stays a scalar that
@@ -25,13 +33,13 @@ def build_closure(cspec, ops):
 
         def energy(coords):
             return weight * ops.sum(
-                eval_formula(ast, RestraintContext(ops, sel, coords))
+                eval_formula(ast, RestraintContext(ops, sel, coords, refs))
             )
     else:
         fn = cspec.fn
 
         def energy(coords):
-            return weight * ops.sum(fn(RestraintContext(ops, sel, coords)))
+            return weight * ops.sum(fn(RestraintContext(ops, sel, coords, refs)))
 
     return energy
 

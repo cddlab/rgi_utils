@@ -96,6 +96,187 @@ from rgi_utils.selection import AtomSelector
 
 logger = logging.getLogger(__name__)
 
+
+def build_resid_map(atoms, ref_atoms, ref_path) -> dict:
+    """Sequence-align each polymer chain present on both sides and return
+    ``{(chain, target_resid): ref_resid}``. Polymer typing prefers an explicit
+    ``mol_type`` (boltz/esm set it) and otherwise derives it from the residue name
+    (protenix/of3/chai don't set mol_type), so only resname must be plumbed. Shared by the
+    built-in RMSD restraint and the custom ``rmsd()`` primitive, so both align identically."""
+
+    def seqs(records, resname_attr, side):
+        by_chain: dict = {}
+        mtype: dict = {}
+        for a in records:
+            rn = getattr(a, resname_attr, None)
+            ptype = polymer_type(getattr(a, "mol_type", None), rn)
+            if ptype is None:
+                continue  # ligand/water/unknown -> not sequence-aligned
+            if not rn:  # a polymer residue with no name can't be aligned
+                raise ValueError(
+                    f"rmsd pairing='align' needs residue names on the {side} side, "
+                    f"but a polymer atom (chain {a.chain}) has none"
+                    + (
+                        ""
+                        if side == "reference"
+                        else " (adapter not plumbed for resname)"
+                    )
+                )
+            d = by_chain.setdefault(a.chain, {})
+            d.setdefault(a.resid, rn)
+            mtype.setdefault(a.chain, ptype)
+        return {c: sorted(d.items()) for c, d in by_chain.items()}, mtype
+
+    t_seq, t_mt = seqs(atoms, "resname", "target")
+    r_seq, _ = seqs(ref_atoms, "res_name", "reference")
+    resid_map: dict = {}
+    matched_chains = 0
+    for ch, t_res in t_seq.items():
+        r_res = r_seq.get(ch)
+        if not r_res:
+            continue
+        matched_chains += 1
+        for t_rid, r_rid in pair_residues(t_res, r_res, t_mt.get(ch)):
+            resid_map[(ch, t_rid)] = r_rid
+    if not resid_map:
+        raise ValueError(
+            "rmsd pairing='align' aligned no residues (no common polymer chain, or "
+            f"chain ids differ between prediction and ref {ref_path!r}); check chain naming"
+        )
+    logger.info(
+        "rmsd align: %d chain(s), %d residue pairs", matched_chains, len(resid_map)
+    )
+    return resid_map
+
+
+def pair_target_to_ref(
+    atoms,
+    ref_atoms,
+    sel_target,
+    sel_ref,
+    tag,
+    *,
+    ref_path,
+    best_effort=False,
+    align=False,
+    resid_map=None,
+):
+    """Resolve one (target, ref) selection pair -> (target_global_indices, ref_coords
+    aligned to the target order). A ``None`` selection means the WHOLE structure on that
+    side (no filter). Pairing is by IDENTITY (chain, resid, name) when both sides expose
+    names; else selection-order (counts must match). With ``best_effort`` (the no-selection
+    whole-structure default) a target atom missing from the reference is SKIPPED rather than
+    raising, so an incomplete ref still fits 'as much as possible'; with an explicit
+    selection it stays strict (a missing match raises). With ``align`` a polymer target
+    atom's resid is first translated to the aligned ref resid via ``resid_map`` (ligands stay
+    on ordinal identity). Shared by the built-in RMSD restraint and the custom ``rmsd()``
+    primitive, so both pair identically."""
+    if sel_target is None:  # whole structure (no filter)
+        tgt = list(atoms)
+    else:
+        st = AtomSelector(sel_target)
+        tgt = [a for a in atoms if st.matches(candidate_dict(a))]
+    if sel_ref is None:  # whole reference (no filter)
+        ref = list(ref_atoms)
+    else:
+        sr = AtomSelector(sel_ref)
+        ref = [
+            r
+            for r in ref_atoms
+            if sr.matches(candidate_dict(r, resname_attr="res_name"))
+        ]
+    if not tgt:
+        raise ValueError(
+            f"rmsd {tag} target selection matched no atoms: {sel_target!r}"
+        )
+    if not ref:
+        raise ValueError(
+            f"rmsd {tag} ref selection matched no atoms: {sel_ref!r} in {ref_path!r}"
+        )
+    tgt_named = all(a.name for a in tgt)
+    ref_named = all(r.name for r in ref)
+    if align and not (tgt_named and ref_named):
+        raise ValueError(
+            f"rmsd {tag} pairing='align' needs atom names on both sides to pair "
+            "atoms within aligned residues"
+        )
+    logger.debug(
+        "rmsd %s pairing=%s target=%d ref=%d; target names[:4]=%s ref names[:4]=%s",
+        tag,
+        "identity" if (tgt_named and ref_named) else "order",
+        len(tgt),
+        len(ref),
+        [a.name for a in tgt[:4]],
+        [r.name for r in ref[:4]],
+    )
+    if tgt_named and ref_named:
+        # duplicate (chain, resid, name) keys would silently collapse last-wins and
+        # mispair atoms, so reject an ambiguous reference loudly instead.
+        refmap = {}
+        for r in ref:
+            k = (r.chain, r.resid, r.name)
+            if k in refmap:
+                raise ValueError(
+                    f"rmsd {tag}: duplicate reference atom {k} in {ref_path!r} — "
+                    f"ambiguous identity pairing; disambiguate the ref selection"
+                )
+            refmap[k] = (r.x, r.y, r.z)
+        sites, coords, skipped = [], [], 0
+        for a in tgt:
+            if align and polymer_type(a.mol_type, a.resname) is not None:
+                # polymer: translate target resid -> aligned ref resid. No entry =
+                # residue aligned to a gap (the homolog ref lacks it); skip under
+                # best_effort, else raise so best_effort:false is honoured (not a
+                # silent no-op). Ligand atoms fall to ordinal identity below.
+                mapped = resid_map.get((a.chain, a.resid))
+                if mapped is None:
+                    if best_effort:
+                        skipped += 1
+                        continue
+                    raise ValueError(
+                        f"rmsd {tag}: target polymer residue (chain {a.chain}, "
+                        f"resid {a.resid}) aligned to a gap in ref {ref_path!r} (no "
+                        f"corresponding residue); set best_effort:true to skip gaps"
+                    )
+                key = (a.chain, mapped, a.name)
+            else:
+                key = (a.chain, a.resid, a.name)
+            if key not in refmap:
+                if best_effort:  # whole-structure default: use what matches
+                    skipped += 1
+                    continue
+                raise ValueError(
+                    f"rmsd {tag}: target atom {key} has no matching "
+                    f"(chain, resid, name) in ref {ref_path!r}"
+                )
+            sites.append(int(a.index))
+            coords.append(refmap[key])
+        if not sites:
+            raise ValueError(
+                f"rmsd {tag}: no target atom matched the reference by "
+                f"(chain, resid, name) in {ref_path!r}"
+            )
+        if skipped:  # transparency: do not silently drop atoms
+            logger.info(
+                "rmsd %s (best-effort): matched %d / %d atoms "
+                "(%d unmatched in ref skipped)",
+                tag,
+                len(sites),
+                len(tgt),
+                skipped,
+            )
+        return sites, np.asarray(coords, dtype=np.float64).reshape(-1, 3)
+    # order fallback (no atom names): pair by selection order, counts must match
+    if len(tgt) != len(ref):
+        raise ValueError(
+            f"rmsd {tag} atom-count mismatch (order pairing): target={len(tgt)} "
+            f"vs ref={len(ref)}; provide atom names or matching selections"
+        )
+    sites = [int(a.index) for a in tgt]
+    coords = np.asarray([(r.x, r.y, r.z) for r in ref], dtype=np.float64)
+    return sites, coords.reshape(-1, 3)
+
+
 _KNOWN_RMSD_KEYS = {
     "ref_pdb",
     "ref_cif",
@@ -308,175 +489,27 @@ class RmsdData:
         )
 
     def _build_resid_map(self, atoms, ref_atoms) -> dict:
-        """Sequence-align each polymer chain present on both sides and return
-        ``{(chain, target_resid): ref_resid}``. Polymer typing prefers an explicit
-        ``mol_type`` (boltz/esm set it) and otherwise derives it from the residue name
-        (protenix/of3/chai don't set mol_type), so only resname must be plumbed."""
-
-        def seqs(records, resname_attr, side):
-            by_chain: dict = {}
-            mtype: dict = {}
-            for a in records:
-                rn = getattr(a, resname_attr, None)
-                ptype = polymer_type(getattr(a, "mol_type", None), rn)
-                if ptype is None:
-                    continue  # ligand/water/unknown -> not sequence-aligned
-                if not rn:  # a polymer residue with no name can't be aligned
-                    raise ValueError(
-                        f"rmsd pairing='align' needs residue names on the {side} side, "
-                        f"but a polymer atom (chain {a.chain}) has none"
-                        + (
-                            ""
-                            if side == "reference"
-                            else " (adapter not plumbed for resname)"
-                        )
-                    )
-                d = by_chain.setdefault(a.chain, {})
-                d.setdefault(a.resid, rn)
-                mtype.setdefault(a.chain, ptype)
-            return {c: sorted(d.items()) for c, d in by_chain.items()}, mtype
-
-        t_seq, t_mt = seqs(atoms, "resname", "target")
-        r_seq, _ = seqs(ref_atoms, "res_name", "reference")
-        resid_map: dict = {}
-        matched_chains = 0
-        for ch, t_res in t_seq.items():
-            r_res = r_seq.get(ch)
-            if not r_res:
-                continue
-            matched_chains += 1
-            for t_rid, r_rid in pair_residues(t_res, r_res, t_mt.get(ch)):
-                resid_map[(ch, t_rid)] = r_rid
-        if not resid_map:
-            raise ValueError(
-                "rmsd pairing='align' aligned no residues (no common polymer chain, or "
-                "chain ids differ between prediction and ref_pdb "
-                f"{self.ref_path!r}); check chain naming"
-            )
-        logger.info(
-            "rmsd align: %d chain(s), %d residue pairs", matched_chains, len(resid_map)
-        )
-        return resid_map
+        """Sequence-align polymer chains -> ``{(chain, target_resid): ref_resid}`` (thin
+        wrapper over the module-level ``build_resid_map`` shared with custom ``rmsd()``)."""
+        return build_resid_map(atoms, ref_atoms, self.ref_path)
 
     def _pair(
         self, atoms, ref_atoms, sel_target, sel_ref, tag, best_effort=False, align=False
     ):
         """Resolve one (target, ref) selection pair -> (target_global_indices, ref_coords
-        aligned to the target order). A ``None`` selection means the WHOLE structure on
-        that side (no filter). Pairing is by IDENTITY (chain, resid, name) when both sides
-        expose names; else selection-order (counts must match). With ``best_effort`` (the
-        no-selection whole-structure default) a target atom missing from the reference is
-        SKIPPED rather than raising, so an incomplete ref still fits 'as much as possible';
-        with an explicit selection it stays strict (a missing match raises). With
-        ``align`` a polymer target atom's resid is first translated to the aligned ref
-        resid via ``self.resid_map`` (ligands stay on ordinal identity)."""
-        if sel_target is None:  # whole structure (no filter)
-            tgt = list(atoms)
-        else:
-            st = AtomSelector(sel_target)
-            tgt = [a for a in atoms if st.matches(candidate_dict(a))]
-        if sel_ref is None:  # whole reference (no filter)
-            ref = list(ref_atoms)
-        else:
-            sr = AtomSelector(sel_ref)
-            ref = [
-                r
-                for r in ref_atoms
-                if sr.matches(candidate_dict(r, resname_attr="res_name"))
-            ]
-        if not tgt:
-            raise ValueError(
-                f"rmsd {tag} target selection matched no atoms: {sel_target!r}"
-            )
-        if not ref:
-            raise ValueError(
-                f"rmsd {tag} ref selection matched no atoms: {sel_ref!r} "
-                f"in {self.ref_path!r}"
-            )
-        tgt_named = all(a.name for a in tgt)
-        ref_named = all(r.name for r in ref)
-        if align and not (tgt_named and ref_named):
-            raise ValueError(
-                f"rmsd {tag} pairing='align' needs atom names on both sides to pair "
-                "atoms within aligned residues"
-            )
-        logger.debug(
-            "rmsd %s pairing=%s target=%d ref=%d; target names[:4]=%s ref names[:4]=%s",
+        aligned to the target order) — thin wrapper over the module-level
+        ``pair_target_to_ref`` shared with the custom ``rmsd()`` primitive."""
+        return pair_target_to_ref(
+            atoms,
+            ref_atoms,
+            sel_target,
+            sel_ref,
             tag,
-            "identity" if (tgt_named and ref_named) else "order",
-            len(tgt),
-            len(ref),
-            [a.name for a in tgt[:4]],
-            [r.name for r in ref[:4]],
+            ref_path=self.ref_path,
+            best_effort=best_effort,
+            align=align,
+            resid_map=self.resid_map,
         )
-        if tgt_named and ref_named:
-            # duplicate (chain, resid, name) keys would silently collapse last-wins
-            # and mispair atoms, so reject an ambiguous reference loudly instead.
-            refmap = {}
-            for r in ref:
-                k = (r.chain, r.resid, r.name)
-                if k in refmap:
-                    raise ValueError(
-                        f"rmsd {tag}: duplicate reference atom {k} in "
-                        f"{self.ref_path!r} — ambiguous identity pairing; "
-                        f"disambiguate the ref selection"
-                    )
-                refmap[k] = (r.x, r.y, r.z)
-            sites, coords, skipped = [], [], 0
-            for a in tgt:
-                if align and polymer_type(a.mol_type, a.resname) is not None:
-                    # polymer: translate target resid -> aligned ref resid. No entry =
-                    # residue aligned to a gap (the homolog ref lacks it); skip under
-                    # best_effort, else raise so best_effort:false is honoured (not a
-                    # silent no-op). Ligand atoms fall to ordinal identity below.
-                    mapped = self.resid_map.get((a.chain, a.resid))
-                    if mapped is None:
-                        if best_effort:
-                            skipped += 1
-                            continue
-                        raise ValueError(
-                            f"rmsd {tag}: target polymer residue (chain {a.chain}, "
-                            f"resid {a.resid}) aligned to a gap in ref "
-                            f"{self.ref_path!r} (no corresponding residue); set "
-                            f"best_effort:true to skip gaps"
-                        )
-                    key = (a.chain, mapped, a.name)
-                else:
-                    key = (a.chain, a.resid, a.name)
-                if key not in refmap:
-                    if best_effort:  # whole-structure default: use what matches
-                        skipped += 1
-                        continue
-                    raise ValueError(
-                        f"rmsd {tag}: target atom {key} has no matching "
-                        f"(chain, resid, name) in ref {self.ref_path!r}"
-                    )
-                sites.append(int(a.index))
-                coords.append(refmap[key])
-            if not sites:
-                raise ValueError(
-                    f"rmsd {tag}: no target atom matched the reference by "
-                    f"(chain, resid, name) in {self.ref_path!r}"
-                )
-            if skipped:  # transparency: do not silently drop atoms
-                logger.info(
-                    "rmsd %s (best-effort): matched %d / %d atoms "
-                    "(%d unmatched in ref skipped)",
-                    tag,
-                    len(sites),
-                    len(tgt),
-                    skipped,
-                )
-            return sites, np.asarray(coords, dtype=np.float64).reshape(-1, 3)
-        # order fallback (no atom names): pair by selection order, counts must match
-        if len(tgt) != len(ref):
-            raise ValueError(
-                f"rmsd {tag} atom-count mismatch (order pairing): target={len(tgt)} "
-                f"vs ref={len(ref)}; provide atom names or matching selections"
-            )
-        sites = [int(a.index) for a in tgt]
-        coords = np.asarray([(r.x, r.y, r.z) for r in ref], dtype=np.float64)
-        return sites, coords.reshape(-1, 3)
 
     def is_valid(self) -> bool:
         return self.run_restr

@@ -21,10 +21,11 @@ class _AxisOps:
     """numpy / jax share one implementation (both use ``axis=`` and the same fn names);
     only the module (``xp``), the int dtype, and scalar wrapping differ."""
 
-    def __init__(self, xp, int_dtype, wrap):
+    def __init__(self, xp, int_dtype, wrap, stop_grad):
         self.xp = xp
         self._int = int_dtype
         self._wrap = wrap
+        self._stop_grad = stop_grad
 
     # --- indexing ---
     def gather(self, coords, idx):
@@ -35,6 +36,11 @@ class _AxisOps:
 
     def const(self, x):
         return self._wrap(x)
+
+    def const_like(self, a, like):
+        # a numpy constant (e.g. a reference-coordinate block) -> backend array matching
+        # ``like``'s dtype (the live coords), so a float64/float32 mix can't error mid-op.
+        return self.xp.asarray(a, dtype=like.dtype)
 
     # --- reductions over the atom axis (-2) / xyz axis (-1) ---
     def mean_atoms(self, pos):
@@ -54,6 +60,31 @@ class _AxisOps:
 
     def cross(self, a, b):
         return self.xp.cross(a, b)
+
+    # --- linear algebra (Kabsch superposition: kabsch / rmsd vocabulary) ---
+    def matmul(self, a, b):
+        return a @ b
+
+    def swapaxes_last2(self, x):
+        return self.xp.swapaxes(x, -1, -2)
+
+    def svd(self, h):
+        return self.xp.linalg.svd(h)  # (U, S, Vt)
+
+    def det(self, m):
+        return self.xp.linalg.det(m)
+
+    def sign(self, x):
+        return self.xp.sign(x)
+
+    def stack(self, arrays, axis=-1):
+        return self.xp.stack(arrays, axis=axis)
+
+    def ones_like(self, x):
+        return self.xp.ones_like(x)
+
+    def stop_gradient(self, x):
+        return self._stop_grad(x)
 
     # --- elementwise math (the DSL / ctx vocabulary) ---
     def arccos(self, x):
@@ -119,6 +150,11 @@ class _TorchOps:
     def const(self, x):
         return x  # a python float composes with torch ops
 
+    def const_like(self, a, like):
+        # a reference-coordinate block -> torch tensor matching the live coords' dtype +
+        # device (so a captured numpy constant never dtype/device-mismatches mid-op).
+        return self.t.as_tensor(a, dtype=like.dtype, device=like.device)
+
     def mean_atoms(self, pos):
         return self.t.mean(pos, dim=-2)
 
@@ -136,6 +172,31 @@ class _TorchOps:
 
     def cross(self, a, b):
         return self.t.linalg.cross(a, b, dim=-1)
+
+    # --- linear algebra (Kabsch superposition: kabsch / rmsd vocabulary) ---
+    def matmul(self, a, b):
+        return a @ b
+
+    def swapaxes_last2(self, x):
+        return self.t.swapaxes(x, -1, -2)
+
+    def svd(self, h):
+        return self.t.linalg.svd(h)  # (U, S, Vt)
+
+    def det(self, m):
+        return self.t.linalg.det(m)
+
+    def sign(self, x):
+        return self.t.sign(x)
+
+    def stack(self, arrays, axis=-1):
+        return self.t.stack(arrays, dim=axis)
+
+    def ones_like(self, x):
+        return self.t.ones_like(x)
+
+    def stop_gradient(self, x):
+        return x.detach()
 
     def arccos(self, x):
         return self.t.arccos(x)
@@ -197,13 +258,15 @@ def get_ops(backend: str, device=None):
     if backend == "numpy":
         import numpy as np
 
-        return _AxisOps(np, np.int64, lambda x: x)
+        # numpy has no autodiff, so stop_gradient is the identity (mirrors _kabsch_R).
+        return _AxisOps(np, np.int64, lambda x: x, lambda x: x)
     if backend == "torch":
         import torch
 
         return _TorchOps(torch, device)
     if backend == "jax":
+        import jax
         import jax.numpy as jnp
 
-        return _AxisOps(jnp, jnp.int32, jnp.asarray)
+        return _AxisOps(jnp, jnp.int32, jnp.asarray, jax.lax.stop_gradient)
     raise ValueError(f"unknown backend {backend!r} (numpy / torch / jax)")

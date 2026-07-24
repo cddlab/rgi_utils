@@ -4,9 +4,13 @@ A custom restraint is a backend-agnostic energy ``energy(ctx) -> scalar`` writte
 a config ``energy`` formula string or a Python ctx function. Both compile to a closure that
 the optimizers add to the CG objective. This harness drives BOTH authoring paths through:
 
-  (a) 3-backend energy + gradient parity. Custom energies use PLAIN centroids (no
+  (a) 3-backend energy + gradient parity. MOST custom energies use PLAIN centroids (no
       rigid-translation stop-gradient trick), so unlike the built-in group restraints the
-      autodiff gradient matches the numpy finite-difference ground truth — a strict check.
+      autodiff gradient matches the numpy finite-difference ground truth — a strict check
+      (test_custom_grad_matches_fd). EXCEPTION: kabsch / rmsd freeze the Kabsch rotation
+      with stop-gradient (the SVD is not differentiated), so — like the built-in rmsd term
+      — an FD gradient is INAPPLICABLE; those are checked torch-vs-jax instead
+      (test_custom_kabsch_grad_torch_vs_jax). Do NOT add a kabsch/rmsd case under the FD test.
   (b) the torch eager CG: a custom distance restraint converges onto its target.
   (c) the jax minimizer (the AF3 lax.scan closure): converges, NaN-free.
 
@@ -481,3 +485,305 @@ def test_penalty_vocabulary_is_flat_bottomed():
     ):
         with pytest.raises(ValueError, match="only calls|disallowed"):
             _spec_from_entries([{"energy": old, "selections": {"A": "resid 1 to 3"}}])
+
+
+# --------------------------------------------------------------------------------------
+# kabsch(A, B): Kabsch superposition returning coordinates (a (k, 3) block that composes)
+# --------------------------------------------------------------------------------------
+def _kabsch_spec():
+    """kabsch(A, B) superposes A onto B; ``norm(... - coords(B))`` then sums the per-atom
+    post-superposition deviations. A/B are equal-size (positional correspondence)."""
+    return _spec_from_entries(
+        [
+            {
+                "name": "sym",
+                "energy": "norm(kabsch(A, B) - coords(B))",
+                "selections": {"A": "resid 1 to 4", "B": "resid 5 to 8"},
+            }
+        ]
+    )
+
+
+def test_custom_kabsch_energy_parity_3backend():
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    spec = _kabsch_spec()
+    assert spec.has_custom() and len(spec.custom) == 1
+    pos = _positions(spec, seed=4)
+    e_np = float(build_terms(spec.custom, "numpy")[0][-1](pos))
+    e_t = float(
+        build_terms(spec.custom, "torch")[0][-1](torch.tensor(pos, dtype=torch.float64))
+    )
+    e_j = float(build_terms(spec.custom, "jax")[0][-1](jnp.asarray(pos)))
+    assert e_np > 0.0
+    assert abs(e_np - e_t) < 1e-6, f"numpy={e_np} torch={e_t}"
+    assert abs(e_np - e_j) < 1e-6, f"numpy={e_np} jax={e_j}"
+
+
+def test_custom_kabsch_grad_torch_vs_jax():
+    """The kabsch rotation is stop-gradient'd (the SVD is never differentiated), so — like
+    the built-in ``rmsd`` term — a numpy finite-difference gradient is INAPPLICABLE and the
+    contract is torch-vs-jax gradient parity (both freeze the rotation identically). This is
+    why kabsch/rmsd formulas are exercised HERE, not under ``test_custom_grad_matches_fd``."""
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    spec = _kabsch_spec()
+    pos = _positions(spec, seed=6)
+    pt = torch.tensor(pos, dtype=torch.float64, requires_grad=True)
+    build_terms(spec.custom, "torch")[0][-1](pt).backward()
+    g_t = pt.grad.numpy()
+    jax_clo = build_terms(spec.custom, "jax")[0][-1]
+    g_j = np.asarray(jax.grad(lambda x: jax_clo(x))(jnp.asarray(pos)))
+    assert np.allclose(g_t, g_j, atol=1e-6), f"torch vs jax {np.abs(g_t - g_j).max()}"
+
+
+def test_custom_kabsch_rigid_invariance():
+    """kabsch(A, B) energy (post-superposition deviation of A vs B) is invariant to a rigid
+    motion of A — the Kabsch property. Confirms the superposition removes rotation/translation."""
+    spec = _kabsch_spec()
+    clo = build_terms(spec.custom, "numpy")[0][-1]
+    pos = _positions(spec, seed=8)
+    e0 = float(clo(pos))
+    th = 0.5
+    rot = np.array(
+        [[np.cos(th), 0, np.sin(th)], [0, 1, 0], [-np.sin(th), 0, np.cos(th)]]
+    )
+    a_local = spec.custom[0].selections["A"]  # move only A's atoms rigidly
+    moved = pos.copy()
+    moved[a_local] = pos[a_local] @ rot.T + np.array([5.0, -3.0, 2.0])
+    assert abs(e0 - float(clo(moved))) < 1e-6
+
+
+def test_custom_kabsch_requires_equal_counts():
+    """kabsch(A, B) needs |A| == |B| (positional correspondence) — a mismatch raises loudly
+    at resolve (not a cryptic matmul shape error at runtime)."""
+    with pytest.raises(ValueError, match="equal atom counts"):
+        _spec_from_entries(
+            [
+                {
+                    "energy": "norm(kabsch(A, B) - coords(B))",
+                    "selections": {"A": "resid 1 to 4", "B": "resid 5 to 7"},
+                }
+            ]
+        )
+
+
+# --------------------------------------------------------------------------------------
+# rmsd(A, ref): Kabsch-superposed RMSD against a per-call external reference structure
+# --------------------------------------------------------------------------------------
+def _write_ca_pdb(path, coords, chain="A"):
+    """One CA atom per coord (its own ALA residue, chain ``chain``); the per-chain resid
+    ordinal follows file order (1..n) — read_pdb_atoms' convention."""
+    lines = []
+    for i, (x, y, z) in enumerate(coords):
+        lines.append(
+            "ATOM  "
+            f"{i + 1:>5} {'CA':<4} {'ALA':>3} {chain}{i + 1:>4}    "
+            f"{x:>8.3f}{y:>8.3f}{z:>8.3f}  1.00  0.00          {'C':>2}\n"
+        )
+    path.write_text("".join(lines) + "END\n")
+
+
+def _superposed_rmsd(P, Q):
+    """Kabsch RMSD of moving P onto reference Q (matches vocabulary.rmsd)."""
+    P0 = P - P.mean(0)
+    Q0 = Q - Q.mean(0)
+    U, _S, Vt = np.linalg.svd(P0.T @ Q0)
+    V = Vt.T
+    d = np.sign(np.linalg.det(V @ U.T)) or 1.0
+    Vd = V.copy()
+    Vd[:, 2] *= d
+    R = Vd @ U.T  # R P0 ~ Q0
+    return float(np.sqrt(((P0 @ R.T - Q0) ** 2).sum() / len(P)))
+
+
+def _rmsd_spec(pdb, energy, *, pairing="identity", best_effort=True, n=12):
+    return _spec_from_entries(
+        [
+            {
+                "name": "rmsd",
+                "energy": energy,
+                "selections": {"g": "chain A"},
+                "refs": {
+                    "r1": {
+                        "ref_pdb": str(pdb),
+                        "pairing": pairing,
+                        "best_effort": best_effort,
+                    }
+                },
+            }
+        ],
+        n=n,
+    )
+
+
+def test_custom_rmsd_alignment_matched_subset(tmp_path):
+    """THE alignment test: the reference covers only resid 1..8 (target has 12), so a
+    best-effort pairing must (a) drop resid 9..12 and (b) keep ref_coords row-aligned to the
+    MATCHED target subset that the closure gathers. The ref is a rigid transform of the
+    target's first 8 atoms, so a correct pairing gives superposed RMSD ~ 0; any row
+    misalignment or wrong subset would blow it up."""
+    rng = np.random.default_rng(11)
+    n = 12
+    pos = rng.standard_normal((n, 3)) * 3.0  # target coords (the active coords)
+    th = 0.7
+    rz = np.array(
+        [[np.cos(th), -np.sin(th), 0], [np.sin(th), np.cos(th), 0], [0, 0, 1]]
+    )
+    ref_full = pos[:8] @ rz.T + np.array(
+        [4.0, -2.0, 1.0]
+    )  # ref = rigid transform of 1..8
+    pdb = tmp_path / "ref.pdb"
+    _write_ca_pdb(pdb, ref_full)
+
+    spec = _rmsd_spec(pdb, "rmsd(g, r1)", n=n)
+    tgt_idx, ref_coords = spec.custom[0].refs[("g", "r1")]
+    assert len(tgt_idx) == 8, f"expected the 8 matched atoms, got {len(tgt_idx)}"
+    # ref rows are aligned to the matched target subset (resid 1..8 -> local 0..7)
+    assert np.array_equal(tgt_idx, np.arange(8))
+    assert np.allclose(ref_coords, ref_full, atol=2e-3)  # PDB 3-decimal rounding
+    # the closure gathers exactly that subset and compares to the aligned ref (the ref the
+    # closure actually uses, read back from the PDB) -> superposed RMSD ~ 0 (rigid transform)
+    e = float(build_terms(spec.custom, "numpy")[0][-1](pos))
+    assert e == pytest.approx(_superposed_rmsd(pos[:8], ref_coords), abs=1e-6)
+    assert e < 5e-3, f"aligned superposed RMSD should be ~0, got {e}"
+
+
+def test_custom_rmsd_energy_parity_3backend(tmp_path):
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    rng = np.random.default_rng(13)
+    n = 12
+    pos = rng.standard_normal((n, 3)) * 3.0
+    ref = rng.standard_normal((n, 3)) * 3.0
+    pdb = tmp_path / "ref.pdb"
+    _write_ca_pdb(pdb, ref)
+    spec = _rmsd_spec(pdb, "rmsd(g, r1)", n=n)
+
+    e_np = float(build_terms(spec.custom, "numpy")[0][-1](pos))
+    e_t = float(
+        build_terms(spec.custom, "torch")[0][-1](torch.tensor(pos, dtype=torch.float64))
+    )
+    e_j = float(build_terms(spec.custom, "jax")[0][-1](jnp.asarray(pos)))
+    assert e_np > 0.0
+    assert abs(e_np - e_t) < 1e-6 and abs(e_np - e_j) < 1e-6
+    # compare to the ref the closure actually uses (read back from the PDB, 3-decimal)
+    _, ref_coords = spec.custom[0].refs[("g", "r1")]
+    assert e_np == pytest.approx(_superposed_rmsd(pos, ref_coords), abs=1e-5)
+
+
+def test_custom_rmsd_minimize_converges(tmp_path):
+    """rmsd(g, r1)**2 (target 0) drives the moving group's superposed RMSD onto the ref down
+    under the torch CG (the same convergence contract as the built-in RMSD restraint)."""
+    torch = pytest.importorskip("torch")
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+
+    rng = np.random.default_rng(17)
+    n = 8
+    ref = rng.standard_normal((n, 3)) * 3.0
+    pdb = tmp_path / "ref.pdb"
+    _write_ca_pdb(pdb, ref)
+    spec = _rmsd_spec(pdb, "rmsd(g, r1)**2", n=n)
+
+    tgt = ref @ np.eye(3) + rng.standard_normal((n, 3)) * 1.5  # ref + noise
+    coords = torch.tensor(tgt.reshape(1, n, 3), dtype=torch.float64)
+    before = _superposed_rmsd(tgt, ref)
+    TorchRestraintOptimizer(spec, max_iter=200).minimize(coords)
+    after = _superposed_rmsd(coords[0].numpy(), ref)
+    assert after < before, f"rmsd did not decrease: {before:.3f} -> {after:.3f}"
+
+
+def test_custom_rmsd_jax_minimize_nan_free(tmp_path):
+    """rmsd(g, r1)**2 under the pure-jax CG minimizer (the AF3 lax.scan closure path): the
+    ``jnp.linalg.svd`` inside the stop-gradient Kabsch stays finite + converges. This covers
+    the SVD-under-jax risk on CPU, so the GPU AF3 path is de-risked before it runs."""
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.optim.jax_optim import make_minimizer
+
+    rng = np.random.default_rng(19)
+    n = 8
+    ref = rng.standard_normal((n, 3)) * 3.0
+    pdb = tmp_path / "ref.pdb"
+    _write_ca_pdb(pdb, ref)
+    spec = _rmsd_spec(pdb, "rmsd(g, r1)**2", n=n)
+
+    tgt = ref + rng.standard_normal((n, 3)) * 1.5
+    coords = tgt.reshape(1, n, 3)
+    out = np.asarray(make_minimizer(spec, max_iter=200)(jnp.asarray(coords), 0.0))
+    assert np.all(np.isfinite(out)), "custom rmsd produced NaN/Inf under jax"
+    assert _superposed_rmsd(out[0], ref) < _superposed_rmsd(tgt, ref)
+
+
+def test_custom_rmsd_add_custom_fn_with_refs(tmp_path):
+    """The programmatic add_custom(fn=..., refs=...) path forwards refs, so a Python ctx
+    function calling ctx.rmsd(sel, ref) resolves its reference (regression: refs must flow
+    through add_custom like selections, not only via a config entry)."""
+    torch = pytest.importorskip("torch")
+    from rgi_utils import CombinedRestraints
+
+    rng = np.random.default_rng(23)
+    n = 6
+    ref = rng.standard_normal((n, 3)) * 3.0
+    pdb = tmp_path / "ref.pdb"
+    _write_ca_pdb(pdb, ref)
+
+    def energy(ctx):
+        return ctx.rmsd("chain A", "r1") ** 2
+
+    restr = CombinedRestraints()
+    restr.add_custom(fn=energy, refs={"r1": {"ref_pdb": str(pdb)}})
+    restr.setup(_FakeAdapter(n), config={"gpu": False, "max_iter": 200})
+    assert restr.spec.has_custom()
+    tgt = ref + rng.standard_normal((n, 3)) * 1.2
+    coords = torch.tensor(tgt.reshape(1, n, 3), dtype=torch.float64)
+    before = _superposed_rmsd(tgt, ref)
+    restr.minimize(coords, 0, 0.0)
+    assert _superposed_rmsd(coords[0].numpy(), ref) < before
+
+
+def test_custom_rmsd_undefined_ref_raises(tmp_path):
+    ref = np.zeros((4, 3))
+    pdb = tmp_path / "ref.pdb"
+    _write_ca_pdb(pdb, ref)
+    with pytest.raises(ValueError, match="not defined in the entry's 'refs'"):
+        _spec_from_entries(
+            [
+                {
+                    "energy": "rmsd(g, missing)",
+                    "selections": {"g": "chain A"},
+                    "refs": {"r1": {"ref_pdb": str(pdb)}},
+                }
+            ],
+            n=4,
+        )
+
+
+def test_custom_rmsd_first_arg_must_be_selection(tmp_path):
+    """rmsd's first arg must be a bare selection (the ref is aligned to it at setup), not a
+    coord expression — the resolve pass rejects rmsd(kabsch(...), ref)."""
+    ref = np.zeros((4, 3))
+    pdb = tmp_path / "ref.pdb"
+    _write_ca_pdb(pdb, ref)
+    with pytest.raises(TypeError, match="bare selection identifier"):
+        _spec_from_entries(
+            [
+                {
+                    "energy": "rmsd(kabsch(A, B), r1)",
+                    "selections": {"A": "resid 1", "B": "resid 2"},
+                    "refs": {"r1": {"ref_pdb": str(pdb)}},
+                }
+            ],
+            n=4,
+        )

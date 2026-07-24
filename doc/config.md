@@ -494,6 +494,7 @@ Each entry's energy (× `weight`) is added to the CG objective, gated by the usu
 | `use` | str | — | name of a function registered with `@custom_restraint` |
 | `fn` | callable | — | a Python `energy(ctx) -> scalar` (Python-dict input only) |
 | `selections` | dict | `{}` | `name -> selection string` for the names used in an `energy` formula |
+| `refs` | dict | `{}` | `ref_name -> {ref_pdb`\|`ref_cif, atom_selection_ref, pairing, best_effort}` — external reference structures for the `rmsd(A, ref)` primitive (see **Superposition** below) |
 | `weight` | float | `1.0` | scales the whole energy |
 | `name` | str | `"custom"` | label shown in the `finalize` per-term log |
 | `start_sigma` / `stop_sigma` | float | `+inf` / `-1` | sigma gating (as everywhere) |
@@ -522,6 +523,36 @@ $\lVert\cdot\rVert$ is the Euclidean norm:
 | `rg(A)` | scalar | $\sqrt{\frac{1}{\lvert A\rvert}\sum_i \lVert x_i - c_A \rVert^2}$ — radius of gyration | the compactness of one group (collapse vs extension) |
 | `norm(v)` | scalar | $\lVert v \rVert$ | the length of a vector you built, e.g. `centroid(A) - centroid(B)` |
 | `dot(u,v)` | scalar | $u \cdot v$ | projections and cosine-like terms |
+| `coords(A)` | block $(k,3)$ | $A$'s atom coordinates | feed a bare selection into arithmetic with `kabsch` output (a bare name alone is a *selection identifier*, not coordinates) |
+| `kabsch(A,B)` | block $(k,3)$ | $A$ rigid-body-superposed onto $B$ (Kabsch) | align two moving groups, then measure the leftover per-atom deviation — see **Superposition** |
+| `rmsd(A, ref)` | scalar | superposed RMSD of $A$ vs an external reference | pull a group onto a reference structure (the composable form of `rmsd_restraints_config`) — see **Superposition** |
+
+Most geometry consumes selection **centroids**; `coords` / `kabsch` instead flow a whole
+**$(k,3)$ coordinate block**, so they compose: `centroid(kabsch(A,B))`, `norm(kabsch(A,B) - coords(B))`.
+
+**Superposition (`kabsch` / `rmsd`).** Both do a Kabsch fit with the optimal rotation **frozen**
+(stop-gradient — the SVD is never differentiated), exactly like the built-in `rmsd_restraints_config`.
+
+* **`kabsch(A, B)`** returns $A$'s coordinates after rigid-body superposition onto $B$ (both are
+  moving groups in the structure). It needs a **positional 1:1 atom correspondence**, so
+  $\lvert A\rvert = \lvert B\rvert$ (a mismatch raises at setup). Use it for symmetry / NCS: the
+  natural measure is the **post-superposition per-atom deviation**, `norm(kabsch(A, B) - coords(B))`
+  (drive two copies to the same shape). Note `centroid(kabsch(A, B))` collapses to `centroid(B)` by
+  construction, so centroid-of-kabsch is not a useful quantity.
+* **`rmsd(A, ref)`** returns the scalar Kabsch-superposed RMSD of moving group $A$ against a **fixed
+  external reference** named `ref`, defined in the entry's `refs` map. Composable —
+  `rmsd(A, r1) - rmsd(B, r2)` weighs two references against each other. The reference is paired to
+  $A$'s atoms at setup (reusing the built-in RMSD pairing: `pairing: align` by default, or `identity`;
+  `best_effort` skips atoms missing from the reference), and the RMSD is measured over the **matched
+  subset**. $A$ must be a **bare selection** (the reference is row-aligned to it), so
+  `rmsd(kabsch(...), ref)` is rejected. Each `refs` entry takes `ref_pdb` **xor** `ref_cif`, an
+  optional `atom_selection_ref`, `pairing` (`align` default / `identity`), and `best_effort` (default
+  true) — the same reference keys as `rmsd_restraints_config`.
+
+The frozen rotation makes the gradient of `kabsch` / `rmsd` **torch/jax-consistent but NOT equal to a
+numpy finite-difference** (the SVD's own gradient is dropped) — the same trade-off the built-in `rmsd`
+term accepts. It is exact when the outer expression is the superposed-deviation-to-target (the two
+uses above); for arbitrary downstream geometry it is a well-behaved approximation.
 
 **Degenerate geometry.** `angle` and `dihedral` are ill-defined when the centroids collapse —
 coincident centroids, a collinear A–B–C for `angle`, or a `dihedral` whose central axis runs parallel
@@ -586,6 +617,17 @@ custom_restraints_config:
   - name: planar_dihedral
     energy: "wrap(dihedral(A, B, C, D) - 3.14159)**2"
     selections: {A: "resid 10", B: "resid 11", C: "resid 12", D: "resid 13"}
+  # NCS symmetry: drive two chains to the same shape via Kabsch superposition (|A| == |B|)
+  - name: ncs
+    energy: "norm(kabsch(A, B) - coords(B))"
+    selections: {A: "chain A and name CA", B: "chain B and name CA"}
+  # composable RMSD: pull a domain onto a reference, biased against a second reference
+  - name: rmsd_compose
+    energy: "rmsd(dom, r1) - rmsd(dom, r2)"
+    selections: {dom: "chain A and resid 1 to 80"}
+    refs:
+      r1: {ref_cif: "state1.cif", atom_selection_ref: "chain A and name CA", pairing: align}
+      r2: {ref_pdb: "state2.pdb"}
 ```
 
 Code (reusable via `use:`, or passed directly with `add_custom`):

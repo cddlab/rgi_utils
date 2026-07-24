@@ -69,6 +69,7 @@ class CombinedRestraints:
         *,
         energy: str | None = None,
         selections: dict | None = None,
+        refs: dict | None = None,
         weight: float = 1.0,
         start_sigma=None,
         stop_sigma=None,
@@ -81,11 +82,13 @@ class CombinedRestraints:
         Pass exactly one of: ``fn`` (a callable ``energy(ctx) -> scalar``) or ``energy``
         (a formula string in the same DSL as config) + a ``selections`` map. Both use the
         shared ctx vocabulary (geometry + math + penalty) and run on every backend.
-        Equivalent to one ``custom_restraints_config`` entry; merged into the spec at
-        ``setup``. Gate on EITHER a sigma window (``start_sigma`` / ``stop_sigma``) OR a
-        step window (``start_step`` / ``stop_step``) — not both (mutually exclusive); each
-        window key is forwarded only when given (omitted -> the always-on default).
-        Returns self for chaining."""
+        ``refs`` (``{ref_name -> {ref_pdb`` | ``ref_cif, ...}}``) supplies the external
+        reference structures a ``ctx.rmsd(A, ref)`` / ``rmsd(A, ref)`` call needs, mirroring
+        the config ``refs`` map. Equivalent to one ``custom_restraints_config`` entry; merged
+        into the spec at ``setup``. Gate on EITHER a sigma window (``start_sigma`` /
+        ``stop_sigma``) OR a step window (``start_step`` / ``stop_step``) — not both (mutually
+        exclusive); each window key is forwarded only when given (omitted -> the always-on
+        default). Returns self for chaining."""
         from rgi_utils.custom.data import CustomData
 
         if (fn is None) == (energy is None):
@@ -106,6 +109,8 @@ class CombinedRestraints:
             entry["stop_step"] = stop_step
         if selections is not None:
             entry["selections"] = selections
+        if refs is not None:
+            entry["refs"] = refs
         entry["fn" if fn is not None else "energy"] = fn if fn is not None else energy
         cd = CustomData()
         cd.set_config(entry)
