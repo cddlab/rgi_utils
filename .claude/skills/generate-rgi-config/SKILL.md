@@ -30,7 +30,7 @@ custom one:
 | keep two parts of the structure at a set distance | **distance** | `distance_restraints_config` |
 | set the angle / twist between three / four parts | **angle** / **dihedral** | `angle_` / `dihedral_restraints_config` |
 | keep a ligand at a chemically sensible shape | **conformer** | `conformer_restraints_config` |
-| pull a region onto a reference structure (PDB) | **RMSD** | `rmsd_restraints_config` |
+| pull a region onto a reference structure (PDB/mmCIF) | **RMSD** | `rmsd_restraints_config` |
 | pair two nucleotides in Watson–Crick geometry | **base-pair macro** | `base_pair_restraints_config` |
 | anything else, as a math formula | **custom** | `custom_restraints_config` |
 

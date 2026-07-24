@@ -9,7 +9,7 @@ This page documents **every variable**: its type, default, allowed values, and m
 Omitted keys fall back to their documented defaults. Unknown top-level keys and unknown conformer
 keys raise an error. Unknown keys inside individual restraint entries are logged and ignored, so
 check their spelling against this page. Source of truth:
-`src/rgi_utils/{config,distance_restr_data,group_geom_restr_data,base_pair_restr_data,ref_geom_restr_data,ref_config,featurizer,rmsd_restr_data,selection}.py`.
+`src/rgi_utils/{config,distance_restr_data,group_geom_restr_data,base_pair_restr_data,ref_geom_restr_data,ref_config,featurizer,rmsd_restr_data,pdb_ref,_align,selection}.py`.
 
 > **Don't want to hand-write this?** Run the `generate-rgi-config` skill in Claude Code
 > (`/generate-rgi-config`) or Codex (`$generate-rgi-config`). It turns a plain-language
@@ -549,7 +549,7 @@ from a Kabsch SVD on the **fit** atoms. $\hat{R}$ (and the centroids) are treate
 | `weight` | float | `1.0` | energy scale |
 | `start_sigma` / `stop_sigma` | float | `+inf` / `-1` | sigma gating (set `stop_sigma`, e.g. `1.0`, to release late and heal a strained terminus) |
 | `start_step` / `stop_step` | int | `-inf` / `+inf` | step gating (mutually exclusive with the sigma window; see Step gating) |
-| `pairing` | `"align"` / `"identity"` | `"align"` | how reference and prediction residues correspond. `align` = sequence-align polymer chains (BLOSUM62) so a **homolog** ref maps on despite substitutions/indels/renumbering; non-polymer atoms always pair by ordinal. `identity` = strict (chain, resid, name) ordinal pairing. |
+| `pairing` | `"align"` / `"identity"` | `"align"` | how reference and prediction residues correspond. `align` = sequence-align polymer chains (BLOSUM62, via biopython `Bio.Align`, lazy-imported) so a **homolog** ref maps on despite substitutions/indels/renumbering; non-polymer atoms always pair by ordinal. `identity` = strict (chain, resid, name) ordinal pairing. |
 | `best_effort` | bool | `true` | skip atoms with no match in the ref (instead of raising); `false` = strict |
 
 ### Atom pairing and selection

@@ -1,7 +1,7 @@
 # Per-tool placement, format, opt-in, and run command
 
 The `restraints_config` **contents** are identical across all six tools — the distance /
-angle / dihedral / conformer / rmsd / custom blocks are the same. What differs per tool is
+angle / dihedral / conformer / rmsd / base_pair / custom blocks are the same. What differs per tool is
 only **(a) the file format, (b) where the config sits, (c) how a ligand opts into conformer
 restraints, and (d) the run command**. Get (b) and (c) right or the restraint silently does
 nothing.

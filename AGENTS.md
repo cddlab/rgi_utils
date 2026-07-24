@@ -152,7 +152,7 @@ candidate dict); a ligand atom named "C"/"N"/"O" never matches them.
 
 (`rmsd_restr_data.py` + `pdb_ref.py`): `RmsdData` resolves a moving
 group against a reference structure — `ref_pdb` (PDB) or `ref_cif` (mmCIF), **mutually
-exclusive**, both parsed via **gemmi** (lazy-imported, so `import rgi_utils` stays numpy-only)
+exclusive**, both **coordinate-parsed via gemmi** (lazy-imported, so `import rgi_utils` stays numpy-only)
 by `read_pdb_atoms` / `read_cif_atoms` into the same `PdbAtom` list (a shared `_build_atoms`
 applies the per-chain ordinal once, so the two are interchangeable; PDB goes through
 `gemmi.read_structure`, mmCIF reads the `_atom_site` loop via `gemmi.cif` preferring the
@@ -166,7 +166,8 @@ atoms are selected INDEPENDENTLY by four keys — `atom_selection_target_fit`,
 fit+calc pair). **There is NO bare `atom_selection` key** — passing one now RAISES
 (it used to be silently dropped, a footgun), so use the suffixed keys. All four omitted ⇒ fit+measure over the
 WHOLE structure best-effort (atoms missing from the ref are skipped). `pairing`
-**defaults to `align`** (sequence-align polymer chains so a homolog ref maps on by
+**defaults to `align`** (sequence-align polymer chains via **biopython** — `_align.py`
+→ `Bio.Align.PairwiseAligner` + BLOSUM62, also lazy-imported — so a homolog ref maps on by
 residue; ligands + structures with no polymer fall back to ordinal identity, so the
 default is safe everywhere) — set `pairing: identity` to force pure (chain, resid, name)
 ordinal pairing. A `name CA` or `backbone` selection superposes on backbone only, which
@@ -234,8 +235,11 @@ energy `energy(ctx) -> scalar`. Two authoring paths, ONE mechanism:
 - **config (expression DSL)**: a `custom_restraints_config` entry with an `energy` formula string
   over a shared vocabulary + named `selections` (e.g. `"(distance(A,B) - distance(C,D))**2"`).
   A selection value may be reference-backed as `refN and <selection>` with an entry-local
-  `refs.refN` definition; the same geometry vocabulary consumes it, and external-reference RMSD
-  is `rmsd(A,B)` (prediction A, reference-backed B).
+  `refs.refN` definition; the same geometry vocabulary consumes it (`distance`/`angle`/`dihedral`/
+  `centroid`/`rg`/`norm`/`dot`/`coords`/`kabsch`/`rmsd` + penalties + math incl. periodicity-safe
+  `wrap`; full table in `doc/config.md`). External-reference RMSD is `rmsd(A,B)` (prediction A,
+  reference-backed B); rigid superposition is `kabsch(A,B)`. (There is no `ref(sel,r)` function —
+  reference-backing is the `refN and <selection>` string form.)
   `move` is a prediction selection name or list of names; unlisted prediction selections are
   stop-gradient pinned for that custom term, and reference-backed selections are always fixed.
 - **code (ctx fn)**: a Python `energy(ctx)` — passed directly (`CombinedRestraints.add_custom(fn=…)`
@@ -263,6 +267,26 @@ so it can't see closures) — correct, just unfused; the built-ins keep the fuse
 rgi_utils` stays numpy-only (torch/jax pulled lazily per backend by `get_ops`). Harness:
 `tests/test_custom.py` + `tests/test_custom_move.py` (both paths × 3-backend energy/grad
 parity + move pinning + jax-scan + torch minimize + DSL safety). Full config surface: `doc/config.md`.
+
+### Base-pair restraints (nucleic-acid Watson-Crick — a config-time macro)
+
+`base_pair_restraints_config` (`base_pair_restr_data.py`, `BasePairData`) is **NOT a new
+energy term** — it is a **config-time macro** (mirroring servalcat/Refmac) that EXPANDS each
+named nucleotide pair into the existing primitives: one **distance** restraint per WC hydrogen
+bond (donor/acceptor atoms + ideal length looked up from a built-in `_WC_ATOMS` table:
+G·C / A·T / A·U, plus a G·U wobble that is **opt-in via `pair: GU`**, never auto-detected), plus
+(optionally, `coplanar: true` default) one best-fit **plane** restraint over both bases so the
+pair stays coplanar. So it reuses the distance + plane energy terms → all backends + parity for
+free. Base identity auto-detects from each residue's `resname` (DNA `D`-prefix stripped); pairs
+are **user-specified only** (coordinates are noise at high sigma). Expansion happens in
+`combined.py` (`bp.resolve_sites(adapter)` → pre-resolved distances merged into the distance list;
+planes passed as `extra_plane_groups`). Fields: `residue1`/`residue2` (each must resolve to
+EXACTLY one residue, else raises), `pair`, `coplanar`, `target` (scalar→harmonic, `[low,high]`→
+flat-bottomed, default `(2.7, 3.1)` Å), `weight`, `move` (0/1/2 — `1` docks residue1 onto a fixed
+residue2), and the gate window `start_sigma`/`stop_sigma` XOR `start_step`/`stop_step` (applies to
+the H-bond distances; the coplanarity plane rides the shared conformer gate). Verbose setup logs a
+SEPARATE line `base_pair=P pairs -> H h-bonds + C coplanar groups` (the generated restraints also
+show up in the `distances=` / `plane=` counts). Full field surface: `doc/config.md`.
 
 ### Key design points
 

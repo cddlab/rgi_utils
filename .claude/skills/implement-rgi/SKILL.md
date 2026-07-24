@@ -17,7 +17,7 @@ description: >-
 Diffusion structure predictors denoise atom coordinates over many steps. RGI
 injects a short gradient-based minimization at each step — right after the model
 produces `positions_denoised`, before the Euler update — that nudges atoms to
-satisfy user restraints. Five types:
+satisfy user restraints. Six types:
 
 - **distance**: the centroid distance between two atom groups, pulled toward a
   target (harmonic / flat-bottomed / lower- / upper-bound).
@@ -27,17 +27,21 @@ satisfy user restraints. Five types:
   torsions, best-fit-plane flatness of rings + sp2 groups (**plane**, opt-in), and non-bonded clashes
   (**VdW**) pulled toward an ideal RDKit geometry (keeps the ligand chemically sensible
   while the pocket forms).
-- **RMSD**: a group's Kabsch-superposed RMSD toward a reference structure (PDB).
+- **RMSD**: a group's Kabsch-superposed RMSD toward a reference structure (PDB or mmCIF).
+- **base_pair**: a config-time macro pinning two nucleotides into Watson-Crick geometry
+  (expands to WC H-bond distances + an optional coplanarity plane — no new energy term).
 
 These are flat-bottomed squared penalties minimized on GPU (or CPU). The energy
 maths is identical across the torch and jax backends (with a numpy energy
 reference); distance is CG-minimised like the other restraints (a reduced-mass
 `_move_centroid` rescale keeps large groups translating rigidly).
 
-Beyond these five built-ins, a user can define an **original** restraint with no
+Beyond these built-ins, a user can define an **original** restraint with no
 hand-wiring — a config-only `custom_restraints_config` math **formula** (the expression
-DSL) or a Python `energy(ctx)` function — both run on every backend. This needs **no
-tool-side change** (it flows through the same `restraints_config` + `CombinedRestraints`).
+DSL) or a Python `energy(ctx)` function — both run on every backend. Likewise, a distance /
+angle / dihedral / custom group can be **reference-anchored** to an external PDB/mmCIF via the
+`refN and <selection>` + `refs.refN` syntax. Both need **no tool-side change** (they flow
+through the same `restraints_config` + `CombinedRestraints`).
 See `references/lifecycle-and-hooks.md` and `doc/config.md`.
 
 ## Core principle: rgi_utils does the heavy lifting
@@ -145,7 +149,8 @@ inside the scan. See `references/lifecycle-and-hooks.md`.
 
 The tool's input (YAML/JSON) already carries a `restraints_config` dict; route
 it unchanged into `setup(config=...)`. Its schema (distance / angle / dihedral /
-conformer / RMSD restraints + start_sigma/stop_sigma + gpu/method/max_iter) is parsed by
+conformer / RMSD / base_pair / custom restraints + start_sigma/stop_sigma +
+gpu/method/max_iter) is parsed by
 `rgi_utils.config.RestraintsConfig.from_dict`, shared across all tools. **Do not
 define restraint types, parse the config, resolve atoms, or add a new CLI flag
 in the tool** — one dict is enough, and it keeps the tool at parity.
@@ -207,7 +212,9 @@ the setup spec counts (13); undeclared deps / CPU torch builds (14).
     group_dihedral=.. vdw=..`) and confirm the count is non-zero for every
     restraint type you requested — a type that built 0 restraints reports a perfect
     `finalize` energy of `0.00000`, so near-zero energy alone does NOT prove a
-    restraint is working (pitfall 13);
+    restraint is working (pitfall 13). (`base_pair` is a macro, so it is NOT a field
+    in that string — it logs a SEPARATE `base_pair=P pairs -> H h-bonds + C coplanar
+    groups` line and also feeds the `distances=` / `plane=` counts;)
   - distance: the predicted structure's centroid distance reaches the target;
   - conformer: spec counts non-zero AND `finalize` bond/angle/chiral/plane/cistrans
     energies are small, or the ligand RMSD differs between restraint-on and restraint-off runs;

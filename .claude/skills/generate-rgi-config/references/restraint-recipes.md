@@ -215,8 +215,9 @@ custom_restraints_config:
 ```
 
 Vocabulary (geometry on centroids; **angles here are in radians**, unlike the built-in
-configs): `centroid` `distance` `angle` `dihedral` `rg` `norm` `dot`; penalties `harmonic`
-`flat_bottomed{,1,2}`; math `sqrt exp log abs sin cos clip sum minimum maximum where`. No
+configs): `centroid` `distance` `angle` `dihedral` `rg` `norm` `dot` `coords` `kabsch` `rmsd`;
+penalties `harmonic` `flat_bottomed{,1,2}`; math `sqrt exp log abs sin cos wrap clip sum minimum
+maximum where` (`wrap(x)` = `atan2(sin x, cos x)` folds a dihedral deviation into ±π). No
 `if`, no imports — it is parsed safely. The formula must reduce to a scalar. `move` is a prediction selection name or list of
 names;
 omitted/`all`/`both` moves all prediction selections. A reference-backed selection uses

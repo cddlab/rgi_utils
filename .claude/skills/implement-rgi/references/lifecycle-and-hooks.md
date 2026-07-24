@@ -99,6 +99,9 @@ restraints_config:
       # weight: optional (default 1.0). NO-OP for a single / disjoint restraint (always hits
       #        its target); only balances OVER-CONSTRAINED coupled restraints whose shared atom
       #        is their sole mover (settles w1:w2 between the targets). Not a soft-pull knob.
+      # ref-anchored: optional; replace ONE group with "ref1 and <selection>" and define it under
+      #        refs.ref1 (a fixed external PDB/mmCIF) — the other group moves toward it. angle/dihedral
+      #        allow up to 2/3 refs. Reference groups are permanently fixed. See doc/config.md.
       harmonic: {target_distance: 25.0}
       # alternatives: flat-bottomed {target_distance1, target_distance2},
       #               flat-bottomed1 {target_distance1}, flat-bottomed2 {target_distance2}
@@ -130,7 +133,9 @@ restraints_config:
     vdw:      {weight: 1.0}                          # mode defaults to "both" (intramolecular + intermolecular: vs fixed background AND other restrained ligands); runs on torch AND jax
   rmsd_restraints_config:           # Kabsch-superposed RMSD of a group toward a reference PDB
     - ref_pdb: "ref.pdb"            # required, OR ref_cif: "ref.cif" (mmCIF, mutually exclusive);
-      #                               parsed by the dependency-free read_pdb_atoms / read_cif_atoms
+      #                               coords parsed via gemmi (read_pdb_atoms / read_cif_atoms); the
+      #                               pairing:align path uses biopython (Bio.Align, BLOSUM62). Both
+      #                               lazy-imported, so `import rgi_utils` stays numpy-only.
       harmonic: {target_rmsd: 0.0}  # required: a restraint-type block on the RMSD value (Å);
       #                               also flat-bottomed{target_rmsd1,target_rmsd2} /
       #                               flat-bottomed1 / flat-bottomed2 (stay within X Å) -- the
@@ -141,6 +146,15 @@ restraints_config:
       #   re-idealises geometry the restraint held distorted (e.g. a broken peptide bond at a free tail)
       # atom_selection_{target,ref}_{fit,calc}: independently pick superposition vs measured atoms
       #   (a `backbone` / `name CA` fit superposes on main chain only). All omitted -> whole structure.
+  base_pair_restraints_config:      # nucleic-acid Watson-Crick base pairs — a config-time MACRO
+    - residue1: "chain A and resid 5"    # each selector must match EXACTLY one nucleotide;
+      residue2: "chain B and resid 12"   #   expands to one distance per WC H-bond + (opt.) 1 coplanarity plane
+      # pair: GC          # optional: override auto-detect (needed if resname absent, or a G-U wobble)
+      # coplanar: true    # add the inter-base coplanarity plane (default true)
+      # target: [2.7, 3.1]  # H-bond distance window -> flat-bottomed (default); scalar -> harmonic (A)
+      # weight: 1.0       # scale of the H-bonds AND the coplanarity plane
+      # move: both        # both / 1 / 2 — 1 docks residue1 onto a fixed residue2
+      # start_sigma / stop_sigma (or start_step / stop_step): gate the H-bond distances
   custom_restraints_config:         # define your OWN restraint (not a built-in) — see doc/config.md
     - energy: "(distance(A,B) - distance(C,D))**2"   # a math formula (expression DSL) over...
       selections: {A: "...", B: "...", C: "...", D: "..."}   # ...named atom selections
