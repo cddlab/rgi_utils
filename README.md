@@ -40,6 +40,9 @@ Five **built-in** restraint types, all minimized during the denoising loop to gu
   the angular analogue of the distance restraint.
 - **dihedral** — the dihedral of four atom groups' centroids (axis = groups 2–3), in degrees.
 
+`base_pair_restraints_config` is a convenience macro that expands a named Watson–Crick
+nucleotide pair into H-bond distance restraints and an optional coplanarity restraint.
+
 Beyond these five built-ins you can define your **own** restraint — see
 [Custom restraints](#custom-restraints) below.
 
@@ -164,7 +167,9 @@ The per-entry `move` key picks which group the CG moves toward the target: `both
 `stop_gradient` — e.g. move only a ligand toward a fixed pocket).
 
 A distance entry may use one external reference group: keep `atom_selection1/2`, write the
-reference-side value as `ref1 and <selection>`, and define `refs.ref1` with `ref_pdb` or `ref_cif`.
+reference-side value as `ref1 and <selection>`, and define `refs.ref1` with `ref_pdb` or
+`ref_cif`. The ref group stays fixed; `move` may name only prediction-side group indices
+(`all`/omitted = all prediction groups).
 
 ### Angle / dihedral restraints
 
@@ -175,7 +180,30 @@ from the per-atom `angle` / `cistrans` *conformer* terms (internally these are t
 types as distance (`harmonic` / `flat-bottomed` / `flat-bottomed1` / `flat-bottomed2`),
 but targets are in **degrees** (`target_angle` / `target_dihedral`). `weight` defaults to
 1.0 and translates any group size rigidly. `move` selects which groups are free (default:
-the arms move, the anchor group is pinned).
+the arms move, the anchor group is pinned). With ref groups, references stay fixed and
+`move` selects prediction-side group indices; omitted/`all`/`both` moves every prediction group.
+
+### Base-pair restraints
+
+`base_pair_restraints_config` restrains two user-selected nucleotides to Watson–Crick geometry.
+Each entry expands into the appropriate donor/acceptor distance restraints and, by default, a
+best-fit plane over both bases. Standard GC/CG, AT/TA, and AU/UA orientations are detected from
+`resname`;
+set `pair: GU` explicitly for a wobble pair or when residue names are unavailable.
+
+```yaml
+base_pair_restraints_config:
+  - residue1: "chain A and resid 5"   # exactly one nucleotide
+    residue2: "chain B and resid 12"  # exactly one nucleotide
+    # pair: GC          # optional override; GU must be explicit
+    # target: [2.7, 3.1]  # H-bond distance window; scalar means harmonic
+    # coplanar: true    # add inter-base coplanarity (default true)
+    # move: both        # both / 1 / 2; choose which residue the H-bonds move
+```
+
+The sigma/step window applies to generated H-bond distances. The coplanarity plane uses the shared
+conformer gate. See [`doc/config.md`](doc/config.md#base_pair_restraints_config-list) for atom pairs,
+validation rules, and gating details.
 
 ### Custom restraints
 
@@ -190,6 +218,7 @@ custom_restraints_config:
     energy: "(distance(A, B) - distance(C, D))**2"
     selections: {A: "chain A and resid 10", B: "chain B and resid 10",
                  C: "chain A and resid 90", D: "chain B and resid 90"}
+    move: [A, C]                              # B and D are pinned for this term
     weight: 1.0
 ```
 
@@ -212,8 +241,9 @@ def energy(ctx): ...
 `rg` `norm` `dot`), penalty (`harmonic` `flat_bottomed` `flat_bottomed1` `flat_bottomed2`), and math
 (`sqrt` `exp` `log` `abs` `sin` `cos` `clip` `minimum` `maximum` `where` `sum` + arithmetic). Use `where(cond, a, b)`,
 not `if` (keeps it jax-traceable). The energy (× `weight`) is added to the CG objective with the
-usual `start_sigma` / `stop_sigma` gating. Formulas are parsed safely (no `eval`). A custom
-selection can use
+usual `start_sigma` / `stop_sigma` gating. `move` accepts a prediction selection name or list
+of names; omitted/`all`/`both` moves every prediction selection, while ref-backed selections stay fixed. Formulas are parsed safely (no
+`eval`). A custom selection can use
 `refN and <selection>`; all geometry functions accept it, and `rmsd(A,B)` requires prediction
 selection A and reference-backed selection B. Full reference:
 [`doc/config.md`](doc/config.md) (the `custom_restraints_config` section).

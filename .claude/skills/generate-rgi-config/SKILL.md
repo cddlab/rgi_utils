@@ -22,7 +22,8 @@ before they spend a GPU run on it**. The engine (`rgi_utils`) does all the maths
 only write config.
 
 RGI nudges the atoms during diffusion sampling so the final structure satisfies the
-restraints. There are **five built-in restraint types** plus a custom one:
+restraints. There are **five direct built-in restraint types**, a base-pair macro, and a
+custom one:
 
 | the user wants to… | restraint type | block |
 |---|---|---|
@@ -30,6 +31,7 @@ restraints. There are **five built-in restraint types** plus a custom one:
 | set the angle / twist between three / four parts | **angle** / **dihedral** | `angle_` / `dihedral_restraints_config` |
 | keep a ligand at a chemically sensible shape | **conformer** | `conformer_restraints_config` |
 | pull a region onto a reference structure (PDB) | **RMSD** | `rmsd_restraints_config` |
+| pair two nucleotides in Watson–Crick geometry | **base-pair macro** | `base_pair_restraints_config` |
 | anything else, as a math formula | **custom** | `custom_restraints_config` |
 
 Full mapping + worked phrasings: **`references/restraint-recipes.md`** (read it when you

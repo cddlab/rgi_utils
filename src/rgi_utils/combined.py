@@ -70,6 +70,7 @@ class CombinedRestraints:
         energy: str | None = None,
         selections: dict | None = None,
         refs: dict | None = None,
+        move: str | list[str] | tuple[str, ...] | set[str] | None = None,
         weight: float = 1.0,
         start_sigma=None,
         stop_sigma=None,
@@ -85,6 +86,8 @@ class CombinedRestraints:
         ``refs`` defines ``ref1``, ``ref2``, ... structures. Mark a selection as
         reference-backed with ``refN and <selection>``; all geometry functions consume it
         normally, and external-reference RMSD is ``rmsd(A, B)`` with B reference-backed.
+        ``move`` names the prediction selections that receive this restraint's gradient;
+        omitted or ``all``/``both`` moves every prediction selection while references stay fixed.
         Equivalent to one ``custom_restraints_config`` entry; merged
         into the spec at ``setup``. Gate on EITHER a sigma window (``start_sigma`` /
         ``stop_sigma``) OR a step window (``start_step`` / ``stop_step``) — not both (mutually
@@ -112,6 +115,8 @@ class CombinedRestraints:
             entry["selections"] = selections
         if refs is not None:
             entry["refs"] = refs
+        if move is not None:
+            entry["move"] = move
         entry["fn" if fn is not None else "energy"] = fn if fn is not None else energy
         cd = CustomData()
         cd.set_config(entry)

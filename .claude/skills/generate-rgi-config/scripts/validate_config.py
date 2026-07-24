@@ -123,6 +123,7 @@ def _find_configs(obj, path="<root>"):
         "distance_restraints_config",
         "angle_restraints_config",
         "dihedral_restraints_config",
+        "base_pair_restraints_config",
         "conformer_restraints_config",
         "rmsd_restraints_config",
         "custom_restraints_config",
@@ -157,6 +158,13 @@ def _collect_selection_strings(cfg: dict):
                             f"{section}[{i}].refs.{ref_name}.{key}",
                             ref_def[key],
                         )
+    for i, entry in enumerate(cfg.get("base_pair_restraints_config", []) or []):
+        if not isinstance(entry, dict):
+            continue
+        for key in ("residue1", "residue2"):
+            if key in entry and isinstance(entry[key], str):
+                yield (f"base_pair_restraints_config[{i}].{key}", entry[key])
+
     # custom: the named selections map
     for i, entry in enumerate(cfg.get("custom_restraints_config", []) or []):
         if isinstance(entry, dict):
@@ -220,6 +228,7 @@ def _validate_one(location: str, cfg: dict, enclosing: dict) -> int:
     print(
         f"  ✓ schema ok — distance={len(rc.distance_data)} "
         f"angle={len(rc.angle_data)} dihedral={len(rc.dihedral_data)} "
+        f"base_pair={len(rc.base_pair_data)} "
         f"rmsd={len(rc.rmsd_data)} custom={len(rc.custom_data)}"
     )
     conf = cfg_for_schema.get("conformer_restraints_config") or {}
@@ -232,8 +241,11 @@ def _validate_one(location: str, cfg: dict, enclosing: dict) -> int:
     # 2. selection-DSL syntax
     for key, sel in _collect_selection_strings(cfg):
         try:
-            ref_selection = split_ref_selection(sel, key)
-            AtomSelector(ref_selection[1] if ref_selection is not None else sel)
+            if key.startswith("base_pair_restraints_config") or ".refs." in key:
+                AtomSelector(sel)
+            else:
+                ref_selection = split_ref_selection(sel, key)
+                AtomSelector(ref_selection[1] if ref_selection is not None else sel)
         except Exception as exc:  # noqa: BLE001
             print(f"  ✗ SELECTION SYNTAX ERROR in {key}: {sel!r} — {exc}")
             errors += 1

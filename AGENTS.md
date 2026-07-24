@@ -215,6 +215,8 @@ energy `energy(ctx) -> scalar`. Two authoring paths, ONE mechanism:
   A selection value may be reference-backed as `refN and <selection>` with an entry-local
   `refs.refN` definition; the same geometry vocabulary consumes it, and external-reference RMSD
   is `rmsd(A,B)` (prediction A, reference-backed B).
+  `move` is a prediction selection name or list of names; unlisted prediction selections are
+  stop-gradient pinned for that custom term, and reference-backed selections are always fixed.
 - **code (ctx fn)**: a Python `energy(ctx)` — passed directly (`CombinedRestraints.add_custom(fn=…)`
   / config `{"fn": …}`) or registered (`@custom_restraint("name")`, config `{"use": "name"}`).
 
@@ -231,14 +233,15 @@ index arrays — NOT numpy term arrays, hence a separate field); `has_custom()` 
 the solver-run condition / `max_start_sigma()`.
 
 Non-obvious invariants: custom energies use **plain centroids** (no `_move_centroid` rigid-translation
-trick), so autodiff grad == numpy-FD (the harness checks this strictly, unlike the group restraints).
+trick), so autodiff grad == numpy-FD while every prediction selection is free. `move` pins unlisted
+selection blocks with stop-gradient, so pinned cases use torch-vs-jax grad parity instead.
 The closure must reduce to a **scalar** (`ops.sum` over batch dims) or `jax.value_and_grad` rejects it.
 Selections resolve at setup via a **resolve pass** (run the energy with `ResolveContext`). On CUDA the
 torch CG runs **eager** when any custom is present (the fused `gpu_cg` `_energy` bypasses `energy_fn`,
 so it can't see closures) — correct, just unfused; the built-ins keep the fused path. `import
 rgi_utils` stays numpy-only (torch/jax pulled lazily per backend by `get_ops`). Harness:
-`tests/test_custom.py` (both paths × 3-backend energy/grad parity + jax-scan + torch minimize + DSL
-safety). Full config surface: `doc/config.md`.
+`tests/test_custom.py` + `tests/test_custom_move.py` (both paths × 3-backend energy/grad
+parity + move pinning + jax-scan + torch minimize + DSL safety). Full config surface: `doc/config.md`.
 
 ### Key design points
 
@@ -281,7 +284,9 @@ safety). Full config surface: `doc/config.md`.
 - Distance restraints: `harmonic`, `flat-bottomed`, `flat-bottomed1`,
   `flat-bottomed2`; only `calc_method=unfixed-absolute` (centroid-based). A distance entry may
   replace at most one group with `ref1 and <selection>` and define it under `refs.ref1`; the
-  normal `atom_selectionN` keys are retained. **CG-minimised** like
+  normal `atom_selectionN` keys are retained. Ref groups are permanently fixed; omitted/`all`/`both`
+  moves every prediction group, and explicit `move` indices may select prediction groups only.
+  **CG-minimised** like
   the group terms (no longer closed-form): `distance_energy` builds each group's centroid via
   `_move_centroid` with a **reduced-mass scale `N1·N2/(N1+N2)`**, so the per-atom gradient is
   `O(1)` (no `1/N` dilution → rigid translation) AND the two groups' gradient magnitudes are in
@@ -312,7 +317,9 @@ safety). Full config surface: `doc/config.md`.
   `dihedral_restraints_config` 4 groups / axis=group2-3): restrain the angle/dihedral of
   the groups' centroids. Reference groups use the same `refN and <selection>` values: angle
   entries allow up to two distinct refs and dihedral entries up to three, each fitted
-  independently. The config surface MIRRORS the distance restraint — the four types
+  independently. On these ref-geometry closures, omitted/`all`/`both` moves all prediction groups;
+  explicit `move` indices pin unlisted prediction groups and cannot select a reference group.
+  The config surface MIRRORS the distance restraint — the four types
   `harmonic{target_angle}` / `flat-bottomed{target_angle1,target_angle2}` / `flat-bottomed1`
   / `flat-bottomed2` (dihedral uses `target_dihedral*`), plus the `move` key. Targets are in
   **DEGREES** by default — set `unit: radians` on the entry to give them in radians instead

@@ -51,6 +51,7 @@ _KNOWN_CUSTOM_KEYS = {
     "fn",
     "selections",
     "refs",
+    "move",
     "weight",
     "start_sigma",
     "stop_sigma",
@@ -80,6 +81,8 @@ class CustomSpec:
     )
     # Reference-backed selection id -> (selection evaluated on ref, ref name).
     selection_refs: dict[str, tuple[str, str]] = field(default_factory=dict)
+    # Prediction selection id -> whether this term may move it.
+    move_free: dict[str, bool] = field(default_factory=dict)
     # One optional prediction-frame fit per reference and the constant reference
     # blocks consumed by reference-backed selections.
     ref_fits: dict[str, tuple[np.ndarray, np.ndarray]] = field(default_factory=dict)
@@ -108,11 +111,12 @@ class CustomData:
         self.stop_step = float("inf")
         self.run_restr = False
         self.ref_defs: dict[str, dict] = {}
-
+        self.move = None
         self._identifiers: list[str] = []
         self._selection_sources: dict[str, tuple[str, object]] = {}
         self._global: dict[str, list[int]] = {}
         self._selection_refs: dict[str, tuple[str, str]] = {}
+        self._move_free: dict[str, bool] = {}
         self._ref_pairs: list[tuple[str, str]] = []
         self._ref_resolved: dict[tuple[str, str], tuple[list[int], np.ndarray]] = {}
         self._ref_group_resolved: dict[tuple[str, str], np.ndarray] = {}
@@ -138,6 +142,7 @@ class CustomData:
         self.ref_defs = parse_ref_defs(
             config.get("refs", {}), "custom_restraints_config entry"
         )
+        self.move = config.get("move")
         apply_window_params(self, config, "custom_restraints_config entry")
 
         sources = [
@@ -197,6 +202,49 @@ class CustomData:
         )
         return used_refs
 
+    def _resolve_move(self, prediction_ids: list[str]) -> None:
+        prediction_set = set(prediction_ids)
+        move = self.move
+        if move is None or (
+            isinstance(move, str) and move.strip().lower() in ("all", "both")
+        ):
+            selected = prediction_set
+        elif isinstance(move, str):
+            if move in self._identifiers:
+                selected = {move}
+            else:
+                selected = {item.strip() for item in move.split(",") if item.strip()}
+        elif isinstance(move, (list, tuple, set)):
+            selected = set(move)
+        else:
+            raise ValueError(
+                f"custom restraint {self.name!r}: move must be 'all', a selection "
+                f"name, or a list of selection names; got {move!r}"
+            )
+
+        if any(not isinstance(identifier, str) for identifier in selected):
+            raise ValueError(
+                f"custom restraint {self.name!r}: move selection names must be strings; "
+                f"got {move!r}"
+            )
+
+        unknown = selected - set(self._identifiers)
+        if not selected or unknown:
+            raise ValueError(
+                f"custom restraint {self.name!r}: move contains unknown selection "
+                f"name(s) {sorted(unknown) if unknown else []}; available names are "
+                f"{self._identifiers}"
+            )
+        selected_refs = selected - prediction_set
+        if selected_refs:
+            raise ValueError(
+                f"custom restraint {self.name!r}: move selects reference-backed "
+                f"selection(s) {sorted(selected_refs)}; reference selections are fixed"
+            )
+        self._move_free = {
+            identifier: identifier in selected for identifier in prediction_ids
+        }
+
     def _load_refs(self, atoms, used_refs: set[str]) -> dict[str, tuple]:
         has_polymer = any(
             polymer_type(atom.mol_type, atom.resname) is not None for atom in atoms
@@ -239,6 +287,7 @@ class CustomData:
                 f"custom restraint {self.name!r} measures only reference atoms; "
                 "at least one selection must use prediction atoms"
             )
+        self._resolve_move(prediction_ids)
 
         prediction_strings = [
             self._selection_sources[identifier][1] for identifier in prediction_ids
@@ -401,6 +450,7 @@ class CustomData:
             stop_step=float(self.stop_step),
             refs=refs,
             selection_refs=dict(self._selection_refs),
+            move_free=dict(self._move_free),
             ref_fits=ref_fits,
             ref_blocks=dict(self._ref_group_resolved),
         )

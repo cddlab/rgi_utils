@@ -52,6 +52,7 @@ def build_closure(spec, ops):
         for ref_name, (indices, fit_ref) in spec.ref_fits.items()
     }
     ref_blocks = dict(spec.ref_blocks)
+    move_free = dict(spec.move_free)
     weight = spec.weight
 
     def make_context(coords):
@@ -63,6 +64,7 @@ def build_closure(spec, ops):
             selection_refs,
             ref_fits,
             ref_blocks,
+            move_free=move_free,
         )
 
     if spec.kind == "formula":
@@ -73,7 +75,9 @@ def build_closure(spec, ops):
 
     elif spec.kind == "ref_geom":
         baked_groups = [
-            ("pred", ops.asint(payload)) if kind == "pred" else ("ref", payload)
+            ("pred", (ops.asint(payload[0]), payload[1]))
+            if kind == "pred"
+            else ("ref", payload)
             for kind, payload in spec.groups
         ]
         geom = spec.geom
@@ -86,7 +90,10 @@ def build_closure(spec, ops):
             centroid_blocks = []
             for kind, payload in baked_groups:
                 if kind == "pred":
-                    centroid = _rigid_centroid(ops, ops.gather(coords, payload))
+                    indices, free = payload
+                    centroid = _rigid_centroid(ops, ops.gather(coords, indices))
+                    if not free:
+                        centroid = ops.stop_gradient(centroid)
                 else:
                     centroid = ops.mean_atoms(
                         context._reference_coords(payload[0], payload[1])

@@ -55,6 +55,7 @@ distance_restraints_config:
     atom_selection2: "ref1 and chain A and resid 200"
     refs:
       ref1: {ref_cif: "template.cif"}
+    move: 1  # group 1 moves; the reference group is always fixed
     harmonic: {target_distance: 5.0}
 ```
 
@@ -91,7 +92,8 @@ rigidly). `move` picks which groups are free; default frees the arms/ends and pi
 vertex/axis. Pick groups whose centroids are **not collinear** (a collinear arrangement has
 an ill-defined gradient — see config.md). Angle entries may use up to two distinct references and
 dihedral entries up to three; write a reference group as `refN and <selection>` in its normal
-`atom_selectionN` key and define `refs.refN`.
+`atom_selectionN` key and define `refs.refN`. With refs, omitted/`all`/`both` moves every prediction
+group; explicit indices may select prediction groups only.
 
 ---
 
@@ -160,7 +162,29 @@ config.md.
 
 ---
 
-## 5. Custom — "something the five built-ins don't cover"
+## 5. Base pair — "pair these two nucleotides"
+
+`base_pair_restraints_config` is a macro for Watson–Crick geometry: it generates the
+base-specific H-bond distances and, by default, a coplanarity plane. Each residue selector
+must match exactly one nucleotide.
+
+```yaml
+base_pair_restraints_config:
+  - residue1: "chain A and resid 5"
+    residue2: "chain B and resid 12"
+    # pair: GC          # optional override; GU wobble must be explicit
+    # target: [2.7, 3.1]
+    # coplanar: true
+    # move: both        # both / 1 / 2 for the H-bond corrections
+```
+
+Standard GC/CG and AT/AU orientations are auto-detected from `resname`. Use a scalar
+`target` for harmonic distance or `[low, high]` for a flat-bottomed window. The sigma/step
+window gates generated H-bond distances; the plane uses the shared conformer gate.
+
+---
+
+## 6. Custom — "something the five built-ins don't cover"
 
 Write the restraint as a **math formula** over named atom-group centroids — no Python, no
 tool change. Use it for symmetry, equidistance, radius-of-gyration, or any algebraic combo.
@@ -176,6 +200,7 @@ custom_restraints_config:
       B: "chain B and resid 10"
       C: "chain A and resid 90"
       D: "chain B and resid 90"
+    move: [A, C]  # B and D are pinned for this term
   - name: compact
     energy: "harmonic(rg(dom), 12.0)"        # pull radius of gyration toward 12 Å
     selections: {dom: "chain A and resid 1 to 80"}
@@ -186,14 +211,17 @@ custom_restraints_config:
       landmark: "ref1 and chain A and resid 90"
     refs:
       ref1: {ref_pdb: "reference.pdb"}
+    move: moving  # reference-backed landmark is always fixed
 ```
 
 Vocabulary (geometry on centroids; **angles here are in radians**, unlike the built-in
 configs): `centroid` `distance` `angle` `dihedral` `rg` `norm` `dot`; penalties `harmonic`
 `flat_bottomed{,1,2}`; math `sqrt exp log abs sin cos clip sum minimum maximum where`. No
-`if`, no imports — it is parsed safely. The formula must reduce to a scalar. A reference-backed selection
-uses `refN and <selection>` and works with every geometry
-primitive; external-reference RMSD is `rmsd(A,B)` with prediction A and reference-backed B. Full list +
+`if`, no imports — it is parsed safely. The formula must reduce to a scalar. `move` is a prediction selection name or list of
+names;
+omitted/`all`/`both` moves all prediction selections. A reference-backed selection uses
+`refN and <selection>` and works with every geometry primitive; external-reference RMSD is
+`rmsd(A,B)` with prediction A and reference-backed B. Full list +
 semantics: config.md "custom_restraints_config".
 
 ---

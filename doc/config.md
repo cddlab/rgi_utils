@@ -9,7 +9,7 @@ This page documents **every variable**: its type, default, allowed values, and m
 Omitted keys fall back to their documented defaults. Unknown top-level keys and unknown conformer
 keys raise an error. Unknown keys inside individual restraint entries are logged and ignored, so
 check their spelling against this page. Source of truth:
-`src/rgi_utils/{config,distance_restr_data,group_geom_restr_data,ref_geom_restr_data,ref_config,featurizer,rmsd_restr_data,selection}.py`.
+`src/rgi_utils/{config,distance_restr_data,group_geom_restr_data,base_pair_restr_data,ref_geom_restr_data,ref_config,featurizer,rmsd_restr_data,selection}.py`.
 
 > **Don't want to hand-write this?** Run the `generate-rgi-config` skill in Claude Code
 > (`/generate-rgi-config`) or Codex (`$generate-rgi-config`). It turns a plain-language
@@ -215,8 +215,9 @@ Restraint-type block (exactly one):
 A distance entry may use one external structure. Keep both normal group keys; prefix the
 reference-side value with `ref1 and`, then define `refs.ref1`. The suffix is evaluated on
 the reference structure. At least one group must remain a prediction selection. Reference
-groups are fitted independently, held fixed, and do not pull their fit anchors; `move` is
-therefore unavailable on entries using a reference.
+groups are fitted independently, held fixed, and do not pull their fit anchors.
+`move` controls prediction groups only: omit it or use `all`/`both` to move every prediction
+group, or give prediction-side group indices. Selecting a reference group raises.
 
 ```yaml
 distance_restraints_config:
@@ -264,17 +265,19 @@ either way).
 An angle entry may use up to two distinct references. Write each reference group as
 `refN and <selection>` and define the corresponding `refs.refN`. Each reference has its own
 structure and optional fit configuration, so groups from different fitted structures can be
-combined in one angle. At least one of the three groups must use prediction atoms; `move` is
-unavailable when references are present.
+combined in one angle. At least one of the three groups must use prediction atoms. `move`
+accepts prediction-side group indices; omitted/`all`/`both` moves every prediction group, while
+selecting a
+reference group raises.
 
 ```yaml
 angle_restraints_config:
   - atom_selection1: "chain A and resid 10"
     atom_selection2: "ref1 and chain A and resid 20"
-    atom_selection3: "ref2 and chain B and resid 30"
+    atom_selection3: "chain B and resid 30"
     refs:
       ref1: {ref_cif: state1.cif}
-      ref2: {ref_pdb: state2.pdb}
+    move: 1  # move group 1; group 3 is pinned and group 2 is a fixed reference
     harmonic: {target_angle: 90.0}
 ```
 
@@ -324,19 +327,20 @@ Targets in **degrees** by default (`unit: radians` to override).
 A dihedral entry may use up to three distinct references. Write each reference group as
 `refN and <selection>` and define the corresponding `refs.refN`. Each reference is fitted
 independently, so one dihedral may combine prediction atoms with groups from up to three
-external structures. At least one group must use prediction atoms; `move` is unavailable
-when references are present.
+external structures. At least one group must use prediction atoms. `move` accepts only
+prediction-side group indices; omitted/`all`/`both` moves all prediction groups. Selecting a
+reference
+group raises.
 
 ```yaml
 dihedral_restraints_config:
   - atom_selection1: "chain A and resid 10"
     atom_selection2: "ref1 and chain A and resid 20"
-    atom_selection3: "ref2 and chain B and resid 30"
-    atom_selection4: "ref3 and chain C and resid 40"
+    atom_selection3: "chain B and resid 30"
+    atom_selection4: "chain C and resid 40"
     refs:
       ref1: {ref_cif: state1.cif}
-      ref2: {ref_pdb: state2.pdb}
-      ref3: {ref_cif: state3.cif}
+    move: [1, 4]  # groups 1 and 4 move; group 3 is pinned
     harmonic: {target_dihedral: 180.0}
 ```
 
@@ -587,6 +591,7 @@ Each entry's energy (× `weight`) is added to the CG objective, gated by the usu
 | `fn` | callable | — | a Python `energy(ctx) -> scalar` (Python-dict input only) |
 | `selections` | dict | `{}` | `name -> selection string`; use `refN and <selection>` for a group selected from `refs.refN` |
 | `refs` | dict | `{}` | `refN -> {ref_pdb`\|`ref_cif, atom_selection_ref_fit, atom_selection_target_fit, pairing, best_effort}`; names are reserved as `ref1`, `ref2`, ... |
+| `move` | `"all"` / `"both"` / str / list[str] | `"all"` | prediction selection name(s) that receive this restraint's gradient. Omitted/`all`/`both` moves every prediction selection. Reference-backed selections are always fixed and cannot be named |
 | `weight` | float | `1.0` | scales the whole energy |
 | `name` | str | `"custom"` | label shown in the `finalize` per-term log |
 | `start_sigma` / `stop_sigma` | float | `+inf` / `-1` | sigma gating (as everywhere) |
@@ -598,7 +603,10 @@ Each entry compiles to a closure `energy(active_coords) → scalar`. A selection
 in a formula (`A`) is resolved from the entry's `selections` map to that group's atoms; a string
 literal (`"chain A"`) is a raw selection. Selection names resolve to their group **centroids** at
 setup (a dry run records which names the energy touches). The formula must reduce to a **scalar** (a
-`sum` over any batch dimension). It is parsed safely — no `eval`, and `import` / attribute access /
+`sum` over any batch dimension). `move` applies stop-gradient to every unlisted prediction
+selection for this custom term; another restraint may still move the same atoms. The formula is parsed safely — no `eval`,
+and
+`import` / attribute access /
 subscripting / `lambda` all raise — so only the vocabulary below is callable.
 
 ### Vocabulary
@@ -730,6 +738,7 @@ custom_restraints_config:
       B: "chain B and resid 10"
       C: "chain A and resid 90"
       D: "chain B and resid 90"
+    move: [A, C]  # B and D are pinned for this custom term
     weight: 1.0
   # pull a domain's radius of gyration toward a target compactness
   - name: compact

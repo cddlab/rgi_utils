@@ -35,6 +35,7 @@ class RestraintContext:
         selection_refs=None,
         ref_fits=None,
         ref_blocks=None,
+        move_free=None,
     ):
         self._ops = ops
         self._sel = selections
@@ -43,6 +44,7 @@ class RestraintContext:
         self._selection_refs = selection_refs or {}
         self._ref_fits = ref_fits or {}
         self._ref_blocks = ref_blocks or {}
+        self._move_free = move_free or {}
 
     def _idx(self, selection):
         try:
@@ -76,7 +78,10 @@ class RestraintContext:
         ref_source = self._selection_refs.get(value)
         if ref_source is not None:
             return self._reference_coords(*ref_source)
-        return self._ops.gather(self._coords, self._idx(value))
+        block = self._ops.gather(self._coords, self._idx(value))
+        if not self._move_free.get(value, True):
+            block = self._ops.stop_gradient(block)
+        return block
 
     def distance(self, a, b):
         return V.distance(self._ops, self._coords_of(a), self._coords_of(b))
@@ -122,6 +127,8 @@ class RestraintContext:
                 "'refN and <atom selection>'"
             ) from None
         target = self._ops.gather(self._coords, target_idx)
+        if not self._move_free.get(a, True):
+            target = self._ops.stop_gradient(target)
         ref = self._ops.const_like(ref_np, target)
         return V.rmsd(self._ops, target, ref)
 

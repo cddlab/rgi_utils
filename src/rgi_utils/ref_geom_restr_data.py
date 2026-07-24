@@ -8,6 +8,7 @@ the ordinary atom-selection DSL; a reference group starts with
 These entries compile to ``kind="ref_geom"`` ``CustomSpec`` closures. Prediction
 groups retain the built-in rigid-centroid gradient scaling, while reference
 groups and their fit transforms are fixed with stop-gradient.
+``move`` applies a static free/pinned mask to prediction groups; references can never move.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ import math
 from rgi_utils._config_util import (
     apply_window_params,
     parse_geom_type,
+    parse_move_indices,
     warn_unknown_keys,
 )
 from rgi_utils._moltype import polymer_type
@@ -79,6 +81,7 @@ class RefGeomData:
         self.geom_type: str | None = None
         self.target1 = 0.0
         self.target2 = 0.0
+        self.move_free: tuple[bool, ...] = ()
         # ("pred", selection) | ("ref", (reference_selection, ref_name))
         self._group_sel: list[tuple[str, object]] = []
         self._pred_globals: dict[int, list[int]] = {}
@@ -88,6 +91,7 @@ class RefGeomData:
     def _known_keys(self) -> set[str]:
         keys = {
             "refs",
+            "move",
             "weight",
             "start_sigma",
             "stop_sigma",
@@ -109,13 +113,6 @@ class RefGeomData:
     def set_config(self, config: dict) -> None:
         label = f"{self.geom}_restraints_config entry"
         warn_unknown_keys(config, self._known_keys(), label, logger)
-        if "move" in config:
-            raise ValueError(
-                f"{label}: 'move' is not supported when an atom_selectionN uses a "
-                "reference (prediction groups are free/rigid and reference groups are "
-                "fixed). Use custom_restraints_config for finer control."
-            )
-
         if (
             self.geom == "distance"
             and config.get("calc_method", "unfixed-absolute") != "unfixed-absolute"
@@ -156,6 +153,28 @@ class RefGeomData:
                 f"{label}: every group is a reference selection, so the measured "
                 "quantity is constant; at least one group must select prediction atoms"
             )
+
+        prediction_groups = {
+            i
+            for i, (kind, _payload) in enumerate(self._group_sel, start=1)
+            if kind == "pred"
+        }
+        move = config.get("move")
+        if move is None or (
+            isinstance(move, str) and move.strip().lower() in ("all", "both")
+        ):
+            selected_groups = prediction_groups
+        else:
+            selected_groups = parse_move_indices(move, self.n_groups)
+            selected_refs = selected_groups - prediction_groups
+            if selected_refs:
+                raise ValueError(
+                    f"{label}: move selects reference group(s) {sorted(selected_refs)}; "
+                    "reference groups are fixed, so select prediction group indices only"
+                )
+        self.move_free = tuple(
+            i in selected_groups for i in range(1, self.n_groups + 1)
+        )
 
         apply_window_params(self, config, label)
         if self.geom == "distance":
@@ -282,7 +301,7 @@ class RefGeomData:
                 local = np.array(
                     [g2l[int(x)] for x in self._pred_globals[i]], dtype=np.int64
                 )
-                groups.append(("pred", local))
+                groups.append(("pred", (local, self.move_free[i - 1])))
             else:
                 groups.append(("ref", payload))
 

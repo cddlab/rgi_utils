@@ -10,7 +10,8 @@ the optimizers add to the CG objective. This harness drives BOTH authoring paths
       (test_custom_grad_matches_fd). EXCEPTION: kabsch / rmsd freeze the Kabsch rotation
       with stop-gradient (the SVD is not differentiated), so — like the built-in rmsd term
       — an FD gradient is INAPPLICABLE; those are checked torch-vs-jax instead
-      (test_custom_kabsch_grad_torch_vs_jax). Do NOT add a kabsch/rmsd case under the FD test.
+      (test_custom_kabsch_grad_torch_vs_jax). `move` pinning is likewise stop-gradient and lives
+      in test_custom_move.py with torch-vs-jax checks. Do NOT add either case under the FD test.
   (b) the torch eager CG: a custom distance restraint converges onto its target.
   (c) the jax minimizer (the AF3 lax.scan closure): converges, NaN-free.
 
@@ -1344,7 +1345,7 @@ def test_refgeom_config_validation(tmp_path):
             n=6,
         )
 
-    with pytest.raises(ValueError, match="'move' is not supported"):
+    with pytest.raises(ValueError, match="move selects reference group"):
         _refgeom_spec(
             {
                 "distance_restraints_config": [
@@ -1352,7 +1353,7 @@ def test_refgeom_config_validation(tmp_path):
                         "atom_selection1": "resid 5",
                         "atom_selection2": "ref1 and resid 2",
                         "refs": {"ref1": ref_def},
-                        "move": 1,
+                        "move": 2,
                         "harmonic": {"target_distance": 3.0},
                     }
                 ]
