@@ -26,7 +26,7 @@ See each tool's guide in [`doc/`](doc/) for install / run details, and
 > instead of hand-writing from this README when you're unsure. (For adding RGI support to a
 > *new* tool's code, use the separate `implement-rgi` skill.)
 
-Five **built-in** restraint types, all minimized during the denoising loop to guide coordinate optimization:
+Six **built-in** restraint types, all minimized during the denoising loop to guide coordinate optimization:
 
 - **conformer** — ligand and polymer-local bond / angle / chiral-volume / VdW;
   ligand-only cistrans (E/Z) / plane
@@ -39,11 +39,10 @@ Five **built-in** restraint types, all minimized during the denoising loop to gu
 - **angle** — the angle of three atom groups' centroids (vertex = group 2), in degrees;
   the angular analogue of the distance restraint.
 - **dihedral** — the dihedral of four atom groups' centroids (axis = groups 2–3), in degrees.
+- **base-pair** — a named Watson–Crick nucleotide pair expanded into H-bond distance
+  restraints and an optional base-coplanarity restraint.
 
-`base_pair_restraints_config` is a convenience macro that expands a named Watson–Crick
-nucleotide pair into H-bond distance restraints and an optional coplanarity restraint.
-
-Beyond these five built-ins you can define your **own** restraint — see
+Beyond these six built-ins you can define your **own** restraint — see
 [Custom restraints](#custom-restraints) below.
 
 The default `method='CG'` solver (a nonlinear conjugate gradient with autodiff gradients)
@@ -207,7 +206,7 @@ validation rules, and gating details.
 
 ### Custom restraints
 
-Define your **own** restraint — not one of the five built-ins — as a differentiable energy,
+Define your **own** restraint — not one of the six built-ins — as a differentiable energy,
 two ways (same vocabulary, both run on every backend):
 
 **Config only** — write the energy as a math **formula** over named selections, no Python:

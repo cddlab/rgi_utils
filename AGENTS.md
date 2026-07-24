@@ -230,7 +230,7 @@ fixed background) — confirm `Jinter>0` when you expect ligand-ligand repulsion
 
 ### Custom restraints (the extension point — `rgi_utils/custom/`)
 
-Beyond the five built-ins, a user can define an **original** restraint as a backend-agnostic
+Beyond the six built-ins, a user can define an **original** restraint as a backend-agnostic
 energy `energy(ctx) -> scalar`. Two authoring paths, ONE mechanism:
 - **config (expression DSL)**: a `custom_restraints_config` entry with an `energy` formula string
   over a shared vocabulary + named `selections` (e.g. `"(distance(A,B) - distance(C,D))**2"`).

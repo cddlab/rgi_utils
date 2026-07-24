@@ -51,9 +51,9 @@ restraints_config:
 A restraint type is active only if its block is present (and, for conformer terms, the term's
 `weight > 0`).
 
-Distance, angle, dihedral, conformer, and RMSD are direct built-ins. Base-pair entries are macros
-that expand into distance and plane terms. `custom_restraints_config` defines an original
-restraint as a math formula or Python callable.
+Distance, angle, dihedral, conformer, RMSD, and base-pair are the six built-in restraint types
+(base-pair expands into distance and plane terms under the hood). `custom_restraints_config`
+defines an original restraint as a math formula or Python callable.
 
 ## Top-level keys
 
@@ -571,7 +571,7 @@ superpose on the backbone but measure over a pocket. Under `pairing: align`, res
 
 ### Authoring methods
 
-Define your **own** restraint — not one of the five built-ins — as a differentiable energy. Two
+Define your **own** restraint — not one of the six built-ins — as a differentiable energy. Two
 ways, same vocabulary, both run on every backend (torch / jax):
 
 - **config only (expression DSL)**: write the energy as a math **formula** string over named atom
