@@ -29,6 +29,10 @@ jobs:
         with:
           enable-cache: true       # cache ~/.cache/uv keyed on uv.lock
       - name: Install dependencies
-        run: uv sync --frozen      # exact versions from uv.lock, no re-resolution
+        # `--extra torch` pulls the CPU-only wheel (see the pytorch-cpu index in
+        # pyproject.toml): the torch backend is the primary one (boltz / protenix /
+        # chai / esmfold2), so it must be exercised in CI. jax stays out -- those
+        # tests self-skip via importorskip.
+        run: uv sync --frozen --extra torch   # exact versions from uv.lock, no re-resolution
       - name: Test
         run: uv run pytest -m "not gpu"
