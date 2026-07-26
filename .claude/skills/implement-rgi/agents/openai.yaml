@@ -1,0 +1,4 @@
+interface:
+  display_name: "Implement RGI"
+  short_description: "Integrate RGI into structure predictors"
+  default_prompt: "Use $implement-rgi to add RGI restraint support to this structure-prediction tool."

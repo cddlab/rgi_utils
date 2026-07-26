@@ -1,4 +1,3 @@
-import numpy as np
 import pytest
 
 from rgi_utils.atom_context import AtomRecord
@@ -37,11 +36,6 @@ def _flat_bottomed(d1: float, d2: float) -> DistanceData:
             "flat-bottomed": {"target_distance1": d1, "target_distance2": d2},
         }
     )
-
-
-def _set_sites(dd: DistanceData, s1: list[int], s2: list[int]) -> None:
-    dd.target_local_sites1 = list(s1)
-    dd.target_local_sites2 = list(s2)
 
 
 class TestDistanceDataSetConfig:
@@ -83,6 +77,22 @@ class TestDistanceDataSetConfig:
         with pytest.raises(ValueError, match="target_distance1 must be smaller"):
             _flat_bottomed(10.0, 3.0)
 
+    def test_harmonic_missing_target_raises_with_clear_message(self):
+        # shared parse_geom_type message (matches rmsd/angle/dihedral wording)
+        with pytest.raises(ValueError, match="harmonic needs target_distance"):
+            _make_dd(
+                {
+                    "atom_selection1": "chain A",
+                    "atom_selection2": "chain B",
+                    "harmonic": {},
+                }
+            )
+
+    def test_no_type_key_raises_not_run(self):
+        # no harmonic/flat-bottomed* block at all -> falls through to run_restr=False
+        with pytest.raises(ValueError, match="distance restraints not run"):
+            _make_dd({"atom_selection1": "chain A", "atom_selection2": "chain B"})
+
     def test_invalid_calc_method_raises(self):
         with pytest.raises(ValueError, match="calc_method"):
             _make_dd(
@@ -99,138 +109,57 @@ class TestDistanceDataSetConfig:
         assert dd.is_valid() is True
 
 
-class TestDistanceDataCalc:
-    def test_harmonic_zero_at_target(self):
-        dd = _harmonic(5.0)
-        _set_sites(dd, [0], [1])
-        crds = np.array([[0.0, 0.0, 0.0], [5.0, 0.0, 0.0]])
-        assert dd.calc(crds) == pytest.approx(0.0)
-
-    def test_harmonic_nonzero_away_from_target(self):
-        dd = _harmonic(5.0)
-        _set_sites(dd, [0], [1])
-        crds = np.array([[0.0, 0.0, 0.0], [8.0, 0.0, 0.0]])
-        # delta = 8 - 5 = 3 → energy = 9
-        assert dd.calc(crds) == pytest.approx(9.0)
-
-    def test_flat_bottomed_zero_inside(self):
-        dd = _flat_bottomed(3.0, 10.0)
-        _set_sites(dd, [0], [1])
-        crds = np.array([[0.0, 0.0, 0.0], [5.0, 0.0, 0.0]])
-        assert dd.calc(crds) == pytest.approx(0.0)
-
-    def test_flat_bottomed_energy_below_d1(self):
-        dd = _flat_bottomed(3.0, 10.0)
-        _set_sites(dd, [0], [1])
-        # dist=1, delta = 1 - 3 = -2 → energy = 4
-        crds = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
-        assert dd.calc(crds) == pytest.approx(4.0)
-
-    def test_flat_bottomed_energy_above_d2(self):
-        dd = _flat_bottomed(3.0, 10.0)
-        _set_sites(dd, [0], [1])
-        # dist=12, delta = 12 - 10 = 2 → energy = 4
-        crds = np.array([[0.0, 0.0, 0.0], [12.0, 0.0, 0.0]])
-        assert dd.calc(crds) == pytest.approx(4.0)
-
-    def test_flat_bottomed1_energy_below_d1(self):
-        dd = _make_dd(
-            {
-                "atom_selection1": "chain A",
-                "atom_selection2": "chain B",
-                "flat-bottomed1": {"target_distance1": 5.0},
-            }
-        )
-        _set_sites(dd, [0], [1])
-        # dist=2, delta = 2 - 5 = -3 → energy = 9
-        crds = np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
-        assert dd.calc(crds) == pytest.approx(9.0)
-
-    def test_flat_bottomed1_zero_above_d1(self):
-        dd = _make_dd(
-            {
-                "atom_selection1": "chain A",
-                "atom_selection2": "chain B",
-                "flat-bottomed1": {"target_distance1": 5.0},
-            }
-        )
-        _set_sites(dd, [0], [1])
-        crds = np.array([[0.0, 0.0, 0.0], [7.0, 0.0, 0.0]])
-        assert dd.calc(crds) == pytest.approx(0.0)
-
-    def test_flat_bottomed2_energy_above_d2(self):
-        dd = _make_dd(
-            {
-                "atom_selection1": "chain A",
-                "atom_selection2": "chain B",
-                "flat-bottomed2": {"target_distance2": 5.0},
-            }
-        )
-        _set_sites(dd, [0], [1])
-        # dist=8, delta = 8 - 5 = 3 → energy = 9
-        crds = np.array([[0.0, 0.0, 0.0], [8.0, 0.0, 0.0]])
-        assert dd.calc(crds) == pytest.approx(9.0)
-
-    def test_flat_bottomed2_zero_below_d2(self):
-        dd = _make_dd(
-            {
-                "atom_selection1": "chain A",
-                "atom_selection2": "chain B",
-                "flat-bottomed2": {"target_distance2": 5.0},
-            }
-        )
-        _set_sites(dd, [0], [1])
-        crds = np.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
-        assert dd.calc(crds) == pytest.approx(0.0)
-
-    def test_com_of_multiple_atoms(self):
-        # Two atoms per site: COM is midpoint
-        dd = _harmonic(0.0)
-        _set_sites(dd, [0, 1], [2, 3])
-        # COM1 = (0+2)/2 = 1, COM2 = (4+6)/2 = 5, dist = 4
-        crds = np.array(
-            [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [4.0, 0.0, 0.0], [6.0, 0.0, 0.0]]
-        )
-        # delta = 4 - 0 = 4 → energy = 16
-        assert dd.calc(crds) == pytest.approx(16.0)
-
-    def test_calc_sd_harmonic(self):
-        dd = _harmonic(5.0)
-        _set_sites(dd, [0], [1])
-        crds = np.array([[0.0, 0.0, 0.0], [8.0, 0.0, 0.0]])
-        # dist=8, delta = 8-5=3, sd = 9
-        assert dd.calc_sd(crds) == pytest.approx(9.0)
+_OMITTED = object()
 
 
-class TestDistanceDataGrad:
-    def test_harmonic_grad_zero_at_target(self):
-        dd = _harmonic(5.0)
-        _set_sites(dd, [0], [1])
-        crds = np.array([[0.0, 0.0, 0.0], [5.0, 0.0, 0.0]])
-        grad = np.zeros_like(crds)
-        dd.grad(crds, grad)
-        assert np.allclose(grad, 0.0, atol=1e-9)
+def _move(mv) -> DistanceData:
+    cfg = {
+        "atom_selection1": "chain A",
+        "atom_selection2": "chain B",
+        "harmonic": {"target_distance": 5.0},
+    }
+    if mv is not _OMITTED:
+        cfg["move"] = mv
+    return _make_dd(cfg)
 
-    def test_harmonic_grad_direction_when_too_close(self):
-        # dist < target: gradient at site1 is positive along connecting vector
-        # (optimizer will move site1 away from site2)
-        dd = _harmonic(10.0)
-        _set_sites(dd, [0], [1])
-        crds = np.array([[0.0, 0.0, 0.0], [5.0, 0.0, 0.0]])
-        grad = np.zeros_like(crds)
-        dd.grad(crds, grad)
-        # dE/d(site1_x) > 0: site1 should move in -x (away from site2)
-        assert grad[0, 0] > 0
-        # dE/d(site2_x) < 0: site2 should move in +x (away from site1)
-        assert grad[1, 0] < 0
 
-    def test_flat_bottomed_no_grad_inside(self):
-        dd = _flat_bottomed(3.0, 10.0)
-        _set_sites(dd, [0], [1])
-        crds = np.array([[0.0, 0.0, 0.0], [5.0, 0.0, 0.0]])
-        grad = np.zeros_like(crds)
-        dd.grad(crds, grad)
-        assert np.allclose(grad, 0.0, atol=1e-9)
+class TestDistanceDataMove:
+    """The `move` key shares its vocabulary (int / list / comma-string / all/both) with
+    the angle/dihedral `move` via parse_move_indices; a 2-group distance maps the index
+    set onto the 0/1/2 move_mode enum. move_mode: 0=both / 1=grp1 / 2=grp2."""
+
+    def test_default_is_both(self):
+        assert _move(_OMITTED).move_mode == 0
+
+    @pytest.mark.parametrize(
+        "mv,expected",
+        [
+            ("both", 0),
+            ("all", 0),
+            (1, 1),
+            (2, 2),
+            ("1", 1),
+            ("2", 2),
+            ([1], 1),
+            ([2], 2),
+            ([1, 2], 0),
+            ([2, 1], 0),  # order-independent (set)
+            ("1,2", 0),
+            ("1 2", 0),
+            ([1, 1], 1),  # duplicates collapse (set)
+        ],
+    )
+    def test_accepted_values(self, mv, expected):
+        assert _move(mv).move_mode == expected
+
+    @pytest.mark.parametrize("mv", [3, 0, [1, 3], [3], "1,3", "3", []])
+    def test_out_of_range_or_empty_raises(self, mv):
+        with pytest.raises(ValueError, match="move"):
+            _move(mv)
+
+    def test_non_integer_raises(self):
+        with pytest.raises(ValueError, match="move"):
+            _move("x")
 
 
 class TestDistanceDataResolveSites:
@@ -260,5 +189,5 @@ class TestDistanceDataResolveSites:
             }
         )
         atoms = [AtomRecord(chain="A", resid=1, index=0)]
-        with pytest.raises(AssertionError):
+        with pytest.raises(ValueError, match="matched no atoms"):
             dd.resolve_sites(MockAdapter(atoms))

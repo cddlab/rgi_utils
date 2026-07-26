@@ -1,16 +1,29 @@
 [project]
 name = "rgi-utils"
 version = "0.1.0"
-description = "Restraint-Guided Inference utilities for PyTorch-based structure prediction models"
+description = "Restraint-Guided Inference utilities for PyTorch/JAX-based structure prediction models"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "numpy",
     "rdkit>=2024.3.2",
-    "scipy",
-    "pytorch-minimize @ git+https://github.com/ishitani/pytorch-minimize.git@nobackprop",
+    # RMSD-reference structure I/O (pdb_ref.py) + sequence alignment (_align.py). Both are
+    # imported lazily inside their modules so `import rgi_utils` stays numpy-only. Loose
+    # lower bounds: the host tool venvs pin gemmi 0.6.5-0.7.5 and biopython 1.84-1.87.
+    "gemmi>=0.6.5",
+    "biopython>=1.84",
+]
+
+[project.optional-dependencies]
+# PyTorch backend (boltz, protenix). Uses torch.optim.LBFGS — no extra optimizer dep.
+torch = [
     "torch>=2.2",
-    "torch_cluster",
+]
+# JAX backend (alphafold3). Uses jaxopt LBFGS/NonlinearCG (jittable, in-JIT).
+jax = [
+    "jax",
+    "jaxlib",
+    "jaxopt",
 ]
 
 [dependency-groups]
@@ -26,10 +39,6 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.uv]
-# Pre-built CPU wheels for torch-cluster (must match torch version above)
-find-links = ["https://data.pyg.org/whl/torch-2.6.0+cpu.html"]
-
 [[tool.uv.index]]
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
@@ -44,6 +53,12 @@ line-length = 88
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
+
+[tool.ruff.lint.pycodestyle]
+# Keep the FORMATTER at line-length 88 (code stays wrapped) but let E501 tolerate the
+# codebase's dense long-form COMMENT style up to 120, rather than rewrapping ~160 prose
+# lines or scattering noqa. Code line length is enforced by the formatter, not E501.
+max-line-length = 120
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

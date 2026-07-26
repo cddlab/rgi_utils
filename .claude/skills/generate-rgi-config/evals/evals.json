@@ -1,0 +1,26 @@
+{
+  "skill_name": "generate-rgi-config",
+  "evals": [
+    {
+      "id": 0,
+      "name": "distance-boltz",
+      "prompt": "I want to predict a protein called qbp with boltz2. This is pretty much my first time doing structure prediction and I don't know much about RGI either. I want to keep the N-terminal domain (the early part of the sequence, around residues 5-84) and the middle domain (around residues 90-180) roughly 25 A apart. Please make me the RGI config (input file) that does this. I have the sequence on hand.",
+      "expected_output": "A boltz input YAML with restraints_config NESTED under a top-level restraints_config: key, containing a distance_restraints_config harmonic entry with target_distance 25.0, both atom_selection groups qualified with `chain A`, and verbose: true. Should pass scripts/validate_config.py. Should tell the user how to run boltz and that verbose+spec-count is how to confirm the selection at run time.",
+      "files": []
+    },
+    {
+      "id": 1,
+      "name": "conformer-chai-optin",
+      "prompt": "I'm using chai-lab to predict a protein with ATP bound. I want to restrain ATP so it doesn't get distorted into a chemically impossible shape during the prediction. Please make me the restraint settings file for chai. I'll prepare the sequence and the ligand SMILES in the FASTA myself. The ligand is chain B.",
+      "expected_output": "A chai SIDECAR YAML whose TOP LEVEL is the restraints_config (NOT nested under a restraints_config: key), containing a conformer_restraints_config block (at least bond/angle/chiral) AND the per-ligand opt-in `conformer_restraints: {B: true}` map (the #1 silent no-op if missing). verbose: true. Should pass validate_config.py with NO 'no ligand opts in' warning, and the run command should note FASTA + out_dir are positional.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "rmsd-protenix",
+      "prompt": "When predicting with protenix, I want to pull the loop at residues 150-165 of chain A toward the same shape as the reference structure ref.pdb I have on hand. Please make me the input file with the RGI settings in it.",
+      "expected_output": "A protenix input JSON (a LIST of jobs) with restraints_config nested in the job, containing an rmsd_restraints_config entry with ref_pdb: ref.pdb and a target_rmsd (harmonic 0 = match, or flat-bottomed2 to stay within X), a target/ref selection covering chain A resid 150 to 165 (using the suffixed/target/ref keys, NOT a bare atom_selection), and verbose: true. Should note that resid is the per-chain 1-based ordinal (may differ from the PDB's author numbering) and that the selection must be confirmed at run time via the spec count. Should pass validate_config.py.",
+      "files": []
+    }
+  ]
+}

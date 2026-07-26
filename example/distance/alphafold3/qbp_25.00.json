@@ -1,0 +1,33 @@
+{
+  "dialect": "alphafold3",
+  "version": 4,
+  "name": "qbp_25.00",
+  "modelSeeds": [
+    0
+  ],
+  "sequences": [
+    {
+      "protein": {
+        "id": "A",
+        "sequence": "ADKKLVVATDTAFVPFEFKQGDKYVGFDVDLWAAIAKELKLDYELKPMDFSGIIPALQTKNVDLALAGITITDERKKAIDFSDGYYKSGLLVMVKANNNDVKSVKDLDGKVVAVKSGTGSVDYAKANIKTKDLRQFPNIDNAYMELGTNRADAVLHDTPNILYFIKTAGNGQFKAVGDSLEAQQYGIAFPKGSDELRDKVNGALKTLRENGTYNEIYKKWFGTEPK",
+        "modifications": []
+      }
+    }
+  ],
+  "restraints_config": {
+    "verbose": true,
+    "gpu": true,
+    "max_iter": 100,
+    "method": "CG",
+    "distance_restraints_config": [
+      {
+        "atom_selection1": "(resid 4 to 83) or (resid 185 to 223)",
+        "atom_selection2": "(resid 89 to 179)",
+        "start_sigma": 99999999,
+        "harmonic": {
+          "target_distance": 25.0
+        }
+      }
+    ]
+  }
+}

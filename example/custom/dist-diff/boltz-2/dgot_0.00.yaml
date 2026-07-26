@@ -1,0 +1,19 @@
+sequences:
+- protein:
+    id: A
+    sequence: RRRYLTLVMIFITVVICYVDRANLAVASAHIQEEFGITKAEMGYVFSAFAWLYTLCQIPGGWFLDRVGSRVTYFIAIFGWSVATLFQGFATGLMSLIGLRAITGIFEAPAFPTNNRMVTSWFPEHERASAVGFYTSGQFVGLAFLTPLLIWIQEMLSWHWVFIVTGGIGIIWSLIWFKVYQPPRLTKGISKAELDYIRDGGGLVDGDAPVKKEARQPLTAKDWKLVFHRKLIGVYLGQFAVASTLWFFLTWFPNYLTQEKGITALKAGFMTTVPFLAAFVGVLLSGWVADLLVRKGFSLGFARKTPIICGLLISTCIMGANYTNDPMMIMCLMALAFFGNGFASITWSLVSSLAPMRLIGLTGGVFNFAGGLGGITVPLVVGYLAQGYGFAPALVYISAVALIGALSYILLVGDVKRVG
+restraints_config:
+  verbose: true
+  gpu: true
+  max_iter: 100
+  method: CG
+  custom_restraints_config:
+  - name: dist-diff
+    energy: ((distance(A, B) - distance(C, D)) - 0.0)**2
+    selections:
+      A: (resid 1 to 17) or (resid 52 to 66) or (resid 69 to 78) or (resid 108 to 121) or (resid 125 to 139) or (resid 168 to 178)
+      B: (resid 229 to 241) or (resid 280 to 295) or (resid 298 to 311) or (resid 341 to 354) or (resid 358 to 371) or (resid 400 to 412)
+      C: (resid 18 to 34) or (resid 38 to 51) or (resid 79 to 87) or (resid 92 to 107) or (resid 140 to 155) or (resid 158 to 167)
+      D: (resid 242 to 258) or (resid 263 to 279) or (resid 312 to 323) or (resid 325 to 340) or (resid 372 to 386) or (resid 388 to 399)
+    start_sigma: 99999999
+    weight: 1.0

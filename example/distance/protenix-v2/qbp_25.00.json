@@ -1,0 +1,29 @@
+[
+  {
+    "name": "qbp_25.00",
+    "sequences": [
+      {
+        "proteinChain": {
+          "sequence": "ADKKLVVATDTAFVPFEFKQGDKYVGFDVDLWAAIAKELKLDYELKPMDFSGIIPALQTKNVDLALAGITITDERKKAIDFSDGYYKSGLLVMVKANNNDVKSVKDLDGKVVAVKSGTGSVDYAKANIKTKDLRQFPNIDNAYMELGTNRADAVLHDTPNILYFIKTAGNGQFKAVGDSLEAQQYGIAFPKGSDELRDKVNGALKTLRENGTYNEIYKKWFGTEPK",
+          "count": 1
+        }
+      }
+    ],
+    "restraints_config": {
+      "verbose": true,
+      "gpu": true,
+      "max_iter": 100,
+      "method": "CG",
+      "distance_restraints_config": [
+        {
+          "atom_selection1": "(resid 4 to 83) or (resid 185 to 223)",
+          "atom_selection2": "(resid 89 to 179)",
+          "start_sigma": 99999999,
+          "harmonic": {
+            "target_distance": 25.0
+          }
+        }
+      ]
+    }
+  }
+]

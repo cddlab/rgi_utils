@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sync RGI Upstream"
+  short_description: "Safely sync upstream updates into RGI forks"
+  default_prompt: "Use $sync-upstream to update this RGI fork from its verified upstream while preserving the integration."

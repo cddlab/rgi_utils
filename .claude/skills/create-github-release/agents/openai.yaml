@@ -1,0 +1,4 @@
+interface:
+  display_name: "Create GitHub Releases"
+  short_description: "Publish verified coordinated GitHub Releases"
+  default_prompt: "Use $create-github-release to verify versions, choose companion *_restr repositories, obtain approval, and publish coordinated GitHub Releases."
