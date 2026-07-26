@@ -128,7 +128,7 @@ Atom groups are chosen with a small boolean language (`selection.py`). Precedenc
 | `chain <ids>` | atoms in the listed chain IDs | `chain A` · `chain A B` |
 | `resid <n…>` / `resid A to B` | residues by **per-chain 1-based ordinal** | `resid 5` · `resid 1 to 84` · `resid 1 3 7` |
 | `index <n…>` | atoms by **flat row** in the coordinate tensor | `index 42` |
-| `name <names>` | atom name, case-insensitive (alphanumeric only) | `name CA` · `name N CA C O` |
+| `name <names>` | atom name, case-insensitive; a prime may be written `'`, `*` or `"` and matches either spelling in the structure | `name CA` · `name N CA C O` · `name C1'` · `name O2*` |
 | `protein` / `dna` / `rna` | atoms of that polymer type | `protein` |
 | `backbone` / `sidechain` | polymer backbone / sidechain heavy atoms (gated on polymer type; a ligand atom named "C" never matches) | `backbone and chain A` |
 | `and` / `or` / `not` / `( )` | boolean composition | `chain A and (resid 5 to 84 or resid 186 to 224)` |

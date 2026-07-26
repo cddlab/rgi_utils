@@ -170,9 +170,15 @@ chiral restraint silently vanishes.
 vocabulary); tokens are
 `chain`/`resid`/`index`/`name`/`protein`/`dna`/`rna`/`backbone`/`sidechain` +
 `and`/`or`/`not`/`()`. Used by `DistanceData` (`distance_restr_data.py`) for centroid
-groups and `RmsdData` for fit/calc; `name CA` (atom-name, case-insensitive,
-alnum-only — a nucleic-acid `C1'` is not selectable but fails loudly) restricts an
-RMSD superposition to backbone. `backbone`/`sidechain` are MDTraj-like POLYMER
+groups and `RmsdData` for fit/calc; `name CA` (atom-name, case-insensitive) restricts an
+RMSD superposition to backbone, and `name C1'` picks a single nucleic-acid atom for e.g.
+an H-bond distance restraint. `name` has its OWN token parser (`_parse_atom_name1`), not
+the alphanumeric identifier one, because atom names legally carry a prime; `'` (PDB v3 /
+mmCIF), `*` (PDB v2) and `"` (double prime) are folded onto one form by
+`normalise_atom_name` on BOTH sides, so prime spelling never decides a match. The
+operator guards are duplicated there — `and`/`or`/`not` are ordinary alphanumeric words,
+so without rejecting them the name list would swallow the operator.
+`backbone`/`sidechain` are MDTraj-like POLYMER
 selectors (name-based but gated on polymer type via `_moltype.polymer_type`, which
 prefers `AtomRecord.mol_type` and falls back to `resname` — so both flow through the
 candidate dict); a ligand atom named "C"/"N"/"O" never matches them.
