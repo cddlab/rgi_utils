@@ -430,7 +430,10 @@ conformer_restraints_config:
 ```
 
 Intra-residue bond, angle, chiral, and planar-group targets come from each predictor's residue-local
-ideal reference conformer. Canonical inter-residue geometry is added explicitly: peptide `C-N` bonds
+ideal reference conformer — or, for polymers, from a CCP4 monomer library when
+[`monomer_library`](#monomer_library--refinement-targets-for-polymers-not-a-term) is set (the
+reference conformer is approximate chemistry, so read that section before enabling `bond`/`angle`
+on a nucleic acid). Canonical inter-residue geometry is added explicitly: peptide `C-N` bonds
 plus `CA-C-N`, `O-C-N`, and `C-N-CA` angles; and DNA/RNA `O3'-P` phosphodiester bonds plus
 `C3'-O3'-P` and `O3'-P-O5'` angles. The adjacent `P-O5'-C5'` angle comes from the current residue's
 reference conformer. Together these prevent an RMSD restraint from repairing a selected residue while
@@ -458,6 +461,67 @@ not configured" rule the other restraint types follow.
 | `plane` | `weight` (1.0), `slack` (0.0 Å) | **best-fit-plane** flatness of whole planar atom groups ([servalcat](https://github.com/keitaroyam/servalcat)-style) — penalises each group's out-of-plane RMS deviation toward 0. Fires on (a) aromatic/conjugated rings (whole ring) and (b) non-ring sp2 groups (an acyclic double-bond centre + its heavy neighbors: carbonyl / amide / ester / carboxyl / trisubstituted alkene). Group membership is confirmed by the reference conformer being coplanar (not the RDKit aromaticity flag). Add a `plane:` block to activate |
 | `cistrans` | `weight` (1.0), `slack` (0.0 rad) | **cis/trans (E/Z)** of acyclic, non-aromatic double bonds (needs real bond orders; detects 0 for ligands with none, e.g. ATP/NAD/GLN) |
 | `vdw` | `weight` (1.0), `mode` (`"both"`), `scale` (0.75), `dmax` (5.0 Å), `max_neighbors` (32) | non-bonded clash avoidance |
+
+### `monomer_library` — refinement targets for polymers (not a term)
+
+`monomer_library` sits alongside the term blocks but builds nothing of its own: it changes
+where the **polymer** `bond` / `angle` / `plane` and inter-residue link TARGETS come from.
+
+By default they are **measured from the predictor's per-residue reference conformer**, which is
+not refinement geometry — AF3 fills `ref_pos` by RDKit **ETKDG-embedding the free CCD component**.
+Comparing that embedding against the library shows how far its nucleotide targets sit from the
+refinement values (Å, library on the right):
+
+| bond | reference conformer (ETKDG, 3 seeds) | monomer library |
+|---|---|---|
+| exocyclic `C6-N6` | 1.421–1.423 | **1.330** |
+| exocyclic `C4-N4` | 1.411–1.425 | **1.325** |
+| phosphate `P-OP2` | 1.674–1.709 | **1.517** |
+| glycosidic `C1'-N1` | 1.404–1.453 | **1.476** |
+
+The exocyclic C-N comes out as an amine single bond instead of the conjugated base value, and the
+phosphate as P-OH because the free component is a monophosphate. The embed also takes a **random
+seed**, so those targets move ±0.02–0.03 Å between runs. Switching `bond`/`angle` on therefore
+drags a nucleotide *away* from crystallographic geometry.
+
+Point this at a **CCP4 monomer library** and the targets become the values Refmac/servalcat refine
+against, read through gemmi (already a dependency — no new install, just the library data, e.g.
+`git clone https://github.com/MonomerLibrary/monomers`, or an existing `$CLIBD_MON`).
+
+```yaml
+conformer_restraints_config:
+  monomer_library: "$CLIBD_MON"        # shorthand; or the full form:
+  # monomer_library: {path: "$CLIBD_MON", on_missing: "fallback"}
+  bond: {}
+  angle: {}
+  plane: {}
+  vdw: {}
+```
+
+| key | type | default | meaning |
+|---|---|---|---|
+| `path` | str | — (required) | monomer-library directory (the one holding `list/mon_lib_list.cif` and the `a/ b/ c/ …` component subdirectories). `$VAR` and `~` are expanded |
+| `on_missing` | `"fallback"` / `"error"` | `"fallback"` | what to do about a residue the library has no entry for: keep its reference-conformer targets, or raise |
+
+Behaviour worth knowing:
+
+- **Per residue, replace not add.** Every conformer-derived bond/angle/plane whose atoms all lie in
+  a covered residue is dropped, so a partly covered structure (modified bases, ligands) mixes the
+  two sources residue by residue and never restrains anything twice.
+- **Plane groups get better, not just different.** The library names a whole nucleobase — ring,
+  exocyclic atoms and `C1'` — as ONE plane group, where conformer perception splits a purine into
+  its two fused SSSR rings and leaves the exocyclic atoms unrestrained: one group per residue
+  instead of ~1.5.
+- **Links too**: the `TRANS` (peptide) and `p` (phosphodiester) link entries supply the
+  inter-residue bond and angle targets, replacing the built-in table (which differs by up to ~3°,
+  e.g. `O3'-P-O5'` 104.0° built-in vs 100.7° library). The peptide **plane** stays built-in: its
+  5-atom omega group is a stronger restraint than the library's 4-atom `CA-C-N-O`.
+- **`chiral` is unchanged** — still reference-conformer volumes. Only the sign protects
+  stereochemistry, and the library's `ChiralityType` convention would have to be reconciled with
+  the internal atom ordering first.
+- Ligand conformers are untouched (they keep the UFF-relaxed reference-conformer path).
+- A bad path raises rather than silently restraining nothing; setup logs a separate
+  `monomer library: N/M residues from <path> …` line with the components it matched.
 
 ### Energy terms
 

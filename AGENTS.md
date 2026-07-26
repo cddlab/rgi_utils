@@ -85,6 +85,25 @@ torsion; it needs real bond orders, which every tool supplies — chai via its a
 source-SMILES path (`chai/adapter.py` `_mol_from_smiles`, Kekulized orders), the
 geometry-perceived fallback (no SMILES) being all-single so `cistrans=0`.
 
+#### `monlib_geom.py`
+
+Polymer bond/angle/plane/link TARGETS from a **CCP4 monomer library** (gemmi, lazy-imported)
+instead of the predictor's reference conformer — opt in with
+`conformer_restraints_config.monomer_library` (`"<path>"` or `{path, on_missing}`). Motivation:
+the reference conformer is NOT refinement geometry — AF3 fills `ref_pos` by ETKDG-embedding the
+free CCD component, giving an unconjugated exocyclic C-N (1.42 Å vs 1.33) and a P-OH phosphate
+(P-OP2 1.69 Å vs 1.52), and the embed's random seed moves those targets ±0.02-0.03 Å per run, so
+`bond`/`angle` measurably degrade nucleotide geometry. `polymer.py` loads the library and collects targets;
+`featurizer.py` DROPS every conformer-derived tuple whose atoms all lie in a covered residue
+(`PolymerGeometry.library_atoms`), so the two sources replace rather than stack, per residue.
+Library planes are named groups — a whole nucleobase (ring + exocyclic + `C1'`) in ONE group where
+SSSR perception splits a purine in two. Links come from the `TRANS` / `p` entries (the peptide
+PLANE stays built-in: its 5-atom omega group beats the library's 4-atom one). `chiral` stays
+conformer-derived — only the sign matters, and the library's `ChiralityType` convention would have
+to be reconciled with `_chiral_vol`'s atom ordering first. Uncovered residues fall back
+(`on_missing: error` to refuse instead); a bad path raises. Tests: `tests/test_monlib_geom.py`
+(self-contained fixture library in tmp_path — no CCP4 install needed).
+
 #### `config.py`
 
 `RestraintsConfig.from_dict()` parses the shared
@@ -122,6 +141,16 @@ data): implement `iter_atoms()` (→
 `AtomRecord(chain, resid, index)` for distance selection) and optionally
 `num_atoms()`, `get_elements()`, `iter_ligand_confs()` (→
 `LigandConf(mol, conf_coords, global_indices)` for conformer + VdW).
+
+**AF3 residue names carry a gap-token hazard.** AF3 encodes `aatype` with the vocabulary that
+has a GAP entry right after `UNK` (`… 20:UNK, 21:'-', 22:A, 23:G, 24:C, 25:U, 26:DA …`), while
+the shim historically passed the gap-less `POLYMER_TYPES` (`… 20:UNK, 21:A, 22:G …`). Indexing
+one with the other leaves PROTEINS right (they sit below the gap) and shifts every NUCLEIC name
+by one — an adenine token reads as `G`, a uridine as `DA`. That silently mis-identifies bases for
+the base-pair macro and for monomer-library lookups. `AF3RestraintAdapter._resolve_name_shift`
+settles it from evidence instead of trusting the vocabulary: it scores both readings by how many
+nucleic tokens land on a name their own `is_rna`/`is_dna` flag allows, and warns when it has to
+shift. Protein/ligand-only batches keep shift 0 (nothing below the gap moves).
 
 #### `_mol_build.py`
 

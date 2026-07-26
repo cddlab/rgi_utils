@@ -6,17 +6,27 @@ them suitable targets for intra-residue bonds, angles, chirality and planar grou
 (aromatic side chains / nucleic-acid bases), but not for measuring inter-residue link
 geometry. Canonical peptide and phosphodiester links (and the peptide plane) are
 therefore supplied explicitly below.
+
+Those reference conformers are approximate chemistry, not refinement geometry (AF3
+ETKDG-embeds the free CCD component). Set
+``conformer_restraints_config.monomer_library`` to take the bond / angle / plane /
+link targets from the CCP4 monomer library instead -- the same values Refmac and
+servalcat refine against; see ``monlib_geom``.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import logging
+from dataclasses import dataclass, field
 
 import numpy as np
 
+from rgi_utils import monlib_geom
 from rgi_utils._mol_build import build_ligand_mol
 from rgi_utils._moltype import polymer_type
 from rgi_utils.atom_context import LigandConf
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -30,6 +40,14 @@ class PolymerGeometry:
     # Canonical inter-residue planar groups (e.g. the peptide plane): each a tuple of
     # global atom indices scored by the `plane` term (best-fit-plane flatness).
     link_planes: list[tuple[int, ...]]
+    # Monomer-library targets, empty unless `monomer_library` is configured. These
+    # REPLACE (never supplement) the reference-conformer bond/angle/plane targets for
+    # the residues the library covered: `featurizer` drops every conformer-derived
+    # tuple whose atoms all lie in `library_atoms`, so no residue is restrained twice.
+    library_bonds: list[tuple[int, int, float]] = field(default_factory=list)
+    library_angles: list[tuple[int, int, int, float]] = field(default_factory=list)
+    library_planes: list[tuple[int, ...]] = field(default_factory=list)
+    library_atoms: frozenset[int] = frozenset()
 
 
 # Side selectors: each link atom names its residue explicitly (previous / current)
@@ -88,8 +106,14 @@ def _is_enabled_polymer(record) -> bool:
     )
 
 
-def _link_geometry(previous, current, mol_type: str):
-    """Return canonical link bond/angles/planes for two adjacent residue atom maps."""
+def _link_geometry(previous, current, mol_type: str, library=None):
+    """Return canonical link bond/angles/planes for two adjacent residue atom maps.
+
+    With a monomer ``library`` the bond and angle targets come from its link entry
+    (``TRANS`` / ``p``) instead of the built-in table; the planes stay built-in either
+    way, because the library's peptide plane is the 4-atom ``CA-C-N-O`` group while the
+    5-atom omega group used here (adding the next CA) is the stronger restraint.
+    """
 
     names = (previous["names"], current["names"])  # index by _PREV / _CURR
     link = _PROTEIN_LINK if mol_type == "protein" else _NUCLEIC_LINK
@@ -98,15 +122,23 @@ def _link_geometry(previous, current, mol_type: str):
         name, side = atom
         return names[side].get(name)
 
-    b0, b1, bond_target = link.bond
-    g0, g1 = resolve(b0), resolve(b1)
-    bonds = [] if g0 is None or g1 is None else [(g0, g1, bond_target)]
+    from_library = (
+        None
+        if library is None
+        else library.link_restraints(mol_type, previous["names"], current["names"])
+    )
+    if from_library is not None:
+        bonds, angles = from_library
+    else:
+        b0, b1, bond_target = link.bond
+        g0, g1 = resolve(b0), resolve(b1)
+        bonds = [] if g0 is None or g1 is None else [(g0, g1, bond_target)]
 
-    angles = []
-    for a0, a1, a2, degrees in link.angles:
-        idx = tuple(resolve(a) for a in (a0, a1, a2))
-        if all(i is not None for i in idx):
-            angles.append((*idx, float(np.deg2rad(degrees))))
+        angles = []
+        for a0, a1, a2, degrees in link.angles:
+            idx = tuple(resolve(a) for a in (a0, a1, a2))
+            if all(i is not None for i in idx):
+                angles.append((*idx, float(np.deg2rad(degrees))))
 
     planes = []
     for group in link.planes:
@@ -224,10 +256,13 @@ def build_polymer_geometry(
                 "chain": group[0].chain,
                 "order": int(gidx.min()),
                 "mol_type": next(iter(ptypes)),
+                "resname": group[0].resname,
                 "names": names,
             }
         )
         atom_indices.update(int(g) for g in gidx)
+
+    library, targets = _load_library(conformer_config, residue_meta)
 
     link_bonds = []
     link_angles = []
@@ -244,7 +279,7 @@ def build_polymer_geometry(
             if current["mol_type"] != previous["mol_type"]:
                 continue
             bonds, angles, planes = _link_geometry(
-                previous, current, current["mol_type"]
+                previous, current, current["mol_type"], library
             )
             link_bonds.extend(bonds)
             link_angles.extend(angles)
@@ -256,4 +291,38 @@ def build_polymer_geometry(
         link_bonds=link_bonds,
         link_angles=link_angles,
         link_planes=link_planes,
+        library_bonds=targets.bonds,
+        library_angles=targets.angles,
+        library_planes=targets.planes,
+        library_atoms=targets.atoms,
     )
+
+
+def _load_library(conformer_config: dict | None, residue_meta: list[dict]):
+    """``(MonomerLibrary | None, LibraryTargets)`` for the configured library.
+
+    Logs a SEPARATE coverage line (the base_pair macro's convention) rather than
+    folding into the setup summary: "the library loaded but covered nothing" and "no
+    library configured" produce identical restraint counts, so the distinction has to
+    be visible.
+    """
+    spec = monlib_geom.parse_config(conformer_config)
+    if spec is None:
+        return None, monlib_geom.LibraryTargets()
+    path, on_missing = spec
+    library = monlib_geom.MonomerLibrary.load(
+        path, {m["resname"] for m in residue_meta if m["resname"]}
+    )
+    targets = monlib_geom.collect(library, residue_meta, on_missing)
+    n_covered = len(residue_meta) - sum(
+        1 for m in residue_meta if not library.covers(m["resname"])
+    )
+    msg = (
+        f"[rgi_utils] monomer library: {n_covered}/{len(residue_meta)} residues from "
+        f"{path} (components {list(targets.covered)}; bonds={len(targets.bonds)} "
+        f"angles={len(targets.angles)} planes={len(targets.planes)})"
+    )
+    if targets.missing:
+        msg += f"; NOT in library, kept reference conformer: {list(targets.missing)}"
+    logger.info(msg)
+    return library, targets

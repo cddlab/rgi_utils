@@ -718,16 +718,34 @@ def build_spec(
         pb, pa, pc, _pd, pp = _extract_conformer(
             polymer_geometry.residue_confs, relax=False
         )
+        # Monomer-library targets REPLACE the reference-conformer ones residue by
+        # residue (`monomer_library` config; see monlib_geom). Every conformer-derived
+        # tuple is intra-residue, so "all its atoms are in a covered residue" identifies
+        # exactly the tuples the library re-states -- drop those and keep the rest, so a
+        # partially covered structure mixes sources per residue and never doubles up.
+        lib_atoms = polymer_geometry.library_atoms
+        if lib_atoms:
+            pb = [t for t in pb if not lib_atoms.issuperset(t[:2])]
+            pa = [t for t in pa if not lib_atoms.issuperset(t[:3])]
+            pp = [t for t in pp if not lib_atoms.issuperset(t)]
         bonds.extend(pb)
+        bonds.extend(polymer_geometry.library_bonds)
         bonds.extend(polymer_geometry.link_bonds)
         angles.extend(pa)
+        angles.extend(polymer_geometry.library_angles)
         angles.extend(polymer_geometry.link_angles)
+        # Chirality stays reference-conformer-derived even under a library: only the
+        # SIGN protects stereochemistry, and the library's ChiralityType convention
+        # would have to be reconciled with _chiral_vol's atom ordering first.
         chirals.extend(pc)  # residue-local stereocentres (Calpha) only
         # Polymer planarity: residue-local aromatic rings (His/Phe/Tyr/Trp side chains,
-        # nucleic-acid bases) from _extract_conformer, plus the canonical peptide plane
-        # (a 5-atom group in global indices; appended directly, bypassing the residue-
-        # local coplanarity check like link_bonds/link_angles).
+        # nucleic-acid bases) from _extract_conformer -- or the library's named plane
+        # groups, which put a whole nucleobase (ring + exocyclic atoms + C1') in ONE
+        # group where SSSR perception splits a purine into two fused rings -- plus the
+        # canonical peptide plane (a 5-atom group in global indices; appended directly,
+        # bypassing the residue-local coplanarity check like link_bonds/link_angles).
         planes.extend(pp)
+        planes.extend(polymer_geometry.library_planes)
         planes.extend(polymer_geometry.link_planes)
         polymer_atoms = np.asarray(polymer_geometry.atom_indices, dtype=np.int64)
     # VdW covalent exclusions must survive even when bond/angle energy blocks are off.

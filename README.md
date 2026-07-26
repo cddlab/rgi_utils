@@ -33,7 +33,10 @@ Six **built-in** restraint types, all minimized during the denoising loop to gui
   ([servalcat](https://github.com/keitaroyam/servalcat)-style best-fit-plane flatness of aromatic rings + sp2 groups, opt-in)
   toward an ideal RDKit geometry, plus **VdW**
   non-bonded clash avoidance (intramolecular and/or intermolecular; `mode`
-  defaults to `both`).
+  defaults to `both`). For polymers the targets can instead come from a **CCP4 monomer
+  library** (`monomer_library`) — the values Refmac/servalcat refine against. Prefer that
+  for nucleic acids: the predictor's own reference conformer is an ETKDG embedding of the
+  free CCD component, so restraining toward it *worsens* base geometry.
 - **RMSD** — Kabsch-superposed RMSD of a group toward a reference PDB.
 - **distance** — centroid distance between two atom groups (CG-minimised like every other restraint).
 - **angle** — the angle of three atom groups' centroids (vertex = group 2), in degrees;
