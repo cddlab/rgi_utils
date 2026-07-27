@@ -338,3 +338,175 @@ class TestConverge:
             d = float(np.linalg.norm(xo[i] - xo[j]))
             assert 2.6 <= d <= 3.2, f"h-bond {i}-{j} = {d:.2f} out of window"
         assert _plane_dev(xo) < 0.5 * dev0  # flattened
+
+
+# ---------------------------------------------------------------------------- triple
+class TestTriple:
+    """``residue3`` widens the coplanarity plane to a base triple.
+
+    A triple is real geometry the pair form cannot express: the third base docks on a
+    groove edge (non-WC, so its identity must not be validated) and sits measurably out
+    of the pair's plane (so the pair's slack-0 target would flatten it).
+    """
+
+    def _triple_adapter(self):
+        return _adapter(
+            ("A", 1, "G", _G_BASE), ("B", 1, "C", _C_BASE), ("A", 2, "A", _A_BASE)
+        )
+
+    def test_third_base_joins_the_plane_only(self):
+        adapter = self._triple_adapter()
+        dists, plane = _resolve(adapter, residue3="chain A and resid 2")
+        # H-bonds stay the three G-C ones: the third base contributes none, because
+        # which of its atoms bond depends on the Leontis-Westhof family.
+        assert len(dists) == 3
+        atoms, _slack, _weight = plane
+        assert len(atoms) == len(_G_BASE) + len(_C_BASE) + len(_A_BASE)
+        bb_indices = {a.index for a in adapter._atoms if a.name in _BACKBONE}
+        assert not (set(atoms) & bb_indices)
+
+    def test_triple_gets_slack_and_pair_does_not(self):
+        _, pair_plane = _resolve(
+            _adapter(("A", 1, "G", _G_BASE), ("B", 1, "C", _C_BASE))
+        )
+        _, triple_plane = _resolve(
+            self._triple_adapter(), residue3="chain A and resid 2"
+        )
+        assert pair_plane[1] == 0.0  # unchanged for every pre-existing config
+        assert triple_plane[1] > 0.0
+
+    def test_explicit_slack_overrides_both(self):
+        _, pair_plane = _resolve(
+            _adapter(("A", 1, "G", _G_BASE), ("B", 1, "C", _C_BASE)), coplanar_slack=0.2
+        )
+        _, triple_plane = _resolve(
+            self._triple_adapter(), residue3="chain A and resid 2", coplanar_slack=0.2
+        )
+        assert pair_plane[1] == pytest.approx(0.2)
+        assert triple_plane[1] == pytest.approx(0.2)
+
+    def test_negative_slack_raises(self):
+        with pytest.raises(ValueError, match="cannot be negative"):
+            BasePairData().set_config(_entry(coplanar_slack=-0.1))
+
+    def test_third_base_identity_is_not_validated(self):
+        # G-G would be rejected as a PAIR; as the third base of a triple it is fine.
+        _, plane = _resolve(
+            _adapter(
+                ("A", 1, "G", _G_BASE), ("B", 1, "C", _C_BASE), ("A", 2, "G", _G_BASE)
+            ),
+            residue3="chain A and resid 2",
+        )
+        assert len(plane[0]) == len(_G_BASE) * 2 + len(_C_BASE)
+
+    def test_residue3_with_coplanar_off_raises(self):
+        with pytest.raises(ValueError, match="no-op with coplanar: false"):
+            BasePairData().set_config(
+                _entry(residue3="chain A and resid 2", coplanar=False)
+            )
+
+    def test_residue3_must_match_one_residue(self):
+        with pytest.raises(
+            ValueError, match="residue3 selection must match exactly one"
+        ):
+            _resolve(self._triple_adapter(), residue3="chain A")
+
+    def test_slack_admits_a_tilted_third_base(self):
+        """The slack must be wide enough for a real triple and narrow enough to bite.
+
+        Out-of-plane RMS measured over the reference triples runs 0.15-0.44 A, so a
+        third base at that tilt must cost nothing while a grossly non-planar one does.
+        """
+        torch = pytest.importorskip("torch")
+        g = ["N1", "N2", "O6", "C2", "C6"]
+        c = ["N3", "O2", "N4", "C4", "C5"]
+        a = ["N1", "N6", "N7", "C2", "C8"]
+        recs = [AtomRecord("A", 1, i, nm, "rna", "G") for i, nm in enumerate(g)]
+        recs += [AtomRecord("B", 1, 5 + j, nm, "rna", "C") for j, nm in enumerate(c)]
+        recs += [AtomRecord("A", 2, 10 + k, nm, "rna", "A") for k, nm in enumerate(a)]
+
+        coords = np.zeros((15, 3))
+        coords[:5, 0] = [0.0, 0.5, -0.5, 1.0, -1.0]
+        coords[:5, 1] = [0.0, 1.4, -1.4, 2.0, -2.0]
+        coords[5:10, 0] = [8.0, 8.5, 7.5, 9.0, 7.0]
+        coords[5:10, 1] = [0.2, 1.5, -1.3, 2.1, -1.9]
+        coords[10:, 0] = [-6.0, -5.5, -6.5, -5.0, -7.0]
+        coords[10:, 1] = [0.1, 1.4, -1.3, 2.0, -1.9]
+        coords[10:, 2] = [0.0, 0.35, -0.35, 0.5, -0.5]  # ~0.35 A RMS tilt: allowed
+
+        def _run(**kw):
+            cr = CombinedRestraints()
+            cr.setup(
+                MockAdapter(recs),
+                1,
+                {
+                    "gpu": False,
+                    "max_iter": 200,
+                    "base_pair_restraints_config": [
+                        _entry(residue3="chain A and resid 2", **kw)
+                    ],
+                },
+            )
+            out = cr.minimize(
+                torch.tensor(coords.copy(), dtype=torch.float64), 0, 1.0
+            ).numpy()
+            return float(np.abs(out[10:, 2] - coords[10:, 2]).max())
+
+        # inside the default slack -> the plane term must not drag the third base flat
+        assert _run() < 0.1
+        # ...and the same tilt IS pulled flat once the slack is taken away, so the
+        # assertion above cannot pass vacuously
+        assert _run(coplanar_slack=0.0) > 0.2
+
+
+# ------------------------------------------------------------------------ plane only
+class TestPlaneOnly:
+    """``hbonds: false`` keeps the plane and drops the Watson-Crick lookup.
+
+    Without it a non-WC arrangement is unreachable: the table either has no entry (G-A
+    raises) or has the WRONG one (a reverse-Hoogsteen U-A bonds O2-N6/N3-N7, but the
+    table would restrain the WC N1-N3/N6-O4 and quietly build a different pair).
+    """
+
+    def test_no_hbonds_but_a_plane(self):
+        dists, plane = _resolve(
+            _adapter(("A", 1, "G", _G_BASE), ("B", 1, "C", _C_BASE)), hbonds=False
+        )
+        assert dists == []
+        assert len(plane[0]) == len(_G_BASE) + len(_C_BASE)
+
+    def test_non_wc_pair_is_allowed(self):
+        # G-G raises as a normal entry; with hbonds: false it is just two bases.
+        with pytest.raises(ValueError, match="not a canonical"):
+            _resolve(_adapter(("A", 1, "G", _G_BASE), ("B", 1, "G", _G_BASE)))
+        dists, plane = _resolve(
+            _adapter(("A", 1, "G", _G_BASE), ("B", 1, "G", _G_BASE)), hbonds=False
+        )
+        assert dists == [] and len(plane[0]) == 2 * len(_G_BASE)
+
+    def test_plane_only_triple(self):
+        _, plane = _resolve(
+            _adapter(
+                ("A", 1, "G", _G_BASE), ("B", 1, "A", _A_BASE), ("A", 2, "A", _A_BASE)
+            ),
+            hbonds=False,
+            residue3="chain A and resid 2",
+        )
+        assert len(plane[0]) == len(_G_BASE) + 2 * len(_A_BASE)
+
+    def test_both_off_raises(self):
+        with pytest.raises(ValueError, match="generates nothing"):
+            BasePairData().set_config(_entry(hbonds=False, coplanar=False))
+
+    def test_slack_default_still_depends_on_the_third_base(self):
+        _, pair = _resolve(
+            _adapter(("A", 1, "G", _G_BASE), ("B", 1, "G", _G_BASE)), hbonds=False
+        )
+        _, triple = _resolve(
+            _adapter(
+                ("A", 1, "G", _G_BASE), ("B", 1, "G", _G_BASE), ("A", 2, "A", _A_BASE)
+            ),
+            hbonds=False,
+            residue3="chain A and resid 2",
+        )
+        assert pair[1] == 0.0 and triple[1] > 0.0

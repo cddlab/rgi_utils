@@ -345,7 +345,8 @@ dihedral_restraints_config:
 
 ## `base_pair_restraints_config` (list)
 
-Restrain two nucleotides into **Watson-Crick base-pair geometry**. This is a config-time
+Restrain two nucleotides into **Watson-Crick base-pair geometry**, optionally widening the
+coplanarity plane to a **base triple** with `residue3`. This is a config-time
 **macro**, not a new energy term: each entry EXPANDS into the primitives above — one
 [`distance`](#distance_restraints_config-list) restraint per WC hydrogen bond, plus (optionally)
 one best-fit [`plane`](#conformer_restraints_config-single-dict) restraint over both bases so the
@@ -370,9 +371,16 @@ coordinates is intentionally NOT done (coordinates are pure noise at high sigma)
 base_pair_restraints_config:
   - residue1: "chain A and resid 5"   # each selector must match EXACTLY one residue
     residue2: "chain B and resid 12"
+    # hbonds: true      # false -> coplanarity ONLY: no WC lookup, no distances, so any
+    #                   # residues may be named (non-WC pair, reverse-Hoogsteen, ...)
+    # residue3: "chain A and resid 30"   # optional THIRD base -> base triple.
+    #                   # Joins the coplanarity plane only; generates no H-bonds and its
+    #                   # base identity is not validated (a docked third base is non-WC).
     # pair: GC          # optional: override auto-detection (needed if resname is
     #                   # unavailable, or for a G-U wobble). Two letters from ACGTU.
     # coplanar: true    # add the inter-base coplanarity plane (default true)
+    # coplanar_slack: 0.45  # out-of-plane RMS (A) allowed before the plane term bites.
+    #                   # Default 0 for a pair, 0.45 for a triple.
     # target: [2.7, 3.1]  # H-bond distance: [low, high] -> flat-bottomed (default),
     #                   # or a scalar -> harmonic
     # weight: 1.0       # strength of the H-bonds AND the coplanarity plane
@@ -385,12 +393,68 @@ base_pair_restraints_config:
 |---|---|---|---|
 | `residue1` / `residue2` | str | — (required) | selection-DSL strings, each matching exactly one nucleotide (else it raises) |
 | `pair` | str | auto from `resname` | override the detected bases, e.g. `"GC"`, `"AU"`, `"GU"`. Required when `resname` is unavailable or for a wobble pair |
-| `coplanar` | bool | `true` | also add a best-fit-plane restraint over both bases' atoms (keeps the pair coplanar) |
+| `hbonds` | bool | `true` | `false` keeps only the coplanarity plane: the Watson-Crick lookup is skipped, so ANY residues may be named and no distance restraints are generated. Use it for a pair the WC table cannot describe — see *Coplanarity without hydrogen bonds* |
+| `residue3` | str | `None` | optional third nucleotide, making the entry a base TRIPLE. It joins the coplanarity plane and nothing else: no H-bond distances are generated for it, and its base identity is never checked against the WC table. Requires `coplanar: true` (raises otherwise, since it would be a silent no-op) |
+| `coplanar` | bool | `true` | also add a best-fit-plane restraint over the bases' atoms (keeps the pair/triple coplanar) |
+| `coplanar_slack` | float | `0.0` pair / `0.45` triple | out-of-plane RMS (A) the plane term tolerates before it penalises — a one-sided flat bottom. See *Base triples* below for where the triple default comes from |
 | `target` | `[low, high]` or float | `[2.7, 3.1]` | WC H-bond distance: a `[low, high]` window → flat-bottomed; a scalar → harmonic (Å) |
 | `weight` | float | `1.0` | energy scale for the generated H-bond distances and the coplanarity plane |
-| `move` | `both` / `1` / `2` | `both` | which residue the H-bonds pull; `1` moves only residue1 (dock a strand onto a fixed template), `2` only residue2 |
+| `move` | `both` / `1` / `2` | `both` | which residue the H-bonds pull; `1` moves only residue1 (dock a strand onto a fixed template), `2` only residue2. Addresses residues 1-2 only: it acts on the H-bond distances, and a `residue3` has none |
 | `start_sigma` / `stop_sigma` | float | `+inf` / `-1` | sigma gating of the H-bond distances |
 | `start_step` / `stop_step` | int | `-inf` / `+inf` | step gating (mutually exclusive with the sigma window) |
+
+### Base triples
+
+`residue3` extends the plane group to three bases — a third base docked onto the pair's
+groove edge — a recurring tertiary motif in folded nucleic acids.
+
+Only the plane grows. No H-bonds are generated for the third base: which of its atoms
+bond depends on the base identity and the Leontis-Westhof family, and no small built-in
+table covers that — give them with
+[`distance_restraints_config`](#distance_restraints_config-list).
+
+**A triple is not as flat as a pair**, which is why it gets its own slack. Measured over
+sixteen base triples drawn from four reference structures (1.9-3.5 A resolution):
+
+| | out-of-plane RMS (A) | third base's tilt |
+|---|---|---|
+| WC pair alone | 0.02 - 0.29 | — |
+| triple | 0.15 - 0.44 | 5 - 28 deg |
+
+Driving a triple to RMS 0 would flatten real geometry, so `coplanar_slack` defaults to
+**0.45 A** when `residue3` is present — just past the worst observed value, so only
+arrangements that no real triple explains are penalised. A plain pair keeps its historical
+`0.0`, so existing configs are unaffected.
+
+```yaml
+base_pair_restraints_config:
+  - residue1: "chain A and resid 10"   # the WC pair...
+    residue2: "chain A and resid 25"
+    residue3: "chain A and resid 45"   # ...plus the base docked on its groove edge
+distance_restraints_config:            # the third base's H-bonds go here
+  - atom_selection1: "chain A and resid 10 and name O6"
+    atom_selection2: "chain A and resid 45 and name N2"
+    flat-bottomed: {target_distance1: 2.6, target_distance2: 3.4}
+```
+
+### Coplanarity without hydrogen bonds
+
+`hbonds: false` drops the WC lookup and the generated distances, leaving the plane. It
+exists because the built-in table cannot describe every arrangement that is nonetheless
+coplanar:
+
+| arrangement | without `hbonds: false` |
+|---|---|
+| a non-WC pair (G-A, G-G) | raises — not in the table |
+| a **reverse-Hoogsteen** U-A | **silently wrong**: auto-detected as `AU`, so it restrains the WC `N1-N3`/`N6-O4` when the real bonds are `O2-N6`/`N3-N7`, building a different pair |
+| a G-U that stacks without bonding | forces a wobble bond that is not there |
+
+The `residue3` triple form composes with it, so a plane over three arbitrary bases is
+`{residue1, residue2, residue3, hbonds: false}`. Give whatever hydrogen bonds do exist
+with [`distance_restraints_config`](#distance_restraints_config-list).
+
+`hbonds: false` together with `coplanar: false` raises, since the entry would generate
+nothing at all.
 
 ### Gating
 
@@ -406,8 +470,9 @@ enabled; `coplanar` here additionally makes the **two** bases of the pair share 
 The parser fails loudly rather than creating a silent no-op: a `residue` selector matching zero or
 more than one residue, an
 auto-detected non-Watson-Crick pair (e.g. G-G, or a G-U without `pair: GU`), a `resname`-less residue
-with no `pair`, or a missing WC atom all raise. Verbose setup logs
-`base_pair=P pairs -> H h-bonds + C coplanar groups` (the generated restraints also show up in the
+with no `pair`, a missing WC atom, a negative `coplanar_slack`, or a `residue3` with
+`coplanar: false` all raise. The non-WC check applies to `residue1`/`residue2` only. Verbose setup logs
+`base_pair=N entries (T triples) -> H h-bonds + C coplanar groups` (the generated restraints also show up in the
 `distances=` / `plane=` counts).
 
 ## `conformer_restraints_config` (single dict)

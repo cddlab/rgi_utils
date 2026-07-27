@@ -306,9 +306,11 @@ class CombinedRestraints:
             # coplanar groups explicitly (the CLAUDE.md verification recipe relies on
             # per-term counts to confirm a restraint was actually built).
             if cfg.base_pair_data:
+                n_triples = sum(1 for bp in cfg.base_pair_data if bp.residue3)
                 bp_msg = (
-                    f"[rgi_utils] setup: base_pair={len(cfg.base_pair_data)} pairs -> "
-                    f"{len(bp_distances)} h-bonds + {len(bp_plane_groups)} coplanar groups"
+                    f"[rgi_utils] setup: base_pair={len(cfg.base_pair_data)} entries "
+                    f"({n_triples} triples) -> {len(bp_distances)} h-bonds + "
+                    f"{len(bp_plane_groups)} coplanar groups"
                 )
                 logger.info(bp_msg)
                 print(bp_msg, flush=True)
