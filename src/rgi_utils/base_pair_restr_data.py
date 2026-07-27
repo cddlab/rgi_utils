@@ -1,4 +1,4 @@
-"""Parse + resolve nucleic-acid base-pair restraints.
+"""Parse + resolve nucleic-acid base-pair (and base-triple) restraints.
 
 A base-pair restraint pins two nucleotides into Watson-Crick (WC) geometry. It is a
 config-time MACRO, not a new energy term: each entry EXPANDS into the existing
@@ -8,6 +8,26 @@ primitives —
     donor/acceptor atom pair), and
   * (optionally) one best-fit-**plane** restraint over the two bases' atoms, so the
     pair stays coplanar.
+
+``hbonds: false`` keeps only the plane. The Watson-Crick lookup is then skipped
+entirely, so ANY residues may be named -- a non-WC pair the table cannot describe (a
+reverse-Hoogsteen U-A, whose real bonds are O2-N6/N3-N7 and not the WC N1-N3/N6-O4), a
+wobble that is stacked rather than bonded, or a base docked on a G-A. Without it those
+either raise or, worse, silently restrain the wrong atom pair.
+
+An optional ``residue3`` extends the plane group to a BASE TRIPLE — a third base docked
+onto the WC pair's groove edge, a recurring tertiary motif. Only the plane grows: no
+H-bond distances are generated for the third base,
+because which of its atoms bond depends on the base identity and the Leontis-Westhof
+family, and no small table covers that. Give those with ``distance_restraints_config``.
+
+A triple is NOT as flat as a WC pair. Measured over the base triples of four reference
+structures (1.9-3.5 A), the out-of-plane RMS is
+0.02-0.29 A for the WC pair alone but 0.15-0.44 A for the triple, the third base sitting
+5-28 deg out of the pair's plane. Driving that to zero would flatten real geometry, so
+``coplanar_slack`` defaults to ``_TRIPLE_SLACK`` when a third residue is present (a
+one-sided flat bottom: nothing is penalised until the RMS exceeds it) and stays at 0 for
+a plain pair.
 
 This mirrors what servalcat/Refmac actually do (no dedicated base-pair energy; the
 pairing is imposed as H-bond distance + planarity restraints). Reusing the distance /
@@ -46,8 +66,11 @@ logger = logging.getLogger(__name__)
 _KNOWN_BASE_PAIR_KEYS = {
     "residue1",
     "residue2",
+    "residue3",
+    "hbonds",
     "pair",
     "coplanar",
+    "coplanar_slack",
     "weight",
     "start_sigma",
     "stop_sigma",
@@ -78,6 +101,13 @@ _CANONICAL_AUTO = frozenset(
 
 # default WC H-bond distance flat-bottomed window (Angstrom)
 _DEFAULT_TARGET = (2.7, 3.1)
+
+# Default coplanarity slack (Angstrom out-of-plane RMS). A WC pair keeps 0 -- the value
+# every existing config was written against. A triple gets room for the third base's real
+# tilt: 0.44 A was the worst observed over the reference triples (see the module
+# docstring), so 0.45 penalises only arrangements flatter geometry cannot explain.
+_PAIR_SLACK = 0.0
+_TRIPLE_SLACK = 0.45
 
 
 def _normalise_name(name: str | None) -> str:
@@ -113,14 +143,23 @@ class BasePairData:
     unavailable or for non-standard/wobble pairing). ``coplanar`` (default True) adds the
     inter-base planarity restraint. ``weight`` / ``move`` / the gate windows behave like
     the distance restraint (they flow into every generated H-bond distance entry).
+
+    ``residue3`` (optional) names a third base that joins the plane group, making the
+    entry a base TRIPLE. Its base identity is never checked against the WC table -- a
+    third base docks on a groove edge and is non-WC by definition -- and it contributes
+    no H-bonds. ``move`` still addresses only residues 1 and 2, since it acts on the
+    H-bond distances and the third base has none.
     """
 
     residue1: str
     residue2: str
+    residue3: str | None
+    hbonds: bool  # False = coplanarity only, no WC lookup and no distances
     pair: (
         str | None
     )  # explicit base pair override, e.g. "GC" (None = auto from resname)
     coplanar: bool
+    coplanar_slack: float | None  # None = pick by pair/triple at resolve time
     target: tuple  # WC H-bond distance flat-bottomed window (low, high) Angstrom
     weight: float
     move_mode: int  # 0=both / 1=residue1 only / 2=residue2 only (docking a strand)
@@ -133,8 +172,11 @@ class BasePairData:
     def __init__(self):
         self.residue1 = None
         self.residue2 = None
+        self.residue3 = None
+        self.hbonds = True
         self.pair = None
         self.coplanar = True
+        self.coplanar_slack = None
         self.target = _DEFAULT_TARGET
         self.weight = 1.0
         self.move_mode = 0
@@ -152,6 +194,8 @@ class BasePairData:
         )
         self.residue1 = config.get("residue1", None)
         self.residue2 = config.get("residue2", None)
+        self.residue3 = config.get("residue3", None)
+        self.hbonds = bool(config.get("hbonds", True))
         self.pair = config.get("pair", None)
         if self.pair is not None:
             self.pair = str(self.pair).strip().upper()
@@ -161,6 +205,25 @@ class BasePairData:
                     f"(e.g. 'GC', 'AU', 'GU'), got {config.get('pair')!r}"
                 )
         self.coplanar = bool(config.get("coplanar", True))
+        slack = config.get("coplanar_slack")
+        if slack is not None:
+            self.coplanar_slack = float(slack)
+            if self.coplanar_slack < 0.0:
+                raise ValueError(
+                    "base_pair 'coplanar_slack' is an out-of-plane RMS in Angstrom and "
+                    f"cannot be negative (got {slack!r})"
+                )
+        if not self.hbonds and not self.coplanar:
+            raise ValueError(
+                "base_pair with hbonds: false and coplanar: false generates nothing. "
+                "Turn one of them back on."
+            )
+        if self.residue3 is not None and not self.coplanar:
+            raise ValueError(
+                "base_pair residue3 only joins the coplanarity plane, so it is a no-op "
+                "with coplanar: false. Drop residue3, or turn coplanar back on and give "
+                "the third base's hydrogen bonds via distance_restraints_config."
+            )
         # weight + the sigma/step gate windows: shared parse (start_sigma None -> +inf is
         # applied by config.from_dict, matching distance/rmsd/angle/dihedral).
         apply_window_params(self, config, "base_pair_restraints_config entry")
@@ -246,7 +309,13 @@ class BasePairData:
         map2, resname2 = self._resolve_one_residue(adapter, self.residue2, "residue2")
 
         # base identities: explicit `pair` override, else auto-detect from resname.
-        if self.pair is not None:
+        # Skipped entirely for a plane-only entry -- there is no table to consult, and
+        # demanding a canonical pair is exactly what makes those entries impossible.
+        if not self.hbonds:
+            base1 = _base_letter(resname1) or "?"
+            base2 = _base_letter(resname2) or "?"
+            atom_pairs = []
+        elif self.pair is not None:
             base1, base2 = self.pair[0], self.pair[1]
             atom_pairs = _lookup_wc(base1, base2)
             if atom_pairs is None:
@@ -287,25 +356,48 @@ class BasePairData:
             )
 
         plane_group = None
+        base3 = None
         if self.coplanar:
             atoms = self._base_atoms(map1) + self._base_atoms(map2)
+            if self.residue3 is not None:
+                # The third base joins the plane only. Its identity is NOT checked
+                # against the WC table: docked on a groove edge, it is non-WC by
+                # definition, and any base can sit there.
+                map3, resname3 = self._resolve_one_residue(
+                    adapter, self.residue3, "residue3"
+                )
+                third = self._base_atoms(map3)
+                if not third:
+                    raise ValueError(
+                        f"base_pair residue3 ({self.residue3!r}) contributed no base "
+                        f"atoms to the coplanarity restraint (resname={resname3!r}); "
+                        "it must name a nucleotide"
+                    )
+                atoms += third
+                base3 = _base_letter(resname3) or "?"
             if len(atoms) < 3:
                 raise ValueError(
                     f"base_pair {base1}-{base2}: fewer than 3 base atoms found for the "
                     "coplanarity restraint; set coplanar: false or check the residues"
                 )
-            # plane weight/slack: reuse the entry weight; slack 0 = drive fully coplanar.
-            # NOTE: real WC pairs have ~10-15 deg propeller twist, so slack 0 (fully flat)
-            # is mildly non-physical; a future `coplanar_slack` key could relax it. The
-            # `target` key only tunes the H-bond distance, not this plane.
-            plane_group = (atoms, 0.0, self.weight)
+            # slack: explicit `coplanar_slack` wins, else 0 for a pair (what every
+            # existing config was written against) and _TRIPLE_SLACK for a triple, whose
+            # third base is genuinely tilted out of the pair's plane. The `target` key
+            # tunes only the H-bond distance, not this plane.
+            slack = self.coplanar_slack
+            if slack is None:
+                slack = _PAIR_SLACK if self.residue3 is None else _TRIPLE_SLACK
+            plane_group = (atoms, slack, self.weight)
 
         logger.info(
-            "base_pair resolved: %s-%s -> %d h-bonds%s",
+            "base_pair resolved: %s-%s%s -> %d h-bonds%s",
             base1,
             base2,
+            f"-{base3}" if base3 is not None else "",
             len(distances),
-            " + coplanar" if plane_group is not None else "",
+            f" + coplanar({len(plane_group[0])} atoms, slack {plane_group[1]:g})"
+            if plane_group is not None
+            else "",
         )
         return distances, plane_group
 
