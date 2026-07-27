@@ -37,6 +37,13 @@ from rgi_utils.atom_context import AtomRecord, LigandConf, decode_atom_name
 
 logger = logging.getLogger(__name__)
 
+# AF3's residue-type vocabulary is 20 amino acids, UNK, then the nucleotides. The
+# `aatype` encoding inserts a GAP token right after UNK; a vocabulary handed over
+# without it shifts every name from here on (see `_resolve_name_shift`).
+_GAP_INDEX = 21
+_RNA_NAMES = frozenset({"A", "G", "C", "U", "N"})
+_DNA_NAMES = frozenset({"DA", "DG", "DC", "DT", "DN"})
+
 
 class AF3RestraintAdapter:
     """rgi_utils adapter over an AF3 featurised batch (numpy) + shim-resolved mols.
@@ -73,6 +80,11 @@ class AF3RestraintAdapter:
         # Per-token residue-type index into the CCD-name vocabulary.
         self.aatype = np.asarray(batch["aatype"])  # (num_tokens,)
         self.polymer_residue_names = polymer_residue_names
+        # ...but WHICH vocabulary: AF3 encodes `aatype` with the order that carries a
+        # GAP token after UNK, and a caller handing over the gap-less list shifts every
+        # nucleic name by one while leaving proteins (index < 21) correct. Resolve it
+        # against the batch's own molecule-type flags instead of trusting either.
+        self._name_shift = self._resolve_name_shift()
         # chain.id -> asym int (1-based, fold_input chain order); resolved by the shim.
         self.chain_id_to_asym = dict(chain_id_to_asym)
         self.asym_int_to_chain = {v: k for k, v in self.chain_id_to_asym.items()}
@@ -95,6 +107,63 @@ class AF3RestraintAdapter:
                 sorted(set(self.asym_int_to_chain) - batch_asyms),
                 sorted(batch_asyms),
             )
+
+    def _resolve_name_shift(self) -> int:
+        """0, or 1 when the residue-name vocabulary is missing AF3's gap token.
+
+        AF3 fills ``aatype`` from ``POLYMER_TYPES_ORDER_WITH_UNKNOWN_AND_GAP``
+        (``… 20:UNK, 21:'-', 22:A, 23:G, 24:C, 25:U, 26:DA …``), while the plain
+        ``POLYMER_TYPES`` list has no gap entry (``… 20:UNK, 21:A, 22:G …``). Indexing
+        one with the other leaves proteins right (both agree below the gap) and shifts
+        every NUCLEIC name by one — an adenine token reads as ``G`` and a uridine as
+        ``DA``. That silently mis-identifies bases for the base-pair macro and for
+        monomer-library lookups, so decide it from evidence: score both readings by how
+        many nucleic tokens land on a name their own ``is_rna``/``is_dna`` flag allows.
+
+        Only nucleic tokens can discriminate (protein indices are below the gap and read
+        identically either way), so a protein-only or ligand-only batch keeps shift 0.
+        """
+        nucleic = np.flatnonzero(self.is_rna | self.is_dna)
+        if not len(nucleic):
+            return 0
+
+        def consistent(shift: int) -> int:
+            hits = 0
+            for token_idx in nucleic:
+                name = self._residue_name(int(token_idx), shift)
+                if name is None:
+                    continue
+                allowed = _RNA_NAMES if self.is_rna[token_idx] else _DNA_NAMES
+                hits += name in allowed
+            return hits
+
+        direct, gapless = consistent(0), consistent(1)
+        if gapless <= direct:
+            return 0
+        logger.warning(
+            "residue-name vocabulary looks gap-less: %d/%d nucleic tokens name a "
+            "matching base after dropping AF3's gap token vs %d before — reading it "
+            "shifted. Pass the vocabulary that indexes `aatype` (the …_WITH_UNKNOWN_AND"
+            "_GAP order) to silence this.",
+            gapless,
+            len(nucleic),
+            direct,
+        )
+        return 1
+
+    def _residue_name(self, token_idx: int, shift: int | None = None) -> str | None:
+        """CCD residue name of a token, or None when it is outside the vocabulary."""
+        at = int(self.aatype[token_idx])
+        # The gap token sits directly after UNK, so only names at or past it move.
+        if shift is None:
+            shift = self._name_shift
+        if at >= _GAP_INDEX:
+            at -= shift
+        return (
+            self.polymer_residue_names[at]
+            if 0 <= at < len(self.polymer_residue_names)
+            else None
+        )
 
     # --- FrameworkAdapter ------------------------------------------------------
     def _token_mol_type(self, token_idx: int) -> str | None:
@@ -152,12 +221,7 @@ class AF3RestraintAdapter:
                     continue
                 flat = int(token_idx) * self.max_atoms_per_token + within
                 name = decode_atom_name(self.ref_atom_name_chars[token_idx, within])
-                at = int(self.aatype[token_idx])
-                resname = (
-                    self.polymer_residue_names[at]
-                    if 0 <= at < len(self.polymer_residue_names)
-                    else None
-                )
+                resname = self._residue_name(token_idx)
                 yield AtomRecord(
                     chain=chain,
                     resid=resid,

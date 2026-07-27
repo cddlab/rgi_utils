@@ -15,6 +15,7 @@ from __future__ import annotations
 import sys
 
 import numpy as np
+import pytest
 from rdkit import Chem
 
 from rgi_utils._biotite_adapter import biotite_get_elements, biotite_ligand_confs
@@ -72,6 +73,53 @@ def _af3_batch():
 
 
 _POLY = ("ALA", "ARG", "ASN")  # AF3 residue-name vocabulary; index 0 -> "ALA"
+
+# The two real AF3 vocabularies. `aatype` is filled from the one WITH the gap token, so
+# a caller passing the gap-less list shifts every nucleic name by one (A reads as G,
+# U as DA) while proteins, which sit below the gap, stay correct.
+_AA20 = (
+    "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE",
+    "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL",
+)  # fmt: skip
+_NT = ("A", "G", "C", "U", "DA", "DG", "DC", "DT")
+_POLY_GAPLESS = (*_AA20, "UNK", *_NT)
+_POLY_WITH_GAP = (*_AA20, "UNK", "-", *_NT, "N")
+_AATYPE_A, _AATYPE_U = 22, 25  # adenine / uridine in the gap-carrying encoding
+
+
+def _af3_nucleotide_batch():
+    """2 nucleotide tokens (one atom each), aatype in AF3's gap-carrying encoding."""
+    ranc = np.zeros((2, 1, 4), dtype=np.int64)
+    ranc[0, 0] = _enc("N9")
+    ranc[1, 0] = _enc("N1")
+    return {
+        "asym_id": np.array([1, 1]),
+        "ref_mask": np.array([[1], [1]]),
+        "ref_pos": np.zeros((2, 1, 3)),
+        "ref_atom_name_chars": ranc,
+        "ref_element": np.array([[7], [7]]),
+        "is_protein": np.array([False, False]),
+        "is_dna": np.array([False, False]),
+        "is_rna": np.array([True, True]),
+        "aatype": np.array([_AATYPE_A, _AATYPE_U]),
+    }
+
+
+@pytest.mark.parametrize("vocabulary", [_POLY_GAPLESS, _POLY_WITH_GAP])
+def test_af3_nucleic_resnames_survive_either_residue_vocabulary(vocabulary):
+    # Read straight off the gap-less list these would be "G" and "DA" -- a base-pair
+    # macro would then reject a real A-U pair, and a monomer-library lookup would
+    # restrain a ribonucleotide with deoxy geometry. The molecule-type flags settle it.
+    ad = AF3RestraintAdapter(
+        _af3_nucleotide_batch(), {"A": 1}, vocabulary, ligand_mols=[]
+    )
+    assert [r.resname for r in ad.iter_atoms()] == ["A", "U"]
+
+
+def test_af3_protein_only_batch_keeps_the_vocabulary_as_given():
+    # Nothing below the gap moves, so a protein/ligand batch must not be "corrected".
+    ad = AF3RestraintAdapter(_af3_batch(), {"A": 1, "B": 2}, _POLY, ligand_mols=[])
+    assert ad._name_shift == 0
 
 
 def test_af3_adapter_imports_no_alphafold3():

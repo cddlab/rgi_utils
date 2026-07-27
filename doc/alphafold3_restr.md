@@ -58,6 +58,17 @@ AF3 reads RGI from a **`restraints_config` key inside the fold-input JSON** (bes
   always runs on the model's device — to compute on CPU, run the whole process on the JAX CPU
   platform).
 - AF3's minimizer converges near-target (~24-25 Å for the distance example); `max_iter: 2000`.
+- **Nucleic residue names**: AF3 encodes `aatype` with the vocabulary that carries a GAP token
+  after `UNK` (`… 20:UNK, 21:'-', 22:A, 23:G …`), while the plain `POLYMER_TYPES` list has no gap
+  entry. Read with the wrong one, proteins stay correct (they sit below the gap) but every nucleic
+  name shifts by one — an adenine token reads as `G`, a uridine as `DA`. The adapter resolves this
+  from the batch's own `is_rna`/`is_dna` flags and logs a warning when it has to shift, so
+  base-pair auto-detection and monomer-library lookups see the real base either way.
+- **Nucleic-acid `conformer_restraints`**: prefer
+  [`monomer_library`](config.md#monomer_library--refinement-targets-for-polymers-not-a-term) over
+  the default reference-conformer targets. AF3 builds `ref_pos` by ETKDG-embedding the free CCD
+  component, which is not refinement geometry (unconjugated exocyclic C-N, P-OH phosphate, and a
+  seed-dependent embed), so plain `bond`/`angle` measurably *worsens* nucleotide geometry.
 
 `resid` is the **per-chain 1-based ordinal**; there is **no top-level `start_sigma`**.
 

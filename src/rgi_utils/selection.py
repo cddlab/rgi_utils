@@ -65,21 +65,34 @@ class MolType(SelectionNode):
         return mol.get("mol_type") == self.kind
 
 
+def normalise_atom_name(name: str) -> str:
+    """Fold the interchangeable spellings of one atom name onto a single form.
+
+    A ribose prime is written ``'`` (PDB v3 / mmCIF), ``*`` (PDB v2) or — for a
+    double prime — ``"``; ``C1'``, ``C1*`` and ``H2"``/``H2''`` are the same atoms
+    under different conventions, and which one a file uses is not the user's choice.
+    Folding them here lets a selection written either way match a structure written
+    the other way.
+    """
+    return name.strip().upper().replace('"', "''").replace("*", "'")
+
+
 class Name(SelectionNode):
     """Matches atoms by atom name (e.g. "CA"), case-insensitively.
 
-    Enables backbone/CA-only RMSD superposition (``name CA``). ``mol["name"]`` is
-    the atom name supplied by the adapter (target side) or parsed from the PDB
-    (reference side); a None (adapter that supplies no name) never matches. Names
-    are alphanumeric only here, so a nucleic-acid prime atom ("C1'") is not
-    selectable — it fails loudly (trailing-char parse error), never silently."""
+    Enables backbone/CA-only RMSD superposition (``name CA``) and picking out
+    individual nucleic-acid atoms (``name C1'``, ``name O2*``) for e.g. a hydrogen-bond
+    distance restraint. ``mol["name"]`` is the atom name supplied by the adapter
+    (target side) or parsed from the PDB (reference side); a None (adapter that
+    supplies no name) never matches. Both sides go through ``normalise_atom_name``, so
+    prime spelling never decides a match."""
 
     def __init__(self, names: List[str]):
-        self.names = [n.upper() for n in names]
+        self.names = [normalise_atom_name(n) for n in names]
 
     def eval(self, mol: Dict[str, Union[str, int]]) -> bool:
         name = mol.get("name")
-        return isinstance(name, str) and name.upper() in self.names
+        return isinstance(name, str) and normalise_atom_name(name) in self.names
 
 
 # MDTraj-like backbone atom names, by polymer type, matched case-folded against
@@ -288,6 +301,57 @@ class SelectionParser:
         except ValueError:
             raise ParseError(f"Invalid unsigned integer: {s}")
 
+    # Characters that may appear in an atom name on top of alphanumerics: the three
+    # prime spellings (see normalise_atom_name). Only the `name` clause accepts them —
+    # chain ids and the other identifier clauses stay alphanumeric.
+    _ATOM_NAME_EXTRA = "'\"*"
+
+    def _parse_atom_name1(self) -> str:
+        start_pos = self.pos
+
+        def allowed(char: str) -> bool:
+            return char.isalnum() or char in self._ATOM_NAME_EXTRA
+
+        if self.pos < len(self.text) and allowed(self.text[self.pos]):
+            self.pos += 1
+            while self.pos < len(self.text) and allowed(self.text[self.pos]):
+                self.pos += 1
+            return self.text[start_pos : self.pos]
+        raise ParseError(f"Expected an atom name at position {self.pos}")
+
+    def _parse_atom_name(self) -> str:
+        """One atom name, with the same operator guards as ``_parse_identifier``.
+
+        The guards are what stop the name LIST: `and`/`or`/`not` are ordinary
+        alphanumeric words, so without rejecting them here `name CA and resid 5` would
+        swallow the operator as a third atom name.
+        """
+        start = self.pos
+        name = self._parse_atom_name1()
+        if name in {"and", "or", "not", "to"}:
+            raise ParseError(
+                f"Identifier cannot be a reserved keyword: '{name}' at position {start}"
+            )
+        for op in ("and", "or", "not", "to"):
+            if name.startswith(op) and len(name) > len(op):
+                raise ParseError(
+                    f"'{op}' is glued to a longer token '{name}' at position"
+                    f" {start} (add a space, e.g. '{op} {name[len(op) :]}')"
+                )
+        return name
+
+    def _parse_list_of_atom_names(self) -> List[str]:
+        names = [self._parse_atom_name()]
+        while True:
+            saved_pos = self.pos
+            try:
+                self._skip_space1()
+                names.append(self._parse_atom_name())
+            except ParseError:
+                self.pos = saved_pos
+                break
+        return names
+
     def _parse_identifier(self) -> str:
         start = self.pos
         identifier = self._parse_alphanumeric1()
@@ -372,12 +436,14 @@ class SelectionParser:
         return Chain(self._parse_list_of_identifiers())
 
     def _parse_name(self) -> SelectionNode:
-        # Atom-name selector, e.g. "name CA" / "name CA CB CG". Reuses the
-        # identifier-list parser, which stops at and/or/not, so "name CA and
-        # resid 5" parses without special-casing. Names are alphanumeric only.
+        # Atom-name selector, e.g. "name CA" / "name CA CB CG" / "name C1'". Uses its
+        # OWN token parser rather than the identifier one: atom names legally carry a
+        # prime (C1' / C1* / H2"), which the alphanumeric identifier parser rejects.
+        # It stops at and/or/not the same way, so "name C1' and resid 5" needs no
+        # special-casing.
         self._consume_tag("name")
         self._skip_space1()
-        return Name(self._parse_list_of_identifiers())
+        return Name(self._parse_list_of_atom_names())
 
     # Bare-keyword (no-argument) selectors -> node factory. Molecule type
     # (protein/dna/rna) and polymer sub-structure (backbone/sidechain).

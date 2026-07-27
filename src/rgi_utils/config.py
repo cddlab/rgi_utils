@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from rgi_utils import monlib_geom
 from rgi_utils._config_util import check_window_exclusive, coerce_bool
 from rgi_utils.base_pair_restr_data import BasePairData
 from rgi_utils.custom.data import CustomData
@@ -138,6 +139,9 @@ class RestraintsConfig:
             "plane",
             "cistrans",
             "vdw",
+            # NOT a term: points the polymer bond/angle/plane/link TARGETS at a CCP4
+            # monomer library instead of the predictor's reference conformer.
+            "monomer_library",
         }
         unknown_conformer = {
             key
@@ -150,6 +154,10 @@ class RestraintsConfig:
                 f"{sorted(unknown_conformer)}. Known keys: "
                 f"{sorted(known_conformer_keys)}"
             )
+        # Validate the monomer-library spec HERE so a typo'd path/option raises while
+        # parsing the config, not several minutes later when the first structure builds
+        # its polymer geometry. Parsing is stdlib-only (gemmi loads lazily).
+        monlib_geom.parse_config(conformer_config)
         # conformer terms share ONE gate window. Like every other restraint it is EITHER
         # a sigma window OR a step window (mutually exclusive); reuse the shared check.
         check_window_exclusive(conformer_config, "conformer_restraints_config")

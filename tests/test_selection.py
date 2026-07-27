@@ -92,11 +92,46 @@ class TestNameSelection:
         assert sel.matches(mol(resid=6, name="CA")) is False
         assert sel.matches(mol(resid=5, name="CB")) is False
 
-    def test_name_prime_atom_fails_loudly(self):
-        # nucleic-acid prime atoms (C1') are not alphanumeric -> a parse error, never
-        # a silently-empty selection (the trailing "'" is rejected, not dropped).
+    def test_name_selects_a_prime_atom(self):
+        # Nucleic-acid atoms carry a prime, and picking one out by name is what a
+        # hydrogen-bond distance restraint needs.
+        sel = AtomSelector("name C1'")
+        assert sel.matches(mol(name="C1'")) is True
+        assert sel.matches(mol(name="C1")) is False
+        assert sel.matches(mol(name="N1")) is False
+
+    @pytest.mark.parametrize(
+        "query,atom",
+        [
+            ("C1'", "C1*"),  # selection in PDB v3 spelling, structure in v2
+            ("C1*", "C1'"),  # and the other way round
+            ("O2'", "O2*"),
+            ('H2"', "H2''"),  # double prime, abbreviated vs written out
+            ("H2''", 'H2"'),
+        ],
+    )
+    def test_name_folds_the_prime_spellings(self, query, atom):
+        # ' (PDB v3/mmCIF), * (PDB v2) and " (double prime) are the same atom under
+        # different conventions; which one a file uses is not the user's choice, so a
+        # selection must not depend on it.
+        assert AtomSelector(f"name {query}").matches(mol(name=atom)) is True
+
+    def test_name_list_and_composition_with_primes(self):
+        sel = AtomSelector("name O2' OP1")
+        assert sel.matches(mol(name="O2'")) is True
+        assert sel.matches(mol(name="OP1")) is True
+        assert sel.matches(mol(name="OP2")) is False
+        # the name list must still stop at the operator, not swallow it as a name
+        sel = AtomSelector("name C1' and resid 5")
+        assert sel.matches(mol(resid=5, name="C1'")) is True
+        assert sel.matches(mol(resid=6, name="C1'")) is False
+        assert sel.matches(mol(resid=5, name="C2'")) is False
+
+    def test_name_still_rejects_a_glued_operator(self):
+        # "andresid" must not be swallowed as an atom name, which would silently drop
+        # the rest of the selection.
         with pytest.raises(ValueError):
-            AtomSelector("name C1'")
+            AtomSelector("name CA andresid 5")
 
 
 class TestMolTypeSelection:
