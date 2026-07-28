@@ -12,6 +12,7 @@ from rdkit.Chem import AllChem
 from rgi_utils.atom_context import LigandConf
 from rgi_utils.featurizer import build_spec
 from rgi_utils.group_geom_restr_data import AngleRestraintData, DihedralRestraintData
+from rgi_utils.plane_restr_data import PlaneRestraintData
 
 
 def _distorted_ethane():
@@ -359,6 +360,18 @@ def _group_angle_spec(target_deg, start_sigma=1e30, move_free=(True, True, True)
     return build_spec(angle_restraints=[ad], conf_start_sigma=1e30)
 
 
+def _group_plane_spec(start_sigma=1e30, move_free=(True,), groups=None):
+    """Spec with one standalone best-fit-plane restraint (``plane_restraints_config``).
+    ``groups`` defaults to one 6-atom group (atoms 0..5) pooled into a single plane."""
+    pr = PlaneRestraintData()
+    pr.target_sites = groups or [[0, 1, 2, 3, 4, 5]]
+    pr.atom_selections = [f"group{i + 1}" for i in range(len(pr.target_sites))]
+    pr.geom_type, pr.target1, pr.target2 = "harmonic", 0.0, 0.0
+    pr.move_free, pr.weight, pr.run_restr = move_free, 1.0, True
+    pr.start_sigma, pr.stop_sigma = start_sigma, -1.0
+    return build_spec(plane_restraints=[pr], conf_start_sigma=1e30)
+
+
 def _group_angle_coords():
     """group1 centroid (8,0,0), vertex centroid (0,0,0), group3 centroid (0,8,0) -> initial 90 deg."""
     coords = np.zeros((1, 6, 3))
@@ -597,6 +610,27 @@ def test_gated_prepared_folds_group_gate_cpu():
     on = opt._gated_prepared(0.5)["group_angle"]["mask"]
     assert torch.allclose(on, base), "group term wrongly gated inside its active window"
     # distinct gate states must NOT collide in the compile cache
+    assert opt._gated_prepared(5.0) is not opt._gated_prepared(0.5)
+
+
+def test_gated_prepared_folds_group_plane_gate_cpu():
+    """Same regression for the standalone plane term: it is a per-entry (PER_ENTRY_KEYS)
+    term, so the GPU pre-gate must fold its window into the mask. Registering it in
+    ``_TERMS`` with gate ``"group"`` is what makes this work — a ``"conf"`` gate would
+    silently tie it to the conformer window instead."""
+    torch = pytest.importorskip("torch")
+    from rgi_utils.energy._terms import CONF_KEYS, PER_ENTRY_KEYS
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+
+    assert "group_plane" in PER_ENTRY_KEYS and "group_plane" not in CONF_KEYS
+
+    spec = _group_plane_spec(start_sigma=1.0)
+    opt = TorchRestraintOptimizer(spec, max_iter=10)
+    opt._ensure(torch.device("cpu"), torch.float64)
+    base = opt._prepared["group_plane"]["mask"].clone()
+    assert float(base.sum()) > 0
+    assert float(opt._gated_prepared(5.0)["group_plane"]["mask"].sum()) == 0.0
+    assert torch.allclose(opt._gated_prepared(0.5)["group_plane"]["mask"], base)
     assert opt._gated_prepared(5.0) is not opt._gated_prepared(0.5)
 
 
@@ -1052,6 +1086,98 @@ def test_jax_cg_flattens_plane_group():
     a1 = _cg_minimize(ej, jnp.asarray(pos), 300)
     dev1 = _plane_rms_dev(np.asarray(a1))
     assert dev1 < 0.2 * dev0, f"plane not flattened: {dev0} -> {dev1}"
+
+
+def _standalone_plane_coords(out=0.6, n=6):
+    """A hexagon with atom 0 pushed ``out`` A along the ring normal — the same
+    worst-conditioned start as ``_pucker_ring``, but for the selection-driven term (which
+    needs no ligand / RDKit mol)."""
+    ring = np.array(
+        [
+            [np.cos(t), np.sin(t), 0.0]
+            for t in np.linspace(0, 2 * np.pi, n, endpoint=False)
+        ]
+    )
+    ring[0, 2] += out
+    return ring
+
+
+def test_torch_cg_flattens_standalone_plane():
+    """The standalone plane term (``plane_restraints_config``) converges under the torch CG
+    exactly like the conformer one — its gate is per-entry, so this also confirms the
+    restraint is actually reached by the solver-run condition (``has_group_plane``)."""
+    torch = pytest.importorskip("torch")
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+
+    spec = _group_plane_spec()
+    pos = _standalone_plane_coords()
+    dev0 = _plane_rms_dev(pos)
+    coords = torch.tensor(pos.reshape(1, 6, 3), dtype=torch.float64)
+    TorchRestraintOptimizer(spec, max_iter=300).minimize(coords, sigma=1.0)
+    dev1 = _plane_rms_dev(coords.numpy()[0])
+    assert dev1 < 0.05 * dev0, f"plane not flattened: {dev0} -> {dev1}"
+
+
+def test_jax_cg_flattens_standalone_plane():
+    """Same on the jax minimizer (the AF3 / lax.scan path)."""
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.optim.jax_optim import make_minimizer
+
+    spec = _group_plane_spec()
+    pos = _standalone_plane_coords()
+    dev0 = _plane_rms_dev(pos)
+    mini = make_minimizer(spec, max_iter=300)
+    out = jax.jit(lambda x: mini(x, 0, jnp.float64(1.0)))(
+        jnp.asarray(pos.reshape(1, 6, 3))
+    )
+    dev1 = _plane_rms_dev(np.asarray(out)[0])
+    assert dev1 < 0.05 * dev0, f"plane not flattened: {dev0} -> {dev1}"
+
+
+def test_standalone_plane_gated_off_above_start_sigma():
+    """Above ``start_sigma`` the whole step is a no-op — the coords come back untouched."""
+    torch = pytest.importorskip("torch")
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+
+    spec = _group_plane_spec(start_sigma=1.0)
+    pos = _standalone_plane_coords()
+    coords = torch.tensor(pos.reshape(1, 6, 3), dtype=torch.float64)
+    TorchRestraintOptimizer(spec, max_iter=100).minimize(coords, sigma=5.0)  # 5 > 1
+    assert np.allclose(coords.numpy()[0], pos)
+    TorchRestraintOptimizer(spec, max_iter=300).minimize(
+        coords, sigma=0.5
+    )  # now active
+    assert _plane_rms_dev(coords.numpy()[0]) < 0.05 * _plane_rms_dev(pos)
+
+
+def test_standalone_plane_move_pins_the_other_group():
+    """``move`` frees one pooled group and pins the other: the pinned group's atoms must not
+    move, while the plane still flattens by moving the free group onto it."""
+    torch = pytest.importorskip("torch")
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+
+    # group 1 = atoms 0..2 (lifted out of plane), group 2 = atoms 3..5 (in z=0)
+    pos = np.array(
+        [
+            [0.0, 0.0, 0.7],
+            [1.0, 0.0, 0.7],
+            [0.0, 1.0, 0.7],
+            [3.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0],
+            [3.0, 1.0, 0.0],
+        ]
+    )
+    spec = _group_plane_spec(move_free=(True, False), groups=[[0, 1, 2], [3, 4, 5]])
+    coords = torch.tensor(pos.reshape(1, 6, 3), dtype=torch.float64)
+    TorchRestraintOptimizer(spec, max_iter=300).minimize(coords, sigma=1.0)
+    x = coords.numpy()[0]
+    assert np.allclose(x[3:], pos[3:], atol=1e-8), "pinned group moved"
+    # the pinned group holds the plane, so the free group has to travel onto it; 0.2 is the
+    # same convergence bar the conformer-plane CG tests use
+    assert _plane_rms_dev(x) < 0.2 * _plane_rms_dev(pos)
 
 
 def test_gated_prepared_matches_energy_gate():

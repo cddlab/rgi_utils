@@ -153,6 +153,8 @@ class CombinedRestraints:
             ar.resolve_sites(adapter)
         for dr in cfg.dihedral_data:
             dr.resolve_sites(adapter)
+        for pr in cfg.plane_data:
+            pr.resolve_sites(adapter)
         # merge code-added custom restraints into a LOCAL list, then resolve every custom
         # entry's selections. Do NOT mutate cfg.custom_data in place: a config-less
         # re-setup() of a reused instance reuses the same config object, so an in-place
@@ -170,14 +172,15 @@ class CombinedRestraints:
         # silently duplicate (the same reasoning as custom_data above). The generated
         # distances are ALREADY resolved (target_sites filled), so they intentionally
         # bypass the distance resolve loop above.
-        bp_plane_groups = []
+        bp_planes = []
         bp_distances = []
         for bp in cfg.base_pair_data:
-            dists, plane_grp = bp.resolve_sites(adapter)
+            dists, plane_restr = bp.resolve_sites(adapter)
             bp_distances.extend(dists)
-            if plane_grp is not None:
-                bp_plane_groups.append(plane_grp)
+            if plane_restr is not None:
+                bp_planes.append(plane_restr)
         distance_data = list(cfg.distance_data) + bp_distances
+        plane_data = list(cfg.plane_data) + bp_planes
 
         ligand_confs = []
         if hasattr(adapter, "iter_ligand_confs"):
@@ -216,7 +219,7 @@ class CombinedRestraints:
             dihedral_restraints=cfg.dihedral_data,
             custom_restraints=custom_data,
             polymer_geometry=polymer_geometry,
-            extra_plane_groups=bp_plane_groups,
+            plane_restraints=plane_data,
         )
         # backend is inferred lazily (get_minimizer() -> jax; minimize(coords) -> from
         # the coords type) and the matching optimizer built on first use; reset here so a
@@ -241,6 +244,8 @@ class CombinedRestraints:
             n_grp_angle = 0 if ga is None else int(ga.mask.sum())
             gd = self.spec.group_dihedral
             n_grp_dihedral = 0 if gd is None else int(gd.mask.sum())
+            gp = self.spec.group_plane
+            n_grp_plane = 0 if gp is None else int(gp.mask.sum())
             vc = self.spec.vdw_config
             avc = self.spec.active_vdw_config
             sv = self.spec.vdw  # static intra + inter-ligand pairs (energy layer)
@@ -286,6 +291,7 @@ class CombinedRestraints:
                 f" ref_distance={sum(c.geom == 'distance' for c in _rg)}"
                 f" ref_angle={sum(c.geom == 'angle' for c in _rg)}"
                 f" ref_dihedral={sum(c.geom == 'dihedral' for c in _rg)}"
+                f" ref_plane={sum(c.geom == 'plane' for c in _rg)}"
                 if _rg
                 else ""
             )
@@ -294,14 +300,15 @@ class CombinedRestraints:
                 f"n_active={self.spec.n_active} "
                 f"conformer={self.spec.has_conformer()} {conf_counts} n_distance={n_dist} "
                 f"n_rmsd={n_rmsd} n_group_angle={n_grp_angle} "
-                f"n_group_dihedral={n_grp_dihedral} n_custom={len(self.spec.custom)}"
+                f"n_group_dihedral={n_grp_dihedral} n_group_plane={n_grp_plane} "
+                f"n_custom={len(self.spec.custom)}"
                 f"{ref_geom_s} "
                 f"vdw={vdw_s} conf_start_sigma={self.spec.conf_start_sigma:g} "
                 f"dist_start_sigma={dist_ss}"
             )
             logger.info(msg)
             print(msg, flush=True)
-            # base pairs expand INTO the distance/plane counts above, so their own
+            # base pairs expand INTO the distance / group_plane counts above, so their own
             # firing signal would otherwise be invisible. Report pairs -> h-bonds +
             # coplanar groups explicitly (the CLAUDE.md verification recipe relies on
             # per-term counts to confirm a restraint was actually built).
@@ -310,7 +317,7 @@ class CombinedRestraints:
                 bp_msg = (
                     f"[rgi_utils] setup: base_pair={len(cfg.base_pair_data)} entries "
                     f"({n_triples} triples) -> {len(bp_distances)} h-bonds + "
-                    f"{len(bp_plane_groups)} coplanar groups"
+                    f"{len(bp_planes)} coplanar groups"
                 )
                 logger.info(bp_msg)
                 print(bp_msg, flush=True)
@@ -411,6 +418,7 @@ class CombinedRestraints:
         for label, arr in (
             ("angle", spec.group_angle),
             ("dihedral", spec.group_dihedral),
+            ("plane", spec.group_plane),
         ):
             if arr is None or arr.mask.sum() <= 0:
                 continue
@@ -619,6 +627,7 @@ class CombinedRestraints:
                 + bd.get("rmsd", 0.0)
                 + bd.get("group_angle", 0.0)
                 + bd.get("group_dihedral", 0.0)
+                + bd.get("group_plane", 0.0)
             )
             # custom restraints are closures (not in the array breakdown) — evaluate each
             # at the final coords and report by name. A 0.0 here with custom > 0 in the
@@ -648,6 +657,7 @@ class CombinedRestraints:
                 f"distance={bd['distance']:.5f} rmsd={bd.get('rmsd', 0.0):.5f} "
                 f"group_angle={bd.get('group_angle', 0.0):.5f} "
                 f"group_dihedral={bd.get('group_dihedral', 0.0):.5f} "
+                f"group_plane={bd.get('group_plane', 0.0):.5f} "
                 + "".join(f"{n}={v:.5f} " for n, v in custom_bd.items())
                 + f"total={total:.5f}"
             )

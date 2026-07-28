@@ -125,6 +125,18 @@ restraints_config:
       weight: 1.0
       harmonic:
         target_dihedral: 180.0
+  plane_restraints_config:
+    # best-fit-plane flatness of a SELECTED group (Angstrom). Two nucleobases pooled into
+    # ONE entry share a single plane; the type block is optional (omitted -> harmonic
+    # toward 0). Shows up as `n_group_plane=` at setup — NOT in the conformer `plane=`.
+    - atom_selection1: "chain C and resid 1"   # DNA G
+      atom_selection2: "chain D and resid 6"   # DNA C -- pooled: one shared plane
+      start_sigma: 99999999
+      stop_sigma: -1
+      move: "all"
+      weight: 1.0
+      flat-bottomed2:
+        target_plane2: 0.1                     # 0.1 A of pucker is free
   conformer_restraints_config:
     start_sigma: 99999999
     stop_sigma: -1

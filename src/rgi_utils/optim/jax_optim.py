@@ -200,9 +200,12 @@ def make_minimizer(
     has_dist = spec.has_distance()
     has_conf = spec.has_conformer()
     has_rmsd = spec.has_rmsd()
-    # group-centroid angle/dihedral are CG-solved (energy terms gated per-restraint inside
-    # total_energy via sigma), so the solver branch must run when either is present.
-    has_group = spec.has_group_angle() or spec.has_group_dihedral()
+    # group-centroid angle/dihedral and the standalone best-fit plane are CG-solved (energy
+    # terms gated per-restraint inside total_energy via sigma), so the solver branch must
+    # run when any is present.
+    has_group = (
+        spec.has_group_angle() or spec.has_group_dihedral() or spec.has_group_plane()
+    )
     # custom restraints -> jnp closures (active_coords) -> scalar (weight folded);
     # selections baked as static jnp index arrays, so they trace inside lax.scan. Added to
     # the CG objective with a per-entry sigma gate (jnp.where).

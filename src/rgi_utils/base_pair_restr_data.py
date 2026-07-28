@@ -43,8 +43,10 @@ coordinates is intentionally NOT done (coordinates are pure noise at high sigma)
 
 Each entry is gated on EITHER a sigma window (``start_sigma`` / ``stop_sigma``) OR a step
 window (``start_step`` / ``stop_step``) — mutually exclusive, applied to the H-bond
-DISTANCE restraints (the coplanarity plane rides the shared conformer gate; see
-``combined.setup``).
+DISTANCE restraints AND to the coplanarity plane: the plane is emitted as a standalone
+``PlaneRestraintData`` (``plane_restraints_config``'s array term), which carries its own
+per-entry gate. It used to ride the shared conformer gate, so ``stop_sigma`` released the
+H-bonds but not the coplanarity; now both are released together.
 """
 
 from __future__ import annotations
@@ -59,6 +61,7 @@ from rgi_utils._config_util import (
 from rgi_utils._moltype import moltype_from_resname
 from rgi_utils.atom_context import FrameworkAdapter, candidate_dict
 from rgi_utils.distance_restr_data import DistanceData
+from rgi_utils.plane_restr_data import PlaneRestraintData
 from rgi_utils.selection import _NUCLEIC_BACKBONE, AtomSelector
 
 logger = logging.getLogger(__name__)
@@ -297,12 +300,12 @@ class BasePairData:
     def resolve_sites(self, adapter: FrameworkAdapter):
         """Expand this base pair into concrete restraints.
 
-        Returns ``(distances, plane_group)`` where ``distances`` is a list of
+        Returns ``(distances, plane_restraint)`` where ``distances`` is a list of
         pre-resolved ``DistanceData`` (one per WC H-bond, ``target_sites`` already
-        filled) and ``plane_group`` is ``(global_indices, slack, weight)`` for the
-        coplanarity plane restraint (or ``None`` when ``coplanar`` is off). The distances
-        are pre-resolved, so ``combined.setup`` merges them into the distance list
-        WITHOUT a second ``resolve_sites`` pass (which would clobber ``target_sites``)."""
+        filled) and ``plane_restraint`` is a pre-resolved ``PlaneRestraintData`` for the
+        coplanarity plane (or ``None`` when ``coplanar`` is off). Both are pre-resolved, so
+        ``combined.setup`` merges them into the distance / plane lists WITHOUT a second
+        ``resolve_sites`` pass (which would clobber ``target_sites``)."""
         if not self.run_restr:
             return [], None
         map1, resname1 = self._resolve_one_residue(adapter, self.residue1, "residue1")
@@ -355,10 +358,10 @@ class BasePairData:
                 self._make_hbond(name_a, map1[name_a], name_b, map2[name_b])
             )
 
-        plane_group = None
+        plane_restraint = None
         base3 = None
         if self.coplanar:
-            atoms = self._base_atoms(map1) + self._base_atoms(map2)
+            groups = [self._base_atoms(map1), self._base_atoms(map2)]
             if self.residue3 is not None:
                 # The third base joins the plane only. Its identity is NOT checked
                 # against the WC table: docked on a groove edge, it is non-WC by
@@ -373,9 +376,9 @@ class BasePairData:
                         f"atoms to the coplanarity restraint (resname={resname3!r}); "
                         "it must name a nucleotide"
                     )
-                atoms += third
+                groups.append(third)
                 base3 = _base_letter(resname3) or "?"
-            if len(atoms) < 3:
+            if sum(len(g) for g in groups) < 3:
                 raise ValueError(
                     f"base_pair {base1}-{base2}: fewer than 3 base atoms found for the "
                     "coplanarity restraint; set coplanar: false or check the residues"
@@ -387,7 +390,7 @@ class BasePairData:
             slack = self.coplanar_slack
             if slack is None:
                 slack = _PAIR_SLACK if self.residue3 is None else _TRIPLE_SLACK
-            plane_group = (atoms, slack, self.weight)
+            plane_restraint = self._make_plane(groups, slack)
 
         logger.info(
             "base_pair resolved: %s-%s%s -> %d h-bonds%s",
@@ -395,11 +398,12 @@ class BasePairData:
             base2,
             f"-{base3}" if base3 is not None else "",
             len(distances),
-            f" + coplanar({len(plane_group[0])} atoms, slack {plane_group[1]:g})"
-            if plane_group is not None
+            f" + coplanar({sum(len(g) for g in plane_restraint.target_sites)} atoms, "
+            f"slack {plane_restraint.target2:g})"
+            if plane_restraint is not None
             else "",
         )
-        return distances, plane_group
+        return distances, plane_restraint
 
     def _make_hbond(
         self, name_a: str, idx_a: int, name_b: str, idx_b: int
@@ -427,6 +431,46 @@ class BasePairData:
         dd.stop_step = self.stop_step
         dd.run_restr = True
         return dd
+
+    def _make_plane(self, groups: list, slack: float) -> PlaneRestraintData:
+        """Build one pre-resolved coplanarity restraint over the pair's (or triple's) base
+        atoms — a standalone ``plane`` restraint, one group per residue, all pooled into a
+        single best-fit plane.
+
+        The slack maps onto the shared four restraint types exactly: ``slack == 0`` is a
+        pure harmonic toward 0 out-of-plane RMS, a positive slack is the upper-bound-only
+        ``flat-bottomed2`` (``max(0, rms - slack)``, the identical formula the old
+        conformer-plane ``slack`` used), so the migration is numerically a no-op.
+
+        What DOES change versus the old ``extra_plane_groups`` injection: the plane now
+        rides this entry's OWN gate window and ``move`` instead of the shared conformer
+        gate — so ``stop_sigma`` releases the coplanarity together with the H-bonds, and
+        ``move: 1`` pins residue2's atoms in the plane fit as well.
+        """
+        pr = PlaneRestraintData()
+        pr.atom_selections = [
+            f"base_pair {sel}"
+            for sel in (self.residue1, self.residue2, self.residue3)
+            if sel is not None
+        ][: len(groups)]
+        pr.target_sites = groups
+        if slack > 0:
+            pr.geom_type, pr.target1, pr.target2 = "flat-bottomed2", 0.0, float(slack)
+        else:
+            pr.geom_type, pr.target1, pr.target2 = "harmonic", 0.0, 0.0
+        # move: 0 = every residue free; 1/2 = only that residue moves (the other, and a
+        # third base if present, are pinned) — the same reading as the H-bond distances'
+        # move_mode, now applied to the plane fit too.
+        pr.move_free = tuple(
+            self.move_mode == 0 or (g + 1) == self.move_mode for g in range(len(groups))
+        )
+        pr.weight = self.weight
+        pr.start_sigma = self.start_sigma
+        pr.stop_sigma = self.stop_sigma
+        pr.start_step = self.start_step
+        pr.stop_step = self.stop_step
+        pr.run_restr = True
+        return pr
 
     def is_valid(self) -> bool:
         return bool(self.run_restr)

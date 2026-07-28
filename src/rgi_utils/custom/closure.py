@@ -26,6 +26,22 @@ def _geom_value(ops, geom, blocks):
     raise ValueError(f"ref_geom: unknown geom {geom!r}")
 
 
+def _plane_value(ops, pred_blocks, ref_blocks):
+    """Measured quantity for a reference-anchored ``plane`` restraint.
+
+    The plane is fitted to the REFERENCE atoms alone (pooled if several reference groups
+    are given) and held fixed; the value is the RMS distance of the pooled prediction atoms
+    from it. That mirrors the reference contract of the other geoms — a reference group is
+    fixed and does not follow the prediction — and is why plane keeps raw atom blocks
+    instead of collapsing each group to a centroid.
+    """
+    prediction = (
+        pred_blocks[0] if len(pred_blocks) == 1 else ops.concat_atoms(pred_blocks)
+    )
+    reference = ref_blocks[0] if len(ref_blocks) == 1 else ops.concat_atoms(ref_blocks)
+    return V.plane(ops, prediction, reference)
+
+
 def _ref_geom_penalty(ops, geom, type_code, value, target1, target2):
     if type_code == 0:
         deviation = value - target1
@@ -87,19 +103,36 @@ def build_closure(spec, ops):
 
         def energy(coords):
             context = make_context(coords)
-            centroid_blocks = []
-            for kind, payload in baked_groups:
-                if kind == "pred":
-                    indices, free = payload
-                    centroid = _rigid_centroid(ops, ops.gather(coords, indices))
-                    if not free:
-                        centroid = ops.stop_gradient(centroid)
-                else:
-                    centroid = ops.mean_atoms(
-                        context._reference_coords(payload[0], payload[1])
-                    )
-                centroid_blocks.append(centroid[..., None, :])
-            value = _geom_value(ops, geom, centroid_blocks)
+            # `plane` needs the raw atom blocks (it fits a plane, not a centroid); every
+            # other geom reduces each group to one centroid with the rigid-gradient rescale.
+            if geom == "plane":
+                pred_blocks, ref_blocks = [], []
+                for kind, payload in baked_groups:
+                    if kind == "pred":
+                        indices, free = payload
+                        block = ops.gather(coords, indices)
+                        if not free:
+                            block = ops.stop_gradient(block)
+                        pred_blocks.append(block)
+                    else:
+                        ref_blocks.append(
+                            context._reference_coords(payload[0], payload[1])
+                        )
+                value = _plane_value(ops, pred_blocks, ref_blocks)
+            else:
+                centroid_blocks = []
+                for kind, payload in baked_groups:
+                    if kind == "pred":
+                        indices, free = payload
+                        centroid = _rigid_centroid(ops, ops.gather(coords, indices))
+                        if not free:
+                            centroid = ops.stop_gradient(centroid)
+                    else:
+                        centroid = ops.mean_atoms(
+                            context._reference_coords(payload[0], payload[1])
+                        )
+                    centroid_blocks.append(centroid[..., None, :])
+                value = _geom_value(ops, geom, centroid_blocks)
             penalty = _ref_geom_penalty(ops, geom, type_code, value, target1, target2)
             return weight * ops.sum(penalty)
 

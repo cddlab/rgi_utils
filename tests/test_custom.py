@@ -1434,3 +1434,267 @@ def test_refgeom_combined_lifecycle(tmp_path, capsys):
         build_terms(dspec.custom, "numpy")[0][-1](coords[0].numpy()[dspec.active_sites])
     )
     assert d == pytest.approx(5.0, abs=0.1), f"lifecycle did not converge: {d}"
+
+
+# --------------------------------------------------------------------------------------
+# (e) plane(): the best-fit-plane primitive in the DSL + the ref_geom plane closure
+# --------------------------------------------------------------------------------------
+def _puckered_ring(lift: float = 0.4, n: int = 6) -> np.ndarray:
+    """A hexagon in z=0 with every other atom lifted -> out-of-plane RMS = lift/2."""
+    ring = np.array(
+        [
+            [np.cos(t), np.sin(t), 0.0]
+            for t in np.linspace(0, 2 * np.pi, n, endpoint=False)
+        ]
+    )
+    ring[::2, 2] += lift
+    return ring
+
+
+def test_custom_plane_energy_parity_3backend():
+    """plane(A) = A's out-of-plane RMS. Its normal is stop-gradient'd (like kabsch/rmsd),
+    so the VALUE agrees on all three backends but the gradient is compared torch-vs-jax
+    (test_custom_plane_grad_parity_torch_jax) rather than against a numpy FD."""
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    spec = _spec_from_entries(
+        [
+            {
+                "name": "flat",
+                "energy": "plane(A)**2",
+                "selections": {"A": "resid 1 to 6"},
+            }
+        ]
+    )
+    pos = np.zeros((spec.n_active, 3))
+    pos[: len(spec.active_sites)] = _puckered_ring()
+
+    e_np = float(build_terms(spec.custom, "numpy")[0][-1](pos))
+    e_t = float(
+        build_terms(spec.custom, "torch")[0][-1](torch.tensor(pos, dtype=torch.float64))
+    )
+    e_j = float(build_terms(spec.custom, "jax")[0][-1](jnp.asarray(pos)))
+    assert e_np == pytest.approx(0.2**2, abs=1e-6)  # (lift/2)^2
+    assert abs(e_np - e_t) < 1e-6 and abs(e_np - e_j) < 1e-6
+
+
+def test_custom_plane_grad_parity_torch_jax():
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    spec = _spec_from_entries(
+        [
+            {
+                "name": "flat",
+                "energy": "plane(A) + plane(A, B)",
+                "selections": {"A": "resid 1 to 6", "B": "resid 7 to 12"},
+            }
+        ]
+    )
+    rng = np.random.default_rng(5)
+    pos = np.vstack([_puckered_ring(), _puckered_ring(0.2) + [4.0, 0.0, 0.3]])
+    pos += rng.standard_normal(pos.shape) * 0.05
+
+    pt = torch.tensor(pos, dtype=torch.float64, requires_grad=True)
+    build_terms(spec.custom, "torch")[0][-1](pt).backward()
+    jax_clo = build_terms(spec.custom, "jax")[0][-1]
+    g_j = np.asarray(jax.grad(lambda x: jax_clo(x))(jnp.asarray(pos)))
+    assert np.allclose(pt.grad.numpy(), g_j, atol=1e-6), (
+        f"max|d|={np.abs(pt.grad.numpy() - g_j).max()}"
+    )
+
+
+def test_custom_plane_move_pins_the_other_selection():
+    """`move` pins an unlisted selection, so a two-argument plane(A, B) with move: A
+    leaves B's atoms without gradient — the plane B defines is then genuinely fixed."""
+    torch = pytest.importorskip("torch")
+
+    spec = _spec_from_entries(
+        [
+            {
+                "name": "onto_b",
+                "energy": "plane(A, B)**2",
+                "selections": {"A": "resid 1 to 6", "B": "resid 7 to 12"},
+                "move": "A",
+            }
+        ]
+    )
+    pos = np.vstack([_puckered_ring() + [0.0, 0.0, 0.8], _puckered_ring(0.0)])
+    pt = torch.tensor(pos, dtype=torch.float64, requires_grad=True)
+    build_terms(spec.custom, "torch")[0][-1](pt).backward()
+    grad = pt.grad.numpy()
+    assert not np.allclose(grad[:6], 0.0)
+    assert np.allclose(grad[6:], 0.0)  # B pinned by `move`
+
+
+def test_custom_plane_torch_minimize_flattens():
+    """The closure actually flattens the selection under the torch CG."""
+    torch = pytest.importorskip("torch")
+    from rgi_utils.combined import CombinedRestraints
+
+    pos = np.zeros((12, 3))
+    pos[:6] = _puckered_ring(0.6)
+    restr = CombinedRestraints()
+    restr.setup(
+        _FakeAdapter(12),
+        1,
+        {
+            "gpu": False,
+            "max_iter": 400,
+            "custom_restraints_config": [
+                {
+                    "name": "flat",
+                    "energy": "plane(A)**2",
+                    "selections": {"A": "resid 1 to 6"},
+                }
+            ],
+        },
+    )
+    out = restr.minimize(torch.tensor(pos, dtype=torch.float64), 0, 0.0)
+    x = out.detach().numpy()[:6]
+    x0 = x - x.mean(0)
+    _w, vecs = np.linalg.eigh(x0.T @ x0)
+    assert float(np.sqrt(((x0 @ vecs[:, 0]) ** 2).mean())) < 1e-3
+
+
+def test_custom_plane_resolve_records_selections():
+    """The setup-time resolve pass must see BOTH arguments, else the second selection is
+    never resolved and the closure raises at evaluation time."""
+    from rgi_utils.custom.context import ResolveContext
+    from rgi_utils.custom.dsl import eval_formula, parse_formula
+
+    ctx = ResolveContext()
+    eval_formula(parse_formula("plane(A) + plane(B, C)"), ctx)
+    assert ctx.selections == ["A", "B", "C"]
+
+
+def test_refgeom_plane_pulls_prediction_onto_the_reference_plane(tmp_path, capsys):
+    """A ref-anchored plane entry: the plane comes from the REFERENCE atoms alone (fixed),
+    and the prediction group is pulled onto it. Distinct from the array-path plane term,
+    which fits the plane to the prediction's own atoms."""
+    torch = pytest.importorskip("torch")
+    from rgi_utils.combined import CombinedRestraints
+
+    n = 12
+    ring = _puckered_ring(0.0)  # flat hexagon in z=0, resid 1..6 of the ref
+    _write_ca_pdb(tmp_path / "ref.pdb", ring)
+
+    pred = np.zeros((n, 3))
+    pred[:6] = _puckered_ring(0.4) + [0.0, 0.0, 0.9]  # lifted + puckered
+
+    restr = CombinedRestraints()
+    restr.setup(
+        _FakeAdapter(n),
+        1,
+        {
+            "verbose": True,
+            "gpu": False,
+            "max_iter": 400,
+            "plane_restraints_config": [
+                {
+                    "atom_selection1": "resid 1 to 6",
+                    "atom_selection2": "ref1 and resid 1 to 6",
+                    "refs": {
+                        "ref1": {
+                            "ref_pdb": str(tmp_path / "ref.pdb"),
+                            "pairing": "identity",
+                        }
+                    },
+                }
+            ],
+        },
+    )
+    assert any(getattr(c, "geom", "") == "plane" for c in restr.spec.custom)
+    assert restr.spec.group_plane is None  # ref entries do NOT take the array path
+    assert "ref_plane=1" in capsys.readouterr().out
+
+    out = restr.minimize(torch.tensor(pred, dtype=torch.float64), 0, 0.0)
+    z = out.detach().numpy()[:6, 2]
+    assert np.abs(z).max() < 1e-2, f"not pulled onto the reference plane: {z}"
+
+
+def test_refgeom_plane_needs_three_reference_atoms(tmp_path):
+    """A 1- or 2-atom reference selection leaves the plane normal undefined -> raise
+    rather than silently optimising a meaningless quantity."""
+    _write_ca_pdb(tmp_path / "ref.pdb", np.zeros((6, 3)))
+    cfg = RestraintsConfig.from_dict(
+        {
+            "plane_restraints_config": [
+                {
+                    "atom_selection1": "resid 1 to 6",
+                    "atom_selection2": "ref1 and resid 1 to 2",
+                    "refs": {
+                        "ref1": {
+                            "ref_pdb": str(tmp_path / "ref.pdb"),
+                            "pairing": "identity",
+                        }
+                    },
+                }
+            ]
+        }
+    )
+    with pytest.raises(ValueError, match="best-fit plane needs at least 3"):
+        cfg.custom_data[0].resolve_sites(_FakeAdapter(12))
+
+
+def test_refgeom_plane_pools_multiple_groups(tmp_path):
+    """A ref-anchored plane with SEVERAL prediction groups and SEVERAL reference groups:
+    each side is pooled along the atom axis (``ops.concat_atoms``), which the single-group
+    entries above short-circuit past. Also the only >2-group ``RefGeomData`` path."""
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    n = 12
+    # reference: 12 atoms in the z=0 plane, so ANY subset of >= 3 defines the same plane
+    ref = np.zeros((n, 3))
+    ref[:, 0] = np.linspace(0.0, 6.0, n)
+    ref[:, 1] = np.tile([0.0, 1.0, 2.0, 1.0], 3)
+    _write_ca_pdb(tmp_path / "ref.pdb", ref)
+
+    cfg = RestraintsConfig.from_dict(
+        {
+            "plane_restraints_config": [
+                {
+                    "atom_selection1": "resid 1 to 3",  # prediction group 1
+                    "atom_selection2": "resid 4 to 6",  # prediction group 2 -> pooled
+                    "atom_selection3": "ref1 and resid 7 to 9",  # reference group 1
+                    "atom_selection4": "ref1 and resid 10 to 12",  # reference 2 -> pooled
+                    "refs": {
+                        "ref1": {
+                            "ref_pdb": str(tmp_path / "ref.pdb"),
+                            "pairing": "identity",
+                        }
+                    },
+                }
+            ]
+        }
+    )
+    (rg,) = cfg.custom_data
+    assert rg.n_groups == 4
+    rg.resolve_sites(_FakeAdapter(n))
+    spec = build_spec(custom_restraints=cfg.custom_data)
+
+    rng = np.random.default_rng(7)
+    pos = ref[spec.active_sites] + rng.standard_normal((spec.n_active, 3)) * 0.3
+    pos[:, 2] += 0.8  # lift the prediction atoms off the reference plane
+
+    e_t = float(
+        build_terms(spec.custom, "torch")[0][-1](torch.tensor(pos, dtype=torch.float64))
+    )
+    e_j = float(build_terms(spec.custom, "jax")[0][-1](jnp.asarray(pos)))
+    e_np = float(build_terms(spec.custom, "numpy")[0][-1](pos))
+    assert e_np > 0.0
+    assert abs(e_np - e_t) < 1e-6 and abs(e_np - e_j) < 1e-6
+
+    pt = torch.tensor(pos, dtype=torch.float64, requires_grad=True)
+    build_terms(spec.custom, "torch")[0][-1](pt).backward()
+    jax_clo = build_terms(spec.custom, "jax")[0][-1]
+    g_j = np.asarray(jax.grad(lambda x: jax_clo(x))(jnp.asarray(pos)))
+    assert np.allclose(pt.grad.numpy(), g_j, atol=1e-6)

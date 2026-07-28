@@ -41,7 +41,7 @@ Design = **3 layers + autodiff + static shapes + GPU-complete optimization**:
 
 2. **Energy layer** (`energy/{numpy,torch,jax}_energy.py`, differentiable pure
    functions): identical flat-bottomed maths in all three backends —
-   `bond/angle/chiral/plane/cistrans/vdw/distance/rmsd/group_angle/group_dihedral`
+   `bond/angle/chiral/plane/cistrans/vdw/distance/rmsd/group_angle/group_dihedral/group_plane`
    (cistrans = periodicity-safe torsion for cis/trans; plane = [servalcat](https://github.com/keitaroyam/servalcat)-style best-fit
    plane over whole planar atom GROUPS (aromatic/conjugated rings + non-ring sp2 groups),
    penalising each group's out-of-plane RMS deviation via the smallest-eigenvalue plane
@@ -49,7 +49,11 @@ Design = **3 layers + autodiff + static shapes + GPU-complete optimization**:
    default; rmsd = Kabsch-superposed RMSD toward a target,
    fit/calc separable; `group_angle`/`group_dihedral` = the angle/dihedral of 3/4 atom
    GROUPS' centroids — the angular analogue of the centroid-distance restraint, distinct from the
-   per-atom `angle`/`cistrans` conformer terms). `prepare_spec(spec)` → backend arrays;
+   per-atom `angle`/`cistrans` conformer terms; `group_plane` = the SAME best-fit-plane quantity as
+   `plane` but over selection-resolved groups (`plane_restraints_config`), with the four
+   distance-style types and a PER-ENTRY gate instead of the shared conformer one — the two share
+   one `_plane_rms` helper per backend so the eigh maths is never duplicated).
+   `prepare_spec(spec)` → backend arrays;
    `total_energy(positions, prepared)` → scalar. Gradients come from autodiff
    (no hand-written grad). `numpy_energy` is the reference;
    `tests/test_backend_parity.py` checks energy+grad agreement across backends.
@@ -163,6 +167,35 @@ runs `SetNoImplicit(False)` + `UpdatePropertyCache` **before**
 `AssignStereochemistryFrom3D`, else stereocentres read as 3-coordinate and every
 chiral restraint silently vanishes.
 
+#### Standalone plane restraints (`plane_restr_data.py`)
+
+`plane_restraints_config` is the selection-driven form of the conformer `plane` term: the user names
+atoms with the DSL instead of relying on RDKit perception / the monomer library, so ANY group
+(nucleobase, peptide plane, aromatic side chain) can be held flat. Same measured quantity
+(out-of-plane RMS from the group's own best-fit plane), but the four distance-style types
+(`target_plane`, in ANGSTROM — no `unit` key) and a PER-ENTRY gate. Non-obvious points:
+
+- **The type block is OPTIONAL** (angle/dihedral raise without one): a plane's target is always 0, so
+  an omitted block means `harmonic{target_plane: 0}`. This is also what lets the base-pair macro
+  express `coplanar_slack: 0` — `harmonic: {}` alone would raise in `parse_geom_type`.
+- **1..4 groups per entry are POOLED into ONE plane** (that is the "keep these coplanar" idiom).
+  Because the group count varies per entry, the spec's `move` mask is per-ATOM (`GroupPlaneArrays.free`)
+  rather than the per-group `move_free` that `group_angle`/`group_dihedral` use. Numbering must be
+  contiguous from 1 — a gap raises (it would shift what `move` indices name).
+- **`move` defaults to every group free** (a plane has no anchor group to pin, unlike the angle vertex
+  / dihedral axis). Pinned atoms still shape the fit but get no gradient (value-preserving, so numpy
+  parity holds).
+- **No N-rescale.** The centroid terms cancel their `1/N` gradient dilution via `_move_centroid`;
+  plane deliberately does NOT, because the plane RMS is a genuine least-squares fit rather than a
+  rigid-body translation (and matching the pre-migration base-pair convergence requires it). Cost:
+  a very large group is weak *relative to other restraints* — raise its `weight`.
+- **A `refN and <selection>` entry is a DIFFERENT energy** and is routed to `RefGeomData("plane")`
+  (a `ref_geom` closure, `_GEOM_SPEC["plane"] = (None, "target_plane")` = caller-supplied group
+  count) instead of the array path: the plane is fitted to the REFERENCE atoms alone and held fixed,
+  and the value is the RMS distance of the prediction atoms from it — the prediction is pulled ONTO
+  the reference's plane. `config.py` counts the entry's groups (`count_plane_groups`) before
+  constructing `RefGeomData` so `n_groups` stays a plain int in all five places it is read.
+
 #### Atom selection DSL
 
 (`selection.py`): `AtomSelector` parses
@@ -271,10 +304,11 @@ energy `energy(ctx) -> scalar`. Two authoring paths, ONE mechanism:
   over a shared vocabulary + named `selections` (e.g. `"(distance(A,B) - distance(C,D))**2"`).
   A selection value may be reference-backed as `refN and <selection>` with an entry-local
   `refs.refN` definition; the same geometry vocabulary consumes it (`distance`/`angle`/`dihedral`/
-  `centroid`/`rg`/`norm`/`dot`/`coords`/`kabsch`/`rmsd` + penalties + math incl. periodicity-safe
-  `wrap`; full table in `doc/config.md`). External-reference RMSD is `rmsd(A,B)` (prediction A,
-  reference-backed B); rigid superposition is `kabsch(A,B)`. (There is no `ref(sel,r)` function —
-  reference-backing is the `refN and <selection>` string form.)
+  `centroid`/`rg`/`norm`/`dot`/`coords`/`kabsch`/`rmsd`/`plane` + penalties + math incl.
+  periodicity-safe `wrap`; full table in `doc/config.md`). External-reference RMSD is `rmsd(A,B)`
+  (prediction A, reference-backed B); rigid superposition is `kabsch(A,B)`; best-fit-plane flatness is
+  `plane(A)` (own plane) / `plane(A,B)` (A into B's plane, either argument reference-backable).
+  (There is no `ref(sel,r)` function — reference-backing is the `refN and <selection>` string form.)
   `move` is a prediction selection name or list of names; unlisted prediction selections are
   stop-gradient pinned for that custom term, and reference-backed selections are always fixed.
 - **code (ctx fn)**: a Python `energy(ctx)` — passed directly (`CombinedRestraints.add_custom(fn=…)`
@@ -294,7 +328,12 @@ the solver-run condition / `max_start_sigma()`.
 
 Non-obvious invariants: custom energies use **plain centroids** (no `_move_centroid` rigid-translation
 trick), so autodiff grad == numpy-FD while every prediction selection is free. `move` pins unlisted
-selection blocks with stop-gradient, so pinned cases use torch-vs-jax grad parity instead.
+selection blocks with stop-gradient, so pinned cases use torch-vs-jax grad parity instead. The same
+exception applies to the three primitives that stop-gradient part of their maths — `kabsch`/`rmsd`
+(rotation) and `plane` (normal, via `ops.svd`: the covariance is symmetric PSD so `Vt`'s last row is
+the smallest eigenvector, which is why no `eigh` was added to the ops facade): a formula using them is
+compared torch-vs-jax, not against a numpy FD. In `plane(A,B)` only the normal is fixed — the plane's
+CENTRE still carries gradient, so a free `B` is pulled toward `A` unless `move` pins it.
 The closure must reduce to a **scalar** (`ops.sum` over batch dims) or `jax.value_and_grad` rejects it.
 Selections resolve at setup via a **resolve pass** (run the energy with `ResolveContext`). On CUDA the
 torch CG runs **eager** when any custom is present (the fused `gpu_cg` `_energy` bypasses `energy_fn`,
@@ -314,14 +353,21 @@ G·C / A·T / A·U, plus a G·U wobble that is **opt-in via `pair: GU`**, never 
 pair stays coplanar. So it reuses the distance + plane energy terms → all backends + parity for
 free. Base identity auto-detects from each residue's `resname` (DNA `D`-prefix stripped); pairs
 are **user-specified only** (coordinates are noise at high sigma). Expansion happens in
-`combined.py` (`bp.resolve_sites(adapter)` → pre-resolved distances merged into the distance list;
-planes passed as `extra_plane_groups`). Fields: `residue1`/`residue2` (each must resolve to
+`combined.py` (`bp.resolve_sites(adapter)` → a pre-resolved `DistanceData` list merged into the
+distance list + a pre-resolved `PlaneRestraintData` merged into the plane list; both are LOCAL
+merges, never in-place on the config, or a config-less re-`setup()` would duplicate them).
+Fields: `residue1`/`residue2` (each must resolve to
 EXACTLY one residue, else raises), `pair`, `coplanar`, `target` (scalar→harmonic, `[low,high]`→
 flat-bottomed, default `(2.7, 3.1)` Å), `weight`, `move` (0/1/2 — `1` docks residue1 onto a fixed
 residue2), and the gate window `start_sigma`/`stop_sigma` XOR `start_step`/`stop_step` (applies to
-the H-bond distances; the coplanarity plane rides the shared conformer gate). Verbose setup logs a
+BOTH the H-bond distances AND the coplanarity plane, since the plane is now a standalone
+`plane_restraints_config` restraint with its own per-entry gate — it used to ride the shared
+conformer gate, so `stop_sigma` released the H-bonds but not the coplanarity; `move` likewise now
+pins the other base in the plane fit). `coplanar_slack` maps onto the shared four types:
+`0` → `harmonic{target_plane: 0}`, `>0` → `flat-bottomed2{target_plane2: slack}` — numerically
+identical to the old one-sided `max(0, rms - slack)`. Verbose setup logs a
 SEPARATE line `base_pair=P pairs -> H h-bonds + C coplanar groups` (the generated restraints also
-show up in the `distances=` / `plane=` counts). Full field surface: `doc/config.md`.
+show up in the `distances=` / `n_group_plane=` counts). Full field surface: `doc/config.md`.
 
 ### Key design points
 

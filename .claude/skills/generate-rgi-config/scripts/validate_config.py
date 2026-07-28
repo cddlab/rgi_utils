@@ -123,6 +123,7 @@ def _find_configs(obj, path="<root>"):
         "distance_restraints_config",
         "angle_restraints_config",
         "dihedral_restraints_config",
+        "plane_restraints_config",
         "base_pair_restraints_config",
         "conformer_restraints_config",
         "rmsd_restraints_config",
@@ -138,6 +139,7 @@ def _collect_selection_strings(cfg: dict):
         "distance_restraints_config",
         "angle_restraints_config",
         "dihedral_restraints_config",
+        "plane_restraints_config",
         "rmsd_restraints_config",
     ):
         for i, entry in enumerate(cfg.get(section, []) or []):
@@ -228,7 +230,7 @@ def _validate_one(location: str, cfg: dict, enclosing: dict) -> int:
     print(
         f"  ✓ schema ok — distance={len(rc.distance_data)} "
         f"angle={len(rc.angle_data)} dihedral={len(rc.dihedral_data)} "
-        f"base_pair={len(rc.base_pair_data)} "
+        f"plane={len(rc.plane_data)} base_pair={len(rc.base_pair_data)} "
         f"rmsd={len(rc.rmsd_data)} custom={len(rc.custom_data)}"
     )
     conf = cfg_for_schema.get("conformer_restraints_config") or {}

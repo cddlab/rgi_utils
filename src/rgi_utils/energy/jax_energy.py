@@ -343,21 +343,53 @@ def _plane_normal(cov):
     return jax.lax.stop_gradient(vecs[..., :, 0])
 
 
-def plane_energy(positions, idx, grp_mask, slack, weight, mask):
-    """Best-fit-plane restraint over padded atom groups (mirrors
-    ``numpy_energy.plane_energy``). Penalise each group's out-of-plane RMS deviation
-    beyond ``slack`` (target 0). The plane normal is stop-gradient'd."""
-    grp_pos = positions[..., idx, :]  # (..., n_plane, max_atoms, 3)
+def _plane_rms(grp_pos, grp_mask):
+    """Out-of-plane RMS deviation of each padded atom group from its own best-fit plane
+    (mirrors ``numpy_energy._plane_rms``). Shared by ``plane_energy`` (conformer,
+    ``slack``) and ``group_plane_energy`` (standalone, four restraint types); pure jnp so
+    both stay JIT/``lax.scan``-able."""
     m = grp_mask[..., None]
     n_eff = jnp.sum(grp_mask, axis=-1)
     centroid = jnp.sum(grp_pos * m, axis=-2) / (n_eff[..., None] + _EPS)
     x0 = (grp_pos - centroid[..., None, :]) * m
-    cov = jnp.swapaxes(x0, -1, -2) @ x0  # (..., n_plane, 3, 3)
+    cov = jnp.swapaxes(x0, -1, -2) @ x0  # (..., n, 3, 3)
     normal = _plane_normal(cov)
     dev = jnp.sum(x0 * normal[..., None, :], axis=-1)
     msd = jnp.sum(dev**2 * grp_mask, axis=-1) / (n_eff + _EPS)
-    rms = jnp.sqrt(msd + _EPS)
+    return jnp.sqrt(msd + _EPS)
+
+
+def plane_energy(positions, idx, grp_mask, slack, weight, mask):
+    """Best-fit-plane restraint over padded atom groups (mirrors
+    ``numpy_energy.plane_energy``). Penalise each group's out-of-plane RMS deviation
+    beyond ``slack`` (target 0). The plane normal is stop-gradient'd."""
+    rms = _plane_rms(positions[..., idx, :], grp_mask)
     delta = jnp.maximum(0.0, rms - slack)
+    return jnp.sum(weight * delta**2 * mask)
+
+
+def group_plane_energy(
+    positions,
+    idx,
+    grp_mask,
+    free,
+    target1,
+    target2,
+    geom_type,
+    weight,
+    mask,
+):
+    """Standalone best-fit-plane restraint (``plane_restraints_config``; mirrors
+    ``numpy_energy.group_plane_energy``). Same measured quantity as ``plane_energy``,
+    shaped by the four distance-style types and gated per entry.
+
+    ``free`` (..., n, max_atoms) {0,1} is the per-atom ``move`` mask: a pinned atom keeps
+    its VALUE in the plane fit but is stop-gradient'd, so the CG does not move it for this
+    restraint. No N-times gradient rescale — see the numpy docstring."""
+    grp_pos = positions[..., idx, :]
+    grp_pos = jnp.where(free[..., None] > 0, grp_pos, jax.lax.stop_gradient(grp_pos))
+    rms = _plane_rms(grp_pos, grp_mask)
+    delta = _group_delta(rms, rms - target1, target1, target2, geom_type)
     return jnp.sum(weight * delta**2 * mask)
 
 
@@ -373,6 +405,7 @@ _LEAF_FNS = {
     "rmsd_energy": rmsd_energy,
     "group_angle_energy": group_angle_energy,
     "group_dihedral_energy": group_dihedral_energy,
+    "group_plane_energy": group_plane_energy,
 }
 
 

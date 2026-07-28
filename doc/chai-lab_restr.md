@@ -125,6 +125,17 @@ dihedral_restraints_config:
     weight: 1.0
     harmonic:
       target_dihedral: 180.0
+plane_restraints_config:
+  # best-fit-plane flatness of a SELECTED group (Angstrom); several atom_selectionN in one
+  # entry are POOLED into a single plane. The type block is optional (omitted -> harmonic
+  # toward 0). Reported as `n_group_plane=` at setup, separately from the conformer `plane=`.
+  - atom_selection1: "chain A and (resid 5 to 20)"
+    start_sigma: 99999999
+    stop_sigma: -1
+    move: "all"
+    weight: 1.0
+    flat-bottomed2:
+      target_plane2: 0.1
 conformer_restraints:
   A: true                      # protein chain
   B: true                      # ligand chain

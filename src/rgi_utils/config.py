@@ -15,6 +15,7 @@ from rgi_utils.base_pair_restr_data import BasePairData
 from rgi_utils.custom.data import CustomData
 from rgi_utils.distance_restr_data import DistanceData
 from rgi_utils.group_geom_restr_data import AngleRestraintData, DihedralRestraintData
+from rgi_utils.plane_restr_data import PlaneRestraintData, count_plane_groups
 from rgi_utils.ref_geom_restr_data import RefGeomData, is_ref_anchored
 from rgi_utils.rmsd_restr_data import RmsdData
 
@@ -42,6 +43,9 @@ class RestraintsConfig:
     dihedral_data: list = field(
         default_factory=list
     )  # group-centroid dihedral restraints
+    plane_data: list = field(
+        default_factory=list
+    )  # standalone best-fit-plane restraints
     custom_data: list = field(
         default_factory=list
     )  # custom restraints (rgi_utils.custom)
@@ -70,6 +74,7 @@ class RestraintsConfig:
             "rmsd_restraints_config",
             "angle_restraints_config",
             "dihedral_restraints_config",
+            "plane_restraints_config",
             "custom_restraints_config",
             "base_pair_restraints_config",
         }
@@ -248,6 +253,25 @@ class RestraintsConfig:
             if dd.start_sigma is None:
                 dd.start_sigma = _ALWAYS_ON
             cfg.dihedral_data.append(dd)
+        # standalone best-fit-plane restraints (1..4 selection groups pooled into ONE
+        # plane). A reference-anchored entry measures something different (the prediction
+        # atoms' RMS distance to a plane fitted from the external structure), so it is
+        # routed to RefGeomData like the distance/angle/dihedral ref forms. The group count
+        # varies per entry, so it is counted HERE and passed in: that keeps
+        # RefGeomData.n_groups a plain int (it is read in five places, all of which rely on
+        # "a missing atom_selectionN raises").
+        for entry in config.get("plane_restraints_config", []) or []:
+            if is_ref_anchored(entry):
+                n_groups = count_plane_groups(entry)
+                rg = RefGeomData("plane", n_groups=n_groups)
+                rg.set_config(entry)
+                cfg.custom_data.append(rg)
+                continue
+            pd = PlaneRestraintData()
+            pd.set_config(entry)
+            if pd.start_sigma is None:
+                pd.start_sigma = _ALWAYS_ON
+            cfg.plane_data.append(pd)
         # custom restraints (expression DSL / code fn). start_sigma None -> +inf (active
         # every step) is applied when the CustomSpec is built (CustomData.build_spec).
         for entry in config.get("custom_restraints_config", []) or []:

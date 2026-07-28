@@ -12,6 +12,7 @@ import pytest
 
 from rgi_utils.energy import numpy_energy
 from rgi_utils.spec import (
+    DIST_TYPE_CODES,
     AngleArrays,
     BondArrays,
     ChiralArrays,
@@ -19,6 +20,7 @@ from rgi_utils.spec import (
     DistanceArrays,
     GroupAngleArrays,
     GroupDihedralArrays,
+    GroupPlaneArrays,
     PlaneArrays,
     RestraintSpec,
     VdwArrays,
@@ -39,10 +41,11 @@ def _make_spec(
     calibrated tolerance keeps its original group-free landscape — the periodic group
     dihedral makes the two backends' CG minima diverge a touch more than that tolerance
     (group CG convergence is covered directly in test_optim.py). ``include_plane``
-    (default on) adds the best-fit-plane term; like the group/rmsd terms its plane normal
-    is stop-gradient'd, so its gradient does NOT match a numpy finite-difference — the
-    numpy-FD grad test opts out and its grad parity is checked torch-vs-jax
-    (test_plane_grad_parity_torch_jax)."""
+    (default on) adds BOTH plane terms — the conformer ``plane`` and the standalone
+    ``group_plane`` (plane_restraints_config); like the group/rmsd terms their plane normal
+    is stop-gradient'd, so their gradient does NOT match a numpy finite-difference — the
+    numpy-FD grad test opts out and their grad parity is checked torch-vs-jax
+    (test_plane_grad_parity_torch_jax / test_group_plane_grad_parity_torch_jax)."""
     bond = BondArrays(
         idx=np.array([[0, 1], [2, 3], [4, 5]], dtype=np.int64),
         r0=np.array([1.0, 1.5, 1.2]),
@@ -86,6 +89,50 @@ def _make_spec(
             slack=np.array([0.0, 0.05, 0.0]),
             weight=np.array([0.1, 0.1, 0.1]),
             mask=np.array([1.0, 1.0, 0.0]),
+        )
+    )
+    # group_plane: the STANDALONE plane term (plane_restraints_config). Same measured
+    # quantity + stop-gradient normal as `plane`, so it shares the include_plane flag and
+    # the numpy-FD grad carve-out; it differs in carrying the four distance-style types, a
+    # per-ATOM `free` (move) mask, and a per-entry gate. Rows: a full 5-atom group with a
+    # pinned atom, a padded 4-atom flat-bottomed2 group, and a masked-out padding row.
+    group_plane = (
+        None
+        if not include_plane
+        else GroupPlaneArrays(
+            idx=np.array(
+                [[0, 1, 2, 3, 4], [5, 6, 7, 8, 0], [8, 9, 10, 11, 0]], dtype=np.int64
+            ),
+            grp_mask=np.array(
+                [
+                    [1.0, 1.0, 1.0, 1.0, 1.0],
+                    [1.0, 1.0, 1.0, 1.0, 0.0],
+                    [1.0, 1.0, 1.0, 1.0, 0.0],
+                ]
+            ),
+            free=np.array(
+                [
+                    [1.0, 1.0, 1.0, 1.0, 0.0],  # last atom pinned (move)
+                    [1.0, 1.0, 1.0, 1.0, 0.0],
+                    [1.0, 1.0, 1.0, 1.0, 0.0],
+                ]
+            ),
+            target1=np.array([0.0, 0.0, 0.0]),
+            target2=np.array([0.0, 0.05, 0.0]),
+            geom_type=np.array(
+                [
+                    DIST_TYPE_CODES["harmonic"],
+                    DIST_TYPE_CODES["flat-bottomed2"],
+                    DIST_TYPE_CODES["harmonic"],
+                ],
+                dtype=np.int64,
+            ),
+            weight=np.array([0.1, 0.1, 0.1]),
+            mask=np.array([1.0, 1.0, 0.0]),
+            start_sigma=np.array([10.0, 10.0, 10.0]),
+            stop_sigma=np.array([-1.0, -1.0, -1.0]),
+            start_step=np.array([-np.inf, -np.inf, -np.inf]),
+            stop_step=np.array([np.inf, np.inf, np.inf]),
         )
     )
     # non-trivial phi0 so the random positions violate the torsion (energy > 0);
@@ -188,6 +235,7 @@ def _make_spec(
         distance=distance if include_distance else None,
         group_angle=group_angle,
         group_dihedral=group_dihedral,
+        group_plane=group_plane,
         conf_start_sigma=10.0,  # conformer terms active when sigma <= 10
     )
 
@@ -561,6 +609,51 @@ def test_plane_grad_parity_torch_jax():
         jax.grad(lambda x: jax_energy.total_energy(x, prep_j))(jnp.asarray(pos))
     )
     assert np.allclose(g_t, g_j, atol=1e-6), f"max|d|={np.abs(g_t - g_j).max()}"
+
+
+def test_group_plane_grad_parity_torch_jax():
+    """The STANDALONE plane term (plane_restraints_config): energy value agrees across
+    numpy/torch/jax and the autodiff gradient agrees torch-vs-jax.
+
+    Two mechanisms beyond ``test_plane_grad_parity_torch_jax``: the four distance-style
+    penalty types, and the per-ATOM ``free`` (``move``) mask. ``free`` is value-preserving
+    (it only stop-gradients), which is why the numpy VALUE reference still matches while a
+    pinned atom's gradient must be exactly zero."""
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.energy import jax_energy, torch_energy
+
+    spec = _make_spec(include_groups=False, include_distance=False)
+    # keep ONLY group_plane so the comparison isolates this term
+    spec.bond = spec.angle = spec.chiral = spec.cistrans = spec.vdw = spec.plane = None
+    pos = _positions()
+
+    prep_np = numpy_energy.prepare_spec(spec)
+    prep_t = torch_energy.prepare_spec(spec, dtype=torch.float64)
+    prep_j = jax_energy.prepare_spec(spec)
+
+    e_np = float(numpy_energy.total_energy(pos, prep_np))
+    e_t = float(
+        torch_energy.total_energy(torch.tensor(pos, dtype=torch.float64), prep_t)
+    )
+    e_j = float(jax_energy.total_energy(jnp.asarray(pos), prep_j))
+    assert e_np > 0.0
+    assert abs(e_np - e_t) < 1e-6 and abs(e_np - e_j) < 1e-6
+
+    pt = torch.tensor(pos, dtype=torch.float64, requires_grad=True)
+    torch_energy.total_energy(pt, prep_t).backward()
+    g_t = pt.grad.numpy()
+    g_j = np.asarray(
+        jax.grad(lambda x: jax_energy.total_energy(x, prep_j))(jnp.asarray(pos))
+    )
+    assert np.allclose(g_t, g_j, atol=1e-6), f"max|d|={np.abs(g_t - g_j).max()}"
+
+    # atom 4 is `free=0` in row 0 and appears in no other unmasked row, so `move` must
+    # leave it with exactly no gradient
+    assert np.allclose(g_t[4], 0.0)
 
 
 def _rmsd_case(seed=3, n=6):

@@ -343,6 +343,46 @@ class GroupDihedralArrays:
 
 
 @dataclass
+class GroupPlaneArrays:
+    """Standalone best-fit-plane restraints over selection-resolved atom groups (padded).
+
+    The measured quantity is identical to ``PlaneArrays`` (the group's out-of-plane RMS
+    deviation from its own best-fit plane, smallest-eigenvalue normal, stop-gradient), but
+    this is the ``plane_restraints_config`` term rather than a conformer sub-term, so:
+
+      * the penalty mirrors the distance restraint's four ``geom_type`` codes with
+        ``target1``/``target2`` in ANGSTROM (``PlaneArrays`` has only a one-sided
+        ``slack``), and
+      * the gate is PER ENTRY (``stop_sigma <= sigma <= start_sigma`` ANDed with the step
+        window) instead of the shared conformer gate.
+
+    One entry may pool SEVERAL selection groups into one plane (a shared best-fit plane,
+    e.g. two stacked nucleobases), so ``free`` — the ``move`` mask — is per-ATOM here
+    rather than per-group as in ``GroupAngleArrays``: the number of groups varies per
+    entry, and the energy only ever sees the pooled atom list. A pinned atom keeps its
+    value in the plane fit but is stop-gradient'd, so the CG does not move it for this
+    restraint. ``idx`` holds local indices into active_sites; padding columns are
+    neutralised by ``grp_mask``.
+    """
+
+    idx: np.ndarray  # (n_grp_plane, max_atoms) int local indices
+    grp_mask: np.ndarray  # (n_grp_plane, max_atoms) float {0,1}: 1 = real, 0 = padding
+    free: np.ndarray  # (n_grp_plane, max_atoms) {0,1}: 1 = atom free to move
+    target1: (
+        np.ndarray
+    )  # (n_grp_plane,) Angstrom; harmonic target / flat-bottomed lower
+    target2: np.ndarray  # (n_grp_plane,) Angstrom; flat-bottomed upper (0 if unused)
+    geom_type: np.ndarray  # (n_grp_plane,) int code (DIST_* : 0=harmonic..3=upper)
+    weight: np.ndarray  # (n_grp_plane,)
+    mask: np.ndarray  # (n_grp_plane,) float {0,1}: 1 = valid restraint, 0 = padding
+    start_sigma: np.ndarray  # (n_grp_plane,) per-restraint; active when sigma<=start
+    stop_sigma: np.ndarray  # (n_grp_plane,) released when sigma<stop_sigma (-1=never)
+    # per-restraint STEP window (ANDed with the sigma window); -inf/+inf = always.
+    start_step: np.ndarray  # (n_grp_plane,) step-window lower bound
+    stop_step: np.ndarray  # (n_grp_plane,) step-window upper bound
+
+
+@dataclass
 class RestraintSpec:
     """Backend-agnostic restraint definition.
 
@@ -369,6 +409,10 @@ class RestraintSpec:
     # per-restraint start_sigma/stop_sigma like distance/rmsd.
     group_angle: GroupAngleArrays | None = None
     group_dihedral: GroupDihedralArrays | None = None
+    # standalone best-fit-plane restraints over selection-resolved groups
+    # (plane_restraints_config) — same measured quantity as `plane` above but with the four
+    # distance-style types and a per-entry gate (see GroupPlaneArrays).
+    group_plane: GroupPlaneArrays | None = None
     # one start_sigma for ALL conformer (bond/angle/chiral/plane/cistrans/vdw)
     # restraints; each distance restraint carries its own in DistanceArrays.start_sigma.
     # NOTE: this internal spec-field default stays -1.0 (= conformer OFF) on purpose,
@@ -428,6 +472,12 @@ class RestraintSpec:
         closed-form), so the solver must run when this is True."""
         return self.group_dihedral is not None and self.group_dihedral.mask.sum() > 0
 
+    def has_group_plane(self) -> bool:
+        """True if any standalone best-fit-plane restraint exists. CG-solved (not
+        closed-form), so the solver must run when this is True. Distinct from the
+        conformer ``plane`` term, which ``has_conformer()`` covers."""
+        return self.group_plane is not None and self.group_plane.mask.sum() > 0
+
     def has_custom(self) -> bool:
         """True if any custom restraint (rgi_utils.custom) is configured. Custom restraints
         are CG-solved closures added to the objective, so the solver must run when True."""
@@ -441,6 +491,7 @@ class RestraintSpec:
             or self.has_rmsd()
             or self.has_group_angle()
             or self.has_group_dihedral()
+            or self.has_group_plane()
             or self.has_custom()
         )
 
@@ -458,6 +509,8 @@ class RestraintSpec:
             vals.append(float(np.max(self.group_angle.start_sigma)))
         if self.has_group_dihedral() and self.group_dihedral is not None:
             vals.append(float(np.max(self.group_dihedral.start_sigma)))
+        if self.has_group_plane() and self.group_plane is not None:
+            vals.append(float(np.max(self.group_plane.start_sigma)))
         for c in self.custom:
             vals.append(float(c.start_sigma))
         return max(vals) if vals else -1.0

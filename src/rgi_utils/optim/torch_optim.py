@@ -372,9 +372,13 @@ class TorchRestraintOptimizer:
         has_dist = self.spec.has_distance()
         has_conf = self.spec.has_conformer()
         has_rmsd = self.spec.has_rmsd()
-        # group-centroid angle/dihedral are CG-solved like rmsd (not closed-form), so the
-        # solver branch must run when either is present.
-        has_group = self.spec.has_group_angle() or self.spec.has_group_dihedral()
+        # group-centroid angle/dihedral and the standalone best-fit plane are CG-solved like
+        # rmsd (not closed-form), so the solver branch must run when any is present.
+        has_group = (
+            self.spec.has_group_angle()
+            or self.spec.has_group_dihedral()
+            or self.spec.has_group_plane()
+        )
         has_custom = self.spec.has_custom()
         prepared = self._prepared
 

@@ -1,4 +1,4 @@
-"""Built-in distance, angle, and dihedral restraints with reference groups.
+"""Built-in distance, angle, dihedral, and plane restraints with reference groups.
 
 Each group keeps the normal ``atom_selectionN`` key. A prediction group contains
 the ordinary atom-selection DSL; a reference group starts with
@@ -9,6 +9,13 @@ These entries compile to ``kind="ref_geom"`` ``CustomSpec`` closures. Prediction
 groups retain the built-in rigid-centroid gradient scaling, while reference
 groups and their fit transforms are fixed with stop-gradient.
 ``move`` applies a static free/pinned mask to prediction groups; references can never move.
+
+``plane`` differs from the other three geoms in two ways. It takes a VARIABLE number of
+groups (1..4, so ``n_groups`` comes from the caller — see ``_GEOM_SPEC``), and it does not
+reduce its groups to centroids: the reference group's atoms define a fixed best-fit plane
+and the measured quantity is the RMS distance of the prediction atoms from that plane (the
+closure's ``plane`` branch). Without a reference, a plane restraint is an ordinary array
+term instead — ``plane_restr_data.PlaneRestraintData``.
 """
 
 from __future__ import annotations
@@ -41,7 +48,16 @@ _GEOM_SPEC = {
     "distance": (2, "target_distance"),
     "angle": (3, "target_angle"),
     "dihedral": (4, "target_dihedral"),
+    # plane takes 1..4 groups, so its group count is NOT fixed by the geometry: `None`
+    # means "the caller supplies n_groups" (config.py counts the entry's contiguous
+    # atom_selectionN keys via plane_restr_data.count_plane_groups). Keeping n_groups a
+    # plain int from __init__ onward is deliberate — it is read in five places that all
+    # rely on "a missing atom_selectionN raises".
+    "plane": (None, "target_plane"),
 }
+
+# A plane needs >= 3 atoms to define a normal at all.
+_MIN_PLANE_REF_ATOMS = 3
 
 
 def is_ref_anchored(entry: dict) -> bool:
@@ -65,11 +81,17 @@ def is_ref_anchored(entry: dict) -> bool:
 class RefGeomData:
     """One distance, angle, or dihedral entry containing reference groups."""
 
-    def __init__(self, geom: str) -> None:
+    def __init__(self, geom: str, n_groups: int | None = None) -> None:
         if geom not in _GEOM_SPEC:
             raise ValueError(f"ref_geom: unknown geom {geom!r}")
         self.geom = geom
-        self.n_groups, self._base = _GEOM_SPEC[geom]
+        default_groups, self._base = _GEOM_SPEC[geom]
+        if default_groups is None and n_groups is None:
+            raise ValueError(
+                f"ref_geom: geom {geom!r} takes a variable number of groups, so "
+                "n_groups must be given by the caller"
+            )
+        self.n_groups = default_groups if n_groups is None else int(n_groups)
         self.name = f"ref_{geom}"
         self.run_restr = False
         self.weight = 1.0
@@ -102,10 +124,10 @@ class RefGeomData:
             "flat-bottomed1",
             "flat-bottomed2",
         }
-        if self.geom != "distance":
-            keys.add("unit")
-        else:
+        if self.geom == "distance":
             keys.add("calc_method")
+        elif self.geom != "plane":
+            keys.add("unit")  # plane targets are Angstrom only, like distance
         for i in range(1, self.n_groups + 1):
             keys.add(f"atom_selection{i}")
         return keys
@@ -177,8 +199,8 @@ class RefGeomData:
         )
 
         apply_window_params(self, config, label)
-        if self.geom == "distance":
-            conv = float
+        if self.geom in ("distance", "plane"):
+            conv = float  # native Angstrom
         else:
             unit = str(config.get("unit", "degrees")).strip().lower()
             if unit not in ("degrees", "radians"):
@@ -188,10 +210,16 @@ class RefGeomData:
             config, self._base, conv
         )
         if self.geom_type is None:
-            raise ValueError(
-                f"{label}: needs a restraint-type block (harmonic / flat-bottomed / "
-                f"flat-bottomed1 / flat-bottomed2) with {self._base}(1/2)"
-            )
+            # plane's target is essentially always 0 (planar), so its type block is
+            # optional and defaults to harmonic toward 0 — mirroring the array-path
+            # PlaneRestraintData. Every other geom needs an explicit target.
+            if self.geom == "plane":
+                self.geom_type, self.target1, self.target2 = "harmonic", 0.0, 0.0
+            else:
+                raise ValueError(
+                    f"{label}: needs a restraint-type block (harmonic / flat-bottomed / "
+                    f"flat-bottomed1 / flat-bottomed2) with {self._base}(1/2)"
+                )
         self.run_restr = True
 
     def resolve_sites(self, adapter: FrameworkAdapter) -> None:
@@ -247,6 +275,19 @@ class RefGeomData:
                     selection,
                     f"{self.name} reference group {ref_name}",
                     self.ref_defs[ref_name]["ref_path"],
+                )
+            # A ref-anchored PLANE defines its plane from the reference atoms alone, so a
+            # 1- or 2-atom reference selection leaves the normal undefined (the energy
+            # would be finite but meaningless). Raise, mirroring the fit's >= 3 anchor
+            # check below — the other geoms only need a centroid, so any count works.
+            if (
+                self.geom == "plane"
+                and len(self._ref_group_coords[key]) < _MIN_PLANE_REF_ATOMS
+            ):
+                raise ValueError(
+                    f"{self.name}: reference group {ref_name!r} selected only "
+                    f"{len(self._ref_group_coords[key])} atom(s); a best-fit plane needs "
+                    f"at least {_MIN_PLANE_REF_ATOMS} ({selection!r})"
                 )
 
         self._fits = {}

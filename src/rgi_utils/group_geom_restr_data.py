@@ -68,7 +68,7 @@ _KNOWN_ANGLE_KEYS = {
 _KNOWN_DIHEDRAL_KEYS = _KNOWN_ANGLE_KEYS | {"atom_selection4"}
 
 
-def _resolve_group_sites(
+def resolve_group_sites(
     adapter: FrameworkAdapter, selections: list[str]
 ) -> list[list[int]]:
     """Resolve each selection string to a list of global atom indices.
@@ -221,7 +221,7 @@ class AngleRestraintData:
             self.target_sites1,
             self.target_sites2,
             self.target_sites3,
-        ) = _resolve_group_sites(
+        ) = resolve_group_sites(
             adapter,
             [self.atom_selection1, self.atom_selection2, self.atom_selection3],
         )
@@ -324,7 +324,7 @@ class DihedralRestraintData:
             self.target_sites2,
             self.target_sites3,
             self.target_sites4,
-        ) = _resolve_group_sites(
+        ) = resolve_group_sites(
             adapter,
             [
                 self.atom_selection1,
