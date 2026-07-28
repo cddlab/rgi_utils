@@ -364,6 +364,12 @@ where $\lambda_{\min}$ is the smallest eigenvalue of the group's centred covaria
 distance of its atoms from their own best-fit plane. It is shaped by one of the penalty blocks
 (see [Penalty shapes](#penalty-shapes-shared)) and CG-minimized like every other restraint.
 
+This is the plane-restraint formulation used by
+[**servalcat**](https://github.com/keitaroyam/servalcat) / Refmac — a whole planar *group* held flat
+by its best-fit-plane RMS, rather than per-centre improper (signed-volume) terms — which is what both
+this restraint and the conformer `plane` term were modelled on. See
+[References](../README.md#references) for the citations.
+
 Several `atom_selectionN` in ONE entry are **pooled into a single plane**: that is how you say
 "keep these two groups coplanar with each other". Use separate entries for separate planes.
 

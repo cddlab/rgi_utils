@@ -172,7 +172,10 @@ chiral restraint silently vanishes.
 `plane_restraints_config` is the selection-driven form of the conformer `plane` term: the user names
 atoms with the DSL instead of relying on RDKit perception / the monomer library, so ANY group
 (nucleobase, peptide plane, aromatic side chain) can be held flat. Same measured quantity
-(out-of-plane RMS from the group's own best-fit plane), but the four distance-style types
+(out-of-plane RMS from the group's own best-fit plane) — so it inherits the
+[servalcat](https://github.com/keitaroyam/servalcat)/Refmac plane-restraint formulation the conformer
+term was modelled on (whole planar GROUP, not per-centre impropers; citations in `README.md`
+under *References*) — but the four distance-style types
 (`target_plane`, in ANGSTROM — no `unit` key) and a PER-ENTRY gate. Non-obvious points:
 
 - **The type block is OPTIONAL** (angle/dihedral raise without one): a plane's target is always 0, so

@@ -45,7 +45,9 @@ Seven **built-in** restraint types, all minimized during the denoising loop to g
 - **plane** — best-fit-plane flatness of any atom group you select (out-of-plane RMS, Angstrom):
   hold a nucleobase or aromatic side chain flat, make two groups share one plane, or pull a group
   onto a plane taken from a reference structure. The selection-driven form of the conformer `plane`
-  term, with its own per-entry weight / tolerance / activation window.
+  term (both follow the plane restraints of
+  [servalcat](https://github.com/keitaroyam/servalcat) / Refmac — see
+  [References](#references)), with its own per-entry weight / tolerance / activation window.
 - **base-pair** — a named Watson–Crick nucleotide pair expanded into H-bond distance
   restraints and an optional base-coplanarity restraint.
 
@@ -319,3 +321,24 @@ task test-ci    # run non-GPU tests only
 ```
 
 GPU tests are marked `@pytest.mark.gpu` and excluded in CI.
+
+## References
+
+The **plane** restraints — both the conformer `plane` term and the standalone
+`plane_restraints_config` (`group_plane`) — follow the plane-restraint formulation of
+[**servalcat**](https://github.com/keitaroyam/servalcat) / Refmac: a whole planar *group* of atoms
+is restrained by the RMS deviation of its atoms from their own best-fit plane, instead of the
+per-centre improper (signed-volume) terms this project used before. The base-pair macro follows the
+same tools (a Watson–Crick pair is imposed as H-bond distances plus base coplanarity, not as a
+dedicated base-pair energy), and `monomer_library` reads the CCP4 monomer library that
+Refmac/servalcat refine against. The implementation here is independent — autodiff gradients through
+a stop-gradient plane normal, the four flat-bottomed penalty shapes, and sigma/step gating inside a
+diffusion sampler.
+
+- Yamashita, K., Palmer, C. M., Burnley, T. & Murshudov, G. N. (2021). *Cryo-EM single-particle
+  structure refinement and map calculation using Servalcat.* Acta Cryst. **D77**, 1282–1291.
+  <https://doi.org/10.1107/S2059798321009475>
+- Yamashita, K., Wojdyr, M., Long, F., Nicholls, R. A. & Murshudov, G. N. (2023).
+  *GEMMI and Servalcat restrain REFMAC5.* Acta Cryst. **D79**, 368–373.
+  <https://doi.org/10.1107/S2059798323002413>
+- CCP4 monomer library: <https://github.com/MonomerLibrary/monomers>
