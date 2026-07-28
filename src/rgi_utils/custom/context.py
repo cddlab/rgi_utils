@@ -115,6 +115,16 @@ class RestraintContext:
     def kabsch(self, a, b):
         return V.kabsch(self._ops, self._coords_of(a), self._coords_of(b))
 
+    def plane(self, a, b=None):
+        """Out-of-plane RMS deviation of ``a`` — from its own best-fit plane, or from the
+        plane fitted to ``b``. Both go through ``_coords_of``, so a reference-backed
+        selection (``refN and ...``) and ``move`` pinning work with no extra handling."""
+        return V.plane(
+            self._ops,
+            self._coords_of(a),
+            None if b is None else self._coords_of(b),
+        )
+
     def rmsd(self, a, b):
         """Kabsch RMSD from prediction selection ``a`` to ref selection ``b``."""
         if not isinstance(a, str) or not isinstance(b, str):
@@ -235,6 +245,12 @@ class ResolveContext:
         if isinstance(a, str) and isinstance(b, str):
             self.kabsch_pairs.append((a, b))
         return np.array([[1.0, 1.0, 1.0], [2.0, 2.0, 2.0]])
+
+    def plane(self, a, b=None):
+        self._block_of(a)
+        if b is not None:
+            self._block_of(b)
+        return 1.0
 
     def rmsd(self, a, b):
         if not isinstance(a, str) or not isinstance(b, str):

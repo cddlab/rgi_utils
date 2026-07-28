@@ -20,6 +20,7 @@ GEOMETRY = (
     "coords",
     "kabsch",
     "rmsd",
+    "plane",
 )
 
 
@@ -94,6 +95,45 @@ def rmsd(ops, block_a, ref_block):
     difference = superposed - ref_block
     mean_squared = ops.mean_last(ops.vdot(difference, difference))
     return ops.sqrt(mean_squared + EPS)
+
+
+def _plane_normal(ops, block):
+    """Best-fit-plane unit normal of a coordinate block, stop-gradient'd.
+
+    The normal is the smallest-variance direction of the centred covariance. That is the
+    smallest-EIGENvalue eigenvector; the covariance is symmetric positive-semidefinite, so
+    its singular values equal its eigenvalues and arrive in DESCENDING order — the last row
+    of ``Vt`` is the normal. Using ``ops.svd`` (already there for ``_kabsch_R``) rather than
+    adding an ``eigh`` to the facade keeps the ops surface unchanged; the energy layer's
+    array path uses ``eigh`` for the same quantity.
+
+    The whole decomposition is stop-gradient'd, exactly as ``_kabsch_R`` does: the eigh/SVD
+    backward is unstable at degenerate geometry, and the value is what the penalty needs.
+    """
+    center = ops.mean_atoms(block)
+    centered = ops.stop_gradient(block - center[..., None, :])
+    covariance = ops.matmul(ops.swapaxes_last2(centered), centered)  # (..., 3, 3)
+    _u, _singular_values, vt = ops.svd(covariance)
+    return ops.stop_gradient(vt[..., 2, :])
+
+
+def plane(ops, block, plane_block=None):
+    """Out-of-plane RMS deviation (Angstrom) of ``block``'s atoms — target 0 = planar.
+
+    One argument: deviation from ``block``'s OWN best-fit plane, i.e. "hold these atoms
+    coplanar" (the same measured quantity as the built-in ``plane`` energy term).
+
+    Two arguments: deviation from the plane fitted to ``plane_block``, i.e. "bring these
+    atoms into that plane". Only the plane's NORMAL is stop-gradient'd; its centre is not,
+    so a free ``plane_block`` is pulled toward ``block`` as well. Pin it with ``move`` (or
+    make it reference-backed) to get a genuinely fixed plane — ``context._coords_of``
+    stop-gradients an unlisted selection's whole block, which fixes normal and centre alike.
+    """
+    reference = block if plane_block is None else plane_block
+    normal = _plane_normal(ops, reference)
+    offset = block - ops.mean_atoms(reference)[..., None, :]
+    deviation = ops.vdot(offset, normal[..., None, :])
+    return ops.sqrt(ops.mean_last(deviation * deviation) + EPS)
 
 
 def superpose_ref(ops, ref_block, fit_ref, prediction_fit):

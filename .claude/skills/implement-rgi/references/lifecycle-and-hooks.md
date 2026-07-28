@@ -123,6 +123,18 @@ restraints_config:
       harmonic: {target_dihedral: 180.0}   # periodicity-safe; or flat-bottomed
       #   {target_dihedral1, target_dihedral2} (cannot straddle +-180) | flat-bottomed1 | flat-bottomed2
       # move: 1,4                           # DEFAULT: ends (1,4) free, axis (2,3) pinned. or 'all' | index | list
+  plane_restraints_config:        # best-fit-plane flatness of a SELECTED group, ANGSTROM
+    - atom_selection1: "chain A and resid 5 and not backbone"
+      # atom_selection2..4: further groups POOLED INTO THE SAME plane (= "keep these coplanar")
+      # type block OPTIONAL (omitted -> harmonic {target_plane: 0}); or
+      #   flat-bottomed2 {target_plane2} = tolerance | flat-bottomed {target_plane1, target_plane2}
+      #   | flat-bottomed1 {target_plane1}
+      # move: 1                   # DEFAULT: every group free (a plane has no anchor to pin)
+      # weight / start_sigma / stop_sigma: optional. NO 1/N gradient rescale here (unlike the
+      #   centroid terms) — the plane RMS is a real least-squares fit, so a very large group is
+      #   weak relative to other restraints; raise weight then.
+      # 'refN and <selection>' on one group -> the plane comes from the REFERENCE and is held
+      #   fixed, pulling the prediction group onto it (routed through the ref_geom closure).
   conformer_restraints_config:
     # start_sigma:  optional; one value for ALL conformer terms (omitted -> every step)
     bond:     {weight: 1.0}

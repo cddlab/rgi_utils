@@ -14,7 +14,8 @@ Recurring decisions, in plain terms:
   `start_sigma`). Gate it late (`start_sigma: 1.0`) only if the user wants the model to
   fold freely first and be nudged near the end (e.g. conformer terms often read better
   applied late, once the pocket exists).
-- **Degrees, not radians.** `angle` / `dihedral` targets are in degrees in the config.
+- **Degrees, not radians.** `angle` / `dihedral` targets are in degrees in the config
+  (`distance` / `plane` / `rmsd` are in Angstrom).
 
 ---
 
@@ -162,7 +163,43 @@ config.md.
 
 ---
 
-## 5. Base pair — "pair these two nucleotides"
+## 5. Plane — "keep this group flat / these groups coplanar"
+
+`plane_restraints_config` restrains a group's **out-of-plane RMS deviation** (Angstrom, target 0).
+Reach for it when the user says *flat*, *planar*, *coplanar*, *stacked*, or *puckered*. Several
+`atom_selectionN` in ONE entry are **pooled into a single plane** — that is the "keep these two
+coplanar" idiom (separate entries = separate planes).
+
+```yaml
+plane_restraints_config:
+  # "keep this base flat" — with a 0.1 A tolerance
+  - atom_selection1: "chain A and resid 5 and not backbone"
+    flat-bottomed2: {target_plane2: 0.1}
+
+  # "make these two bases stack in one plane, moving only the first"
+  - atom_selection1: "chain A and resid 10 and not backbone"
+    atom_selection2: "chain B and resid 24 and not backbone"
+    move: 1
+```
+
+Three things that differ from the other blocks:
+
+- **The type block is optional.** Omit it for a plain `harmonic` toward 0 (the usual case). Add
+  `flat-bottomed2: {target_plane2: <A>}` when the user will accept some pucker.
+- **Targets are Angstrom**, not degrees — there is no `unit` key here.
+- **`move` defaults to every group free** (a plane has no vertex/axis to pin). Set `move: 1` when one
+  group should be treated as the fixed plane.
+
+For "make this loop lie in the same plane it has in *that other structure*", write the second group as
+`ref1 and <selection>` plus a `refs.ref1` block: the plane then comes from the reference and the
+prediction is pulled onto it.
+
+Note the group's atoms become optimized atoms, which drops them from the fixed-background VdW partner
+list — mention it if the user is also relying on VdW to keep a ligand off that group.
+
+---
+
+## 6. Base pair — "pair these two nucleotides"
 
 `base_pair_restraints_config` is a macro for Watson–Crick geometry: it generates the
 base-specific H-bond distances and, by default, a coplanarity plane. Each residue selector
@@ -180,11 +217,12 @@ base_pair_restraints_config:
 
 Standard GC/CG and AT/AU orientations are auto-detected from `resname`. Use a scalar
 `target` for harmonic distance or `[low, high]` for a flat-bottomed window. The sigma/step
-window gates generated H-bond distances; the plane uses the shared conformer gate.
+window gates the generated H-bond distances **and** the coplanarity plane (it is emitted as a
+`plane_restraints_config` restraint), so `stop_sigma` releases both together.
 
 ---
 
-## 6. Custom — "something the five built-ins don't cover"
+## 7. Custom — "something the six built-ins don't cover"
 
 Write the restraint as a **math formula** over named atom-group centroids — no Python, no
 tool change. Use it for symmetry, equidistance, radius-of-gyration, or any algebraic combo.

@@ -14,7 +14,7 @@ from rgi_utils.atom_context import candidate_dict
 from rgi_utils.custom.context import ResolveContext
 from rgi_utils.custom.dsl import eval_formula, parse_formula
 from rgi_utils.custom.registry import get_custom_fn
-from rgi_utils.group_geom_restr_data import _resolve_group_sites
+from rgi_utils.group_geom_restr_data import resolve_group_sites
 from rgi_utils.pdb_ref import read_cif_atoms, read_pdb_atoms
 from rgi_utils.ref_config import (
     is_ref_name,
@@ -292,7 +292,7 @@ class CustomData:
         prediction_strings = [
             self._selection_sources[identifier][1] for identifier in prediction_ids
         ]
-        prediction_sites = _resolve_group_sites(adapter, prediction_strings)
+        prediction_sites = resolve_group_sites(adapter, prediction_strings)
         self._global = dict(zip(prediction_ids, prediction_sites))
 
         atoms = list(adapter.iter_atoms())

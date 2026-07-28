@@ -52,6 +52,9 @@ class _AxisOps:
     def sum_atoms(self, pos):
         return self.xp.sum(pos, axis=-2)
 
+    def concat_atoms(self, blocks):
+        return self.xp.concatenate(blocks, axis=-2)
+
     def vdot(self, a, b):
         return self.xp.sum(a * b, axis=-1)
 
@@ -163,6 +166,9 @@ class _TorchOps:
 
     def sum_atoms(self, pos):
         return self.t.sum(pos, dim=-2)
+
+    def concat_atoms(self, blocks):
+        return self.t.cat(blocks, dim=-2)
 
     def vdot(self, a, b):
         return self.t.sum(a * b, dim=-1)

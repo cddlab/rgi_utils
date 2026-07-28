@@ -1,10 +1,16 @@
 """Nucleic-acid base-pair restraints: config parse, WC expansion, fail-loud, convergence.
 
 The base-pair restraint is a config-time MACRO: each entry expands into WC H-bond
-distance restraints (+ an optional coplanarity plane group). These tests cover the
+distance restraints (+ an optional coplanarity plane restraint). These tests cover the
 expansion (right atom pairs / counts), the fail-loud guards, and that the generated
 restraints actually converge under the torch CG (H-bonds reach the target window, the
 two bases flatten).
+
+The coplanarity plane is a standalone ``PlaneRestraintData`` (the ``plane_restraints_config``
+term), so it carries the entry's OWN gate window and ``move``. It used to be injected into
+the conformer ``plane`` arrays, where it rode the shared conformer gate — hence the
+``_plane_atoms`` / ``_plane_slack`` helpers below, which read the same two quantities the
+old ``(atoms, slack, weight)`` tuple carried.
 """
 
 from __future__ import annotations
@@ -65,6 +71,20 @@ def _resolve(adapter, **kw):
     if bp.start_sigma is None:
         bp.start_sigma = float("inf")
     return bp.resolve_sites(adapter)
+
+
+def _plane_atoms(plane):
+    """Pooled atom list of a coplanarity restraint. The macro now emits a
+    ``PlaneRestraintData`` with ONE group per residue (all pooled into a single best-fit
+    plane), so flatten them — the plane's identity is the pooled set."""
+    return [a for grp in plane.target_sites for a in grp]
+
+
+def _plane_slack(plane):
+    """The coplanarity tolerance, whichever restraint type encodes it: slack 0 becomes a
+    pure ``harmonic`` toward 0, a positive slack the upper-bound-only ``flat-bottomed2``.
+    ``target2`` holds the slack in both cases."""
+    return plane.target2
 
 
 # --------------------------------------------------------------------------- config
@@ -160,12 +180,18 @@ class TestResolve:
     def test_coplanar_group_excludes_backbone(self):
         adapter = _adapter(("A", 1, "G", _G_BASE), ("B", 1, "C", _C_BASE))
         _, plane = _resolve(adapter)
-        atoms, slack, weight = plane
+        atoms = _plane_atoms(plane)
         # only the base atoms (11 + 8), never P/O5'/C1'
         assert len(atoms) == len(_G_BASE) + len(_C_BASE)
         bb_indices = {a.index for a in adapter._atoms if a.name in _BACKBONE}
         assert not (set(atoms) & bb_indices)
-        assert slack == 0.0 and weight == pytest.approx(1.0)
+        assert _plane_slack(plane) == 0.0 and plane.weight == pytest.approx(1.0)
+        # slack 0 -> a pure harmonic toward 0 out-of-plane RMS
+        assert plane.geom_type == "harmonic"
+        # one group per residue, and the entry's gate window (NOT the conformer gate)
+        assert len(plane.target_sites) == 2
+        assert plane.start_sigma == float("inf") and plane.stop_sigma == -1.0
+        assert plane.move_free == (True, True)  # move omitted -> both bases free
 
     def test_pair_override_wobble(self):
         # G-U wobble is opt-in via pair (never auto): 2 h-bonds
@@ -248,7 +274,10 @@ class TestConfigWiring:
             {"gpu": False, "base_pair_restraints_config": [_entry()]},
         )
         assert int(cr.spec.distance.mask.sum()) == 3
-        assert int(cr.spec.plane.mask.sum()) == 1
+        # the coplanarity plane is the STANDALONE plane term (per-entry gate), not the
+        # conformer `plane` sub-term it used to be injected into
+        assert int(cr.spec.group_plane.mask.sum()) == 1
+        assert cr.spec.plane is None
 
     def test_multi_pair_duplex(self):
         # three stacked pairs (G-C, A-U, C-G): distances 3+2+3=8, one plane group each.
@@ -283,7 +312,29 @@ class TestConfigWiring:
             },
         )
         assert int(cr.spec.distance.mask.sum()) == 8
-        assert int(cr.spec.plane.mask.sum()) == 3
+        assert int(cr.spec.group_plane.mask.sum()) == 3
+
+    def test_entry_gate_and_move_reach_the_coplanarity_plane(self):
+        # The migration off `extra_plane_groups`: the plane now carries the entry's own
+        # sigma window and move mask. It used to ride the shared conformer gate, so a
+        # stop_sigma released the H-bonds but left the coplanarity pulling.
+        cr = CombinedRestraints()
+        cr.setup(
+            _adapter(("A", 1, "G", _G_BASE), ("B", 1, "C", _C_BASE)),
+            1,
+            {
+                "gpu": False,
+                "base_pair_restraints_config": [
+                    _entry(start_sigma=4.0, stop_sigma=1.0, move=1)
+                ],
+            },
+        )
+        gp = cr.spec.group_plane
+        assert float(gp.start_sigma[0]) == 4.0 and float(gp.stop_sigma[0]) == 1.0
+        # move: 1 -> residue1's atoms free, residue2's pinned in the plane fit
+        n1, n2 = len(_G_BASE), len(_C_BASE)
+        assert gp.free[0, :n1].sum() == n1
+        assert gp.free[0, n1 : n1 + n2].sum() == 0.0
 
     def test_base_pair_does_not_mutate_config(self):
         # a config-less re-setup() must not duplicate the generated distances (the
@@ -360,7 +411,7 @@ class TestTriple:
         # H-bonds stay the three G-C ones: the third base contributes none, because
         # which of its atoms bond depends on the Leontis-Westhof family.
         assert len(dists) == 3
-        atoms, _slack, _weight = plane
+        atoms = _plane_atoms(plane)
         assert len(atoms) == len(_G_BASE) + len(_C_BASE) + len(_A_BASE)
         bb_indices = {a.index for a in adapter._atoms if a.name in _BACKBONE}
         assert not (set(atoms) & bb_indices)
@@ -372,8 +423,12 @@ class TestTriple:
         _, triple_plane = _resolve(
             self._triple_adapter(), residue3="chain A and resid 2"
         )
-        assert pair_plane[1] == 0.0  # unchanged for every pre-existing config
-        assert triple_plane[1] > 0.0
+        # slack 0 -> harmonic toward 0 (unchanged for every pre-existing config)
+        assert _plane_slack(pair_plane) == 0.0
+        assert pair_plane.geom_type == "harmonic"
+        # a positive slack -> the upper-bound-only flat-bottomed2, same max(0, rms-slack)
+        assert _plane_slack(triple_plane) > 0.0
+        assert triple_plane.geom_type == "flat-bottomed2"
 
     def test_explicit_slack_overrides_both(self):
         _, pair_plane = _resolve(
@@ -382,8 +437,8 @@ class TestTriple:
         _, triple_plane = _resolve(
             self._triple_adapter(), residue3="chain A and resid 2", coplanar_slack=0.2
         )
-        assert pair_plane[1] == pytest.approx(0.2)
-        assert triple_plane[1] == pytest.approx(0.2)
+        assert _plane_slack(pair_plane) == pytest.approx(0.2)
+        assert _plane_slack(triple_plane) == pytest.approx(0.2)
 
     def test_negative_slack_raises(self):
         with pytest.raises(ValueError, match="cannot be negative"):
@@ -397,7 +452,7 @@ class TestTriple:
             ),
             residue3="chain A and resid 2",
         )
-        assert len(plane[0]) == len(_G_BASE) * 2 + len(_C_BASE)
+        assert len(_plane_atoms(plane)) == len(_G_BASE) * 2 + len(_C_BASE)
 
     def test_residue3_with_coplanar_off_raises(self):
         with pytest.raises(ValueError, match="no-op with coplanar: false"):
@@ -473,7 +528,7 @@ class TestPlaneOnly:
             _adapter(("A", 1, "G", _G_BASE), ("B", 1, "C", _C_BASE)), hbonds=False
         )
         assert dists == []
-        assert len(plane[0]) == len(_G_BASE) + len(_C_BASE)
+        assert len(_plane_atoms(plane)) == len(_G_BASE) + len(_C_BASE)
 
     def test_non_wc_pair_is_allowed(self):
         # G-G raises as a normal entry; with hbonds: false it is just two bases.
@@ -482,7 +537,7 @@ class TestPlaneOnly:
         dists, plane = _resolve(
             _adapter(("A", 1, "G", _G_BASE), ("B", 1, "G", _G_BASE)), hbonds=False
         )
-        assert dists == [] and len(plane[0]) == 2 * len(_G_BASE)
+        assert dists == [] and len(_plane_atoms(plane)) == 2 * len(_G_BASE)
 
     def test_plane_only_triple(self):
         _, plane = _resolve(
@@ -492,7 +547,7 @@ class TestPlaneOnly:
             hbonds=False,
             residue3="chain A and resid 2",
         )
-        assert len(plane[0]) == len(_G_BASE) + 2 * len(_A_BASE)
+        assert len(_plane_atoms(plane)) == len(_G_BASE) + 2 * len(_A_BASE)
 
     def test_both_off_raises(self):
         with pytest.raises(ValueError, match="generates nothing"):
@@ -509,4 +564,4 @@ class TestPlaneOnly:
             hbonds=False,
             residue3="chain A and resid 2",
         )
-        assert pair[1] == 0.0 and triple[1] > 0.0
+        assert _plane_slack(pair) == 0.0 and _plane_slack(triple) > 0.0

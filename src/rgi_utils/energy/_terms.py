@@ -151,6 +151,29 @@ _SPEC_SCHEMA = [
             ("stop_step", "f"),
         ],
     ),
+    # standalone best-fit-plane restraint (plane_restraints_config): the same measured
+    # quantity as the conformer `plane` term (a group's out-of-plane RMS deviation) but
+    # over selection-resolved groups, shaped by the four distance-style types and gated
+    # PER ENTRY. One entry may pool several selection groups into one plane, so `free`
+    # (the `move` mask) is per-ATOM here, not per-group like group_angle/group_dihedral.
+    (
+        "group_plane",
+        "group_plane",
+        [
+            ("idx", "i"),
+            ("grp_mask", "f"),
+            ("free", "f"),
+            ("target1", "f"),
+            ("target2", "f"),
+            ("geom_type", "i"),
+            ("weight", "f"),
+            ("mask", "f"),
+            ("start_sigma", "f"),
+            ("stop_sigma", "f"),
+            ("start_step", "f"),
+            ("stop_step", "f"),
+        ],
+    ),
 ]
 
 
@@ -267,6 +290,20 @@ _TERMS = [
         ],
         "group",
     ),
+    (
+        "group_plane",
+        "group_plane_energy",
+        [
+            "idx",
+            "grp_mask",
+            "free",
+            "target1",
+            "target2",
+            "geom_type",
+            "weight",
+        ],
+        "group",
+    ),
 ]
 
 
@@ -320,6 +357,7 @@ BREAKDOWN_KEYS = (
     "rmsd",
     "group_angle",
     "group_dihedral",
+    "group_plane",
 )
 
 # the conformer-gated term keys (gate == "conf"): the single source of truth for which

@@ -26,7 +26,7 @@ See each tool's guide in [`doc/`](doc/) for install / run details, and
 > instead of hand-writing from this README when you're unsure. (For adding RGI support to a
 > *new* tool's code, use the separate `implement-rgi` skill.)
 
-Six **built-in** restraint types, all minimized during the denoising loop to guide coordinate optimization:
+Seven **built-in** restraint types, all minimized during the denoising loop to guide coordinate optimization:
 
 - **conformer** — ligand and polymer-local bond / angle / chiral-volume / VdW;
   ligand-only cistrans (E/Z) / plane
@@ -42,10 +42,14 @@ Six **built-in** restraint types, all minimized during the denoising loop to gui
 - **angle** — the angle of three atom groups' centroids (vertex = group 2), in degrees;
   the angular analogue of the distance restraint.
 - **dihedral** — the dihedral of four atom groups' centroids (axis = groups 2–3), in degrees.
+- **plane** — best-fit-plane flatness of any atom group you select (out-of-plane RMS, Angstrom):
+  hold a nucleobase or aromatic side chain flat, make two groups share one plane, or pull a group
+  onto a plane taken from a reference structure. The selection-driven form of the conformer `plane`
+  term, with its own per-entry weight / tolerance / activation window.
 - **base-pair** — a named Watson–Crick nucleotide pair expanded into H-bond distance
   restraints and an optional base-coplanarity restraint.
 
-Beyond these six built-ins you can define your **own** restraint — see
+Beyond these seven built-ins you can define your **own** restraint — see
 [Custom restraints](#custom-restraints) below.
 
 The default `method='CG'` solver (a nonlinear conjugate gradient with autodiff gradients)
@@ -185,6 +189,32 @@ but targets are in **degrees** (`target_angle` / `target_dihedral`). `weight` de
 the arms move, the anchor group is pinned). With ref groups, references stay fixed and
 `move` selects prediction-side group indices; omitted/`all`/`both` moves every prediction group.
 
+### Plane restraints
+
+`plane_restraints_config` restrains the **out-of-plane RMS deviation** of a group you select
+(internally the `group_plane` energy term). Several `atom_selectionN` in one entry are **pooled into
+a single plane** — that is how you say "keep these two groups coplanar":
+
+```yaml
+plane_restraints_config:
+  # hold one nucleobase flat, tolerating 0.1 A of pucker, only below sigma 2
+  - atom_selection1: "chain A and resid 5 and not backbone"
+    start_sigma: 2.0
+    flat-bottomed2: {target_plane2: 0.1}
+
+  # two stacked bases share ONE plane; only the first moves
+  - atom_selection1: "chain A and resid 10 and not backbone"
+    atom_selection2: "chain B and resid 24 and not backbone"
+    move: 1
+```
+
+The restraint-type block is **optional** (omitted ⇒ `harmonic` toward 0, since a plane's target is
+always 0); targets are in **Angstrom** (`target_plane` / `target_plane1` / `target_plane2`). `move`
+defaults to every group free — a plane has no anchor to pin. Writing one group as
+`refN and <selection>` switches the meaning: the plane is taken from the **reference** structure and
+held fixed, so the prediction group is pulled *onto* it. See
+[`doc/config.md`](doc/config.md#plane_restraints_config-list).
+
 ### Base-pair restraints
 
 `base_pair_restraints_config` restrains two user-selected nucleotides to Watson–Crick geometry.
@@ -203,13 +233,14 @@ base_pair_restraints_config:
     # move: both        # both / 1 / 2; choose which residue the H-bonds move
 ```
 
-The sigma/step window applies to generated H-bond distances. The coplanarity plane uses the shared
-conformer gate. See [`doc/config.md`](doc/config.md#base_pair_restraints_config-list) for atom pairs,
+The sigma/step window and `move` apply to the generated H-bond distances **and** to the coplanarity
+plane (which is emitted as a `plane_restraints_config` restraint, so `stop_sigma` releases both
+together). See [`doc/config.md`](doc/config.md#base_pair_restraints_config-list) for atom pairs,
 validation rules, and gating details.
 
 ### Custom restraints
 
-Define your **own** restraint — not one of the six built-ins — as a differentiable energy,
+Define your **own** restraint — not one of the seven built-ins — as a differentiable energy,
 two ways (same vocabulary, both run on every backend):
 
 **Config only** — write the energy as a math **formula** over named selections, no Python:

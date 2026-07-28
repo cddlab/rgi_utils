@@ -355,6 +355,26 @@ def _plane_normal(cov):
     return vecs[..., :, 0]
 
 
+def _plane_rms(grp_pos, grp_mask):
+    """Out-of-plane RMS deviation (Angstrom) of each padded atom group from its OWN
+    best-fit plane. ``grp_pos`` (..., n, max_atoms, 3), ``grp_mask`` (..., n, max_atoms)
+    {0,1} zeroing padding columns; returns (..., n).
+
+    Shared by ``plane_energy`` (conformer term, ``slack`` flat-bottom) and
+    ``group_plane_energy`` (standalone ``plane_restraints_config`` term, four restraint
+    types) so the eigendecomposition maths lives in ONE place per backend — that is what
+    keeps the three-backend parity structural rather than a copy that can drift."""
+    m = grp_mask[..., None]
+    n_eff = np.sum(grp_mask, axis=-1)  # (..., n) real atoms per group
+    centroid = np.sum(grp_pos * m, axis=-2) / (n_eff[..., None] + _EPS)
+    x0 = (grp_pos - centroid[..., None, :]) * m  # centred, padding-zeroed
+    cov = np.swapaxes(x0, -1, -2) @ x0  # (..., n, 3, 3) covariance sum
+    normal = _plane_normal(cov)  # (..., n, 3); stop-grad in torch/jax
+    dev = np.sum(x0 * normal[..., None, :], axis=-1)  # signed out-of-plane distance
+    msd = np.sum(dev**2 * grp_mask, axis=-1) / (n_eff + _EPS)  # per-atom mean-square
+    return np.sqrt(msd + _EPS)
+
+
 def plane_energy(positions, idx, grp_mask, slack, weight, mask):
     """Best-fit-plane restraint over padded atom groups: penalise each group's
     out-of-plane RMS deviation (Angstrom) beyond ``slack`` (target 0 = planar). ``idx``
@@ -365,17 +385,42 @@ def plane_energy(positions, idx, grp_mask, slack, weight, mask):
     eigendecomposition is never differentiated and the gradient flows through the moving
     atoms — same carve-out as ``rmsd_energy``'s Kabsch rotation. ``slack=0`` reduces to a
     pure harmonic on the RMS out-of-plane distance."""
-    grp_pos = positions[..., idx, :]  # (..., n_plane, max_atoms, 3)
-    m = grp_mask[..., None]
-    n_eff = np.sum(grp_mask, axis=-1)  # (..., n_plane) real atoms per group
-    centroid = np.sum(grp_pos * m, axis=-2) / (n_eff[..., None] + _EPS)
-    x0 = (grp_pos - centroid[..., None, :]) * m  # centred, padding-zeroed
-    cov = np.swapaxes(x0, -1, -2) @ x0  # (..., n_plane, 3, 3) covariance sum
-    normal = _plane_normal(cov)  # (..., n_plane, 3); stop-grad in torch/jax
-    dev = np.sum(x0 * normal[..., None, :], axis=-1)  # signed out-of-plane distance
-    msd = np.sum(dev**2 * grp_mask, axis=-1) / (n_eff + _EPS)  # per-atom mean-square
-    rms = np.sqrt(msd + _EPS)
+    rms = _plane_rms(positions[..., idx, :], grp_mask)
     delta = np.maximum(0.0, rms - slack)  # one-sided flat-bottom (rms >= 0, target 0)
+    return np.sum(weight * delta**2 * mask)
+
+
+def group_plane_energy(
+    positions,
+    idx,
+    grp_mask,
+    free,
+    target1,
+    target2,
+    geom_type,
+    weight,
+    mask,
+):
+    """Standalone best-fit-plane restraint over selection-resolved atom groups
+    (``plane_restraints_config``) — the same measured quantity as ``plane_energy`` (the
+    group's out-of-plane RMS deviation) but shaped by the four distance-style restraint
+    types (``geom_type`` 0=harmonic / 1=flat-bottomed / 2=lower / 3=upper, bounds
+    ``target1``/``target2`` in Angstrom) and gated per entry rather than by the shared
+    conformer gate.
+
+    One entry may pool SEVERAL selection groups into one plane (a shared best-fit plane,
+    e.g. two stacked nucleobases); ``free`` (..., n, max_atoms) {0,1} is the per-ATOM
+    ``move`` mask — a pinned atom still contributes its position to the plane fit but
+    receives no gradient (torch/jax stop-gradient; a value no-op here, as numpy is the
+    value reference). Per-atom rather than per-group because the number of groups varies
+    per entry, unlike ``group_angle``/``group_dihedral``.
+
+    NOTE there is deliberately NO ``_move_centroid``-style N-times gradient rescale: the
+    plane RMS is a genuine least-squares fit rather than a rigid-body translation, so the
+    natural ``1/N`` per-atom gradient is correct and CG's line search absorbs the scale.
+    """
+    rms = _plane_rms(positions[..., idx, :], grp_mask)
+    delta = _group_delta(rms, rms - target1, target1, target2, geom_type)
     return np.sum(weight * delta**2 * mask)
 
 
@@ -391,6 +436,7 @@ _LEAF_FNS = {
     "rmsd_energy": rmsd_energy,
     "group_angle_energy": group_angle_energy,
     "group_dihedral_energy": group_dihedral_energy,
+    "group_plane_energy": group_plane_energy,
 }
 
 

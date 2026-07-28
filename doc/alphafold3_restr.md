@@ -158,6 +158,16 @@ JAX minimizer (`lax.scan`) like every other restraint.
         "harmonic": { "target_dihedral": 180.0 }
       }
     ],
+    "plane_restraints_config": [
+      {
+        "atom_selection1": "chain A and (resid 5 to 20)",
+        "start_sigma": 99999999,
+        "stop_sigma": -1,
+        "move": "all",
+        "weight": 1.0,
+        "flat-bottomed2": { "target_plane2": 0.1 }
+      }
+    ],
     "conformer_restraints_config": {
       "start_sigma": 99999999,
       "stop_sigma": -1,

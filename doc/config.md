@@ -22,8 +22,8 @@ check their spelling against this page. Source of truth:
 - [Config shape](#shape) and [top-level keys](#top-level-keys)
 - [Activation windows](#sigma-gating-start_sigma--stop_sigma) and [step gating](#step-gating-start_step--stop_step-alternative-to-sigma)
 - [Atom-selection DSL](#atom-selection-dsl) and [penalty shapes](#penalty-shapes-shared)
-- [Distance](#distance_restraints_config-list), [group angle](#angle_restraints_config-list), and
-  [group dihedral](#dihedral_restraints_config-list)
+- [Distance](#distance_restraints_config-list), [group angle](#angle_restraints_config-list),
+  [group dihedral](#dihedral_restraints_config-list), and [plane](#plane_restraints_config-list)
 - [Base pairs](#base_pair_restraints_config-list)
 - [Conformer geometry and VdW](#conformer_restraints_config-single-dict)
 - [RMSD](#rmsd_restraints_config-list)
@@ -42,6 +42,7 @@ restraints_config:
   distance_restraints_config: [ ... ]   # list
   angle_restraints_config:    [ ... ]   # list  (group-centroid angle)
   dihedral_restraints_config: [ ... ]   # list  (group-centroid dihedral)
+  plane_restraints_config:    [ ... ]   # list  (best-fit-plane flatness / coplanarity)
   base_pair_restraints_config: [ ... ]  # list  (nucleic-acid Watson-Crick base pairs)
   conformer_restraints_config: { ... }  # single dict (ligand/polymer local geometry)
   rmsd_restraints_config:     [ ... ]   # list
@@ -51,9 +52,9 @@ restraints_config:
 A restraint type is active only if its block is present (and, for conformer terms, the term's
 `weight > 0`).
 
-Distance, angle, dihedral, conformer, RMSD, and base-pair are the six built-in restraint types
-(base-pair expands into distance and plane terms under the hood). `custom_restraints_config`
-defines an original restraint as a math formula or Python callable.
+Distance, angle, dihedral, plane, conformer, RMSD, and base-pair are the seven built-in restraint
+types (base-pair expands into distance and plane restraints under the hood).
+`custom_restraints_config` defines an original restraint as a math formula or Python callable.
 
 ## Top-level keys
 
@@ -156,9 +157,11 @@ distance, angle, volume, …) from its target. Four block names choose how $\del
 | `flat-bottomed1` | $\min(0,\, x - t_1)$ | lower bound — penalise only $x \lt t_1$ |
 | `flat-bottomed2` | $\max(0,\, x - t_2)$ | upper bound — penalise only $x \gt t_2$ |
 
-The same four shapes drive the `distance` / `angle` / `dihedral` / `rmsd` blocks (only the target
-key differs: `target_distance` / `target_angle` / `target_dihedral` / `target_rmsd`, with `…1` /
-`…2` for the flat-bottomed bounds). The **conformer** terms use the flat-bottomed shape with a symmetric `slack`:
+The same four shapes drive the `distance` / `angle` / `dihedral` / `plane` / `rmsd` blocks (only
+the target key differs: `target_distance` / `target_angle` / `target_dihedral` / `target_plane` /
+`target_rmsd`, with `…1` / `…2` for the flat-bottomed bounds). `plane` is the one block whose type
+is OPTIONAL — its measured quantity is an RMS deviation with an implicit target of 0, so an omitted
+block means `harmonic` with `target_plane: 0`. The **conformer** terms use the flat-bottomed shape with a symmetric `slack`:
 $\delta = 0$ within $\pm$`slack` of the RDKit-ideal value, quadratic outside (`slack = 0` $\Rightarrow$ pure harmonic).
 
 `distance` is CG-minimized like every other restraint (it used to be a closed-form shift; it is now
@@ -343,6 +346,97 @@ dihedral_restraints_config:
     harmonic: {target_dihedral: 180.0}
 ```
 
+## `plane_restraints_config` (list)
+
+Holds an atom group **planar** — or brings it into **another group's plane**. This is the
+selection-driven form of the [conformer `plane` term](#energy-terms), which can only reach groups
+*perceived* from a ligand's RDKit mol (aromatic rings, non-ring sp2 groups) or supplied by the
+monomer library. Here you name the atoms yourself, so any group works: a nucleobase, a
+peptide-bond plane, an aromatic side chain, a ligand fragment.
+
+The measured quantity is the group's **out-of-plane RMS deviation** (Angstrom, target 0 = planar),
+
+```math
+x = \sqrt{\lambda_{\min}/N}
+```
+
+where $\lambda_{\min}$ is the smallest eigenvalue of the group's centred covariance — i.e. the RMS
+distance of its atoms from their own best-fit plane. It is shaped by one of the penalty blocks
+(see [Penalty shapes](#penalty-shapes-shared)) and CG-minimized like every other restraint.
+
+Several `atom_selectionN` in ONE entry are **pooled into a single plane**: that is how you say
+"keep these two groups coplanar with each other". Use separate entries for separate planes.
+
+| key | type | default | meaning |
+|---|---|---|---|
+| `atom_selection1` | str | — (required) | group 1 (selection DSL) |
+| `atom_selection2` … `atom_selection4` | str | — | further groups, **pooled into the same plane**. Numbering must be contiguous from 1 (a gap raises) |
+| `start_sigma` | float | `+inf` | activation upper bound (see [Sigma gating](#sigma-gating-start_sigma--stop_sigma)) |
+| `stop_sigma` | float | `-1` | release lower bound |
+| `start_step` / `stop_step` | int | `-inf` / `+inf` | step gating — the alternative to the sigma window (mutually exclusive; see [Step gating](#step-gating-start_step--stop_step-alternative-to-sigma)) |
+| `move` | `"all"`/`1`/`[1,2]`/`"1,2"` | `"all"` | which group(s) the solver may move; the rest are **pinned** (their atoms still shape the plane fit, but get no gradient). The default frees every group — a plane has no anchor group to pin, unlike the angle vertex / dihedral axis |
+| `weight` | float | `1.0` | relative strength (least-squares weight) |
+| one restraint-type block | dict | — (**optional**) | the penalty (below). Omitted ⇒ `harmonic` with `target_plane: 0` |
+
+Restraint-type block (at most one):
+
+| block | params | behaviour |
+|---|---|---|
+| `harmonic` | `target_plane` | quadratic penalty on the RMS deviation toward the target (use `0`) |
+| `flat-bottomed2` | `target_plane2` | **the tolerance form**: no penalty while the group is planar to within `target_plane2` A |
+| `flat-bottomed` | `target_plane1`, `target_plane2` | no penalty inside `[d1, d2]` (needs `d1 < d2`) |
+| `flat-bottomed1` | `target_plane1` | penalise only *below* `d1` — i.e. "stay non-planar". Accepted for consistency with the other blocks; rarely what you want |
+
+```yaml
+plane_restraints_config:
+  # keep one nucleobase flat, only late in denoising
+  - atom_selection1: "chain A and resid 5 and not backbone"
+    start_sigma: 2.0
+    flat-bottomed2: {target_plane2: 0.1}   # 0.1 A of pucker is free
+
+  # make two stacked bases share ONE plane, moving only the first
+  - atom_selection1: "chain A and resid 10 and not backbone"
+    atom_selection2: "chain B and resid 24 and not backbone"
+    move: 1
+    weight: 2.0
+```
+
+Two things worth knowing:
+
+- **Group size.** Unlike the centroid restraints (distance / angle / dihedral), the plane gradient is
+  NOT rescaled by the group size — the plane RMS is a genuine least-squares fit, not a rigid-body
+  translation. `weight: 1` converges any group on its own, but a very large group's contribution is
+  weaker *relative to other restraints*; raise `weight` if a big plane loses a tug-of-war.
+- **VdW side effect.** A restrained group's atoms join the optimized set, which removes them from the
+  fixed-background VdW partner list (see [Van der Waals modes](#van-der-waals-modes)). Restraining a
+  large protein group therefore stops those atoms from repelling a ligand through that term.
+
+### Reference groups
+
+Write one group as `refN and <selection>` (plus its `refs.refN`) to anchor the plane to an
+**external structure**. This changes the measured quantity: the plane is fitted to the
+**reference atoms alone** and held fixed (stop-gradient, fitted into the prediction frame like every
+other reference group), and `x` becomes the RMS distance of the **prediction** atoms from that fixed
+plane. So the prediction group is pulled *onto* the reference's plane instead of merely being
+flattened. At least one group must be a prediction selection, the reference selection needs ≥ 3
+atoms, and `move` accepts prediction-side indices only.
+
+```yaml
+plane_restraints_config:
+  - atom_selection1: "chain A and resid 30 to 36 and backbone"
+    atom_selection2: "ref1 and chain A and resid 30 to 36 and backbone"
+    refs:
+      ref1:
+        ref_cif: template.cif
+        atom_selection_target_fit: "chain A and backbone"
+        atom_selection_ref_fit: "chain A and backbone"
+    harmonic: {target_plane: 0.0}
+```
+
+If you configure no fit selections, set `pairing: identity` on the reference: the default
+`pairing: align` runs a sequence alignment up front and raises when the chain ids differ, even though
+nothing consumes the result without a fit.
+
 ## `base_pair_restraints_config` (list)
 
 Restrain two nucleotides into **Watson-Crick base-pair geometry**, optionally widening the
@@ -458,10 +552,13 @@ nothing at all.
 
 ### Gating
 
-The gate window applies to the **H-bond distances**. The coplanarity plane rides the
-**shared conformer gate** (`conformer_restraints_config.start_sigma`, default always-on) because it is
-built on the same `plane` term as ligand/polymer planarity — so a per-entry `start_sigma` here does not
-move the coplanarity release point. Per-base planarity is already maintained by
+The gate window applies to the **H-bond distances AND the coplanarity plane**: the plane is emitted
+as a [`plane_restraints_config`](#plane_restraints_config-list) restraint, which carries its own
+per-entry window, so `stop_sigma` releases both together. (It used to ride the shared conformer gate,
+where a per-entry `start_sigma` did not move the coplanarity release point.) `move` reaches the plane
+too — `move: 1` pins residue2's atoms in the plane fit as well as in the H-bonds.
+
+Per-base planarity is already maintained by
 [`conformer_restraints_config`](#conformer_restraints_config-single-dict) when polymer geometry is
 enabled; `coplanar` here additionally makes the **two** bases of the pair share one plane.
 
@@ -760,9 +857,30 @@ $\lVert\cdot\rVert$ is the Euclidean norm:
 | `coords(A)` | block $(k,3)$ | $A$'s atom coordinates | feed a bare selection into arithmetic with `kabsch` output (a bare name alone is a *selection identifier*, not coordinates) |
 | `kabsch(A,B)` | block $(k,3)$ | $A$ rigid-body-superposed onto $B$ (Kabsch) | align two moving groups, then measure the leftover per-atom deviation — see **Reference-backed selections** |
 | `rmsd(A,B)` | scalar | superposed RMSD of prediction selection `A` vs reference-backed selection `B` | pull a group onto an external reference; `B` must map to `refN and <selection>` — see **Reference-backed selections** |
+| `plane(A)` | scalar | $A$'s out-of-plane RMS deviation from its own best-fit plane, $\sqrt{\lambda_{\min}/N}$ | hold a group flat — the [`plane` restraint](#plane_restraints_config-list) as a formula term you can combine with others |
+| `plane(A,B)` | scalar | RMS distance of $A$'s atoms from the plane fitted to $B$ | bring $A$ into $B$'s plane (stacking, coplanarity with a fixed or reference-backed group) |
 
 Most geometry consumes selection **centroids**; `coords` / `kabsch` instead flow a whole
 **$(k,3)$ coordinate block**, so they compose: `centroid(kabsch(A,B))`, `norm(kabsch(A,B) - coords(B))`.
+`plane` also reads the whole block (a centroid has no plane), and either argument may be a
+reference-backed selection.
+
+`plane`, like `kabsch` and `rmsd`, stop-gradients part of its maths (the plane normal), so its
+gradient is not the derivative of the value in the strict sense — the same deliberate carve-out the
+built-in `plane` / `rmsd` terms make. It converges under CG all the same; what it will not do is
+rotate a group by differentiating through the eigendecomposition. In `plane(A,B)` the plane's normal
+is fixed but its **centre is not**, so a free `B` is pulled toward `A` as well; list only `A` in
+`move` (or make `B` reference-backed) for a genuinely fixed plane.
+
+```yaml
+custom_restraints_config:
+  - name: flat_and_stacked
+    selections:
+      loop: "chain A and resid 40 to 46"
+      base: "chain B and resid 12 and not backbone"
+    move: loop
+    energy: "plane(loop)**2 + 4.0 * plane(loop, base)**2"
+```
 
 #### Reference-backed selections and superposition
 

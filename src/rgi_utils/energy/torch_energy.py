@@ -370,22 +370,57 @@ def _plane_normal(cov):
     return normal.detach()
 
 
+def _plane_rms(grp_pos, grp_mask):
+    """Out-of-plane RMS deviation of each padded atom group from its own best-fit plane
+    (mirrors ``numpy_energy._plane_rms``). Shared by ``plane_energy`` (conformer,
+    ``slack``) and ``group_plane_energy`` (standalone, four restraint types) so the
+    detached-normal maths exists once per backend."""
+    m = grp_mask[..., None]
+    n_eff = torch.sum(grp_mask, dim=-1)
+    centroid = torch.sum(grp_pos * m, dim=-2) / (n_eff[..., None] + _EPS)
+    x0 = (grp_pos - centroid[..., None, :]) * m
+    cov = torch.swapaxes(x0, -1, -2) @ x0  # (..., n, 3, 3)
+    normal = _plane_normal(cov)
+    dev = torch.sum(x0 * normal[..., None, :], dim=-1)
+    msd = torch.sum(dev**2 * grp_mask, dim=-1) / (n_eff + _EPS)
+    return torch.sqrt(msd + _EPS)
+
+
 def plane_energy(positions, idx, grp_mask, slack, weight, mask):
     """Best-fit-plane restraint over padded atom groups (mirrors
     ``numpy_energy.plane_energy``). Penalise each group's out-of-plane RMS deviation
     beyond ``slack`` (target 0). The plane normal is detached, so autograd
     differentiates only the moving atoms."""
-    grp_pos = positions[..., idx, :]  # (..., n_plane, max_atoms, 3)
-    m = grp_mask[..., None]
-    n_eff = torch.sum(grp_mask, dim=-1)
-    centroid = torch.sum(grp_pos * m, dim=-2) / (n_eff[..., None] + _EPS)
-    x0 = (grp_pos - centroid[..., None, :]) * m
-    cov = torch.swapaxes(x0, -1, -2) @ x0  # (..., n_plane, 3, 3)
-    normal = _plane_normal(cov)
-    dev = torch.sum(x0 * normal[..., None, :], dim=-1)
-    msd = torch.sum(dev**2 * grp_mask, dim=-1) / (n_eff + _EPS)
-    rms = torch.sqrt(msd + _EPS)
+    rms = _plane_rms(positions[..., idx, :], grp_mask)
     delta = torch.clamp(rms - slack, min=0.0)
+    return torch.sum(weight * delta**2 * mask)
+
+
+def group_plane_energy(
+    positions,
+    idx,
+    grp_mask,
+    free,
+    target1,
+    target2,
+    geom_type,
+    weight,
+    mask,
+):
+    """Standalone best-fit-plane restraint (``plane_restraints_config``; mirrors
+    ``numpy_energy.group_plane_energy``). Same measured quantity as ``plane_energy``,
+    shaped by the four distance-style types and gated per entry.
+
+    ``free`` (..., n, max_atoms) {0,1} is the per-atom ``move`` mask: a pinned atom keeps
+    its VALUE in the plane fit but its gradient is detached, so the CG does not move it
+    for this restraint (the ``_move_centroid(free=0)`` mechanism, value-preserving so the
+    numpy reference still matches). No N-times gradient rescale — see the numpy docstring.
+    """
+    grp_pos = positions[..., idx, :]
+    keep = free[..., None] > 0
+    grp_pos = torch.where(keep, grp_pos, grp_pos.detach())
+    rms = _plane_rms(grp_pos, grp_mask)
+    delta = _group_delta(rms, rms - target1, target1, target2, geom_type)
     return torch.sum(weight * delta**2 * mask)
 
 
@@ -401,6 +436,7 @@ _LEAF_FNS = {
     "rmsd_energy": rmsd_energy,
     "group_angle_energy": group_angle_energy,
     "group_dihedral_energy": group_dihedral_energy,
+    "group_plane_energy": group_plane_energy,
 }
 
 

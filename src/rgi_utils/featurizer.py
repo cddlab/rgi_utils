@@ -34,6 +34,7 @@ from rgi_utils.spec import (
     DistanceArrays,
     GroupAngleArrays,
     GroupDihedralArrays,
+    GroupPlaneArrays,
     PlaneArrays,
     RestraintSpec,
     RmsdArrays,
@@ -636,20 +637,21 @@ def build_spec(
     dihedral_restraints: list | None = None,
     custom_restraints: list | None = None,
     polymer_geometry=None,
-    extra_plane_groups: list | None = None,
+    plane_restraints: list | None = None,
 ) -> RestraintSpec:
     """Build a RestraintSpec. ``distance_restraints`` are DistanceData with
     ``target_sites1``/``target_sites2`` already resolved to global indices;
     ``rmsd_restraints`` are RmsdData with ``target_sites``/``ref_coords`` resolved;
     ``angle_restraints``/``dihedral_restraints`` are AngleRestraintData /
     DihedralRestraintData with their group ``target_sites{1..N}`` resolved to global
-    indices (N=3 for angle, N=4 for dihedral). ``extra_plane_groups`` are additional
-    best-fit-plane groups injected by callers that are NOT perceived from a ligand/polymer
-    conformer (currently the base-pair coplanarity restraint) — a list of
-    ``(global_indices, slack, weight)`` tuples appended to the plane term with their OWN
-    weight/slack (so they survive even when the conformer plane sub-block is off)."""
+    indices (N=3 for angle, N=4 for dihedral). ``plane_restraints`` are
+    PlaneRestraintData with ``target_sites`` (a LIST of per-group global-index lists)
+    resolved — the standalone ``plane_restraints_config`` term, which is independent of
+    the conformer ``plane`` sub-block (its own weight/type/gate per entry). The base-pair
+    coplanarity macro also arrives here (combined.setup hands over pre-resolved
+    PlaneRestraintData), which is why there is no longer an ``extra_plane_groups``
+    back-door into the conformer plane arrays."""
     ligand_confs = ligand_confs or []
-    extra_plane_groups = extra_plane_groups or []
     cfg = conformer_config or {}
     # Conformer restraints are OPT-IN -- this is the single enforcement point for every
     # tool: (1) with no conformer_restraints_config (e.g. a distance-only run) build no
@@ -688,6 +690,9 @@ def build_spec(
     ]
     dihedral_restraints = [
         dr for dr in (dihedral_restraints or []) if getattr(dr, "run_restr", False)
+    ]
+    plane_restraints = [
+        pr for pr in (plane_restraints or []) if getattr(pr, "run_restr", False)
     ]
     custom_restraints = [
         c for c in (custom_restraints or []) if getattr(c, "run_restr", False)
@@ -778,10 +783,6 @@ def build_spec(
         active.update((g0, g1, g2, g3))
     for grp in planes:
         active.update(grp)
-    # base-pair coplanarity (and any other injected plane): its atoms must be optimisable
-    # even when the conformer plane sub-block is off (pw<=0 drops `planes` but NOT these).
-    for grp, _slack, _weight in extra_plane_groups:
-        active.update(int(g) for g in grp)
     for dr in distance_restraints:
         active.update(int(s) for s in dr.target_sites1)
         active.update(int(s) for s in dr.target_sites2)
@@ -794,6 +795,12 @@ def build_spec(
     for gdr in dihedral_restraints:
         for g in range(4):
             active.update(int(s) for s in getattr(gdr, f"target_sites{g + 1}"))
+    # standalone plane restraints (incl. the base-pair coplanarity macro): every group of
+    # every entry. Unlike the conformer `planes` above these are never dropped by the
+    # conformer plane weight — they carry their own per-entry weight.
+    for pr in plane_restraints:
+        for grp in pr.target_sites:
+            active.update(int(s) for s in grp)
     # custom restraints contribute every atom their selections resolved to.
     for cr in custom_restraints:
         active.update(int(s) for s in cr.iter_global_sites())
@@ -905,13 +912,10 @@ def build_spec(
             mask=np.ones(len(cistrans)),
         )
     plane = None
-    # conformer/polymer planes carry the shared conformer weight/slack (pw/psl); injected
-    # base-pair coplanarity groups carry their OWN weight/slack (so they are independent of
-    # the conformer plane sub-block, which is off by default). Concatenate both into one
-    # PlaneArrays — same energy term + conformer gate for all rows.
-    plane_groups = list(planes) + [grp for grp, _slack, _weight in extra_plane_groups]
-    plane_slacks = [psl] * len(planes) + [s for _grp, s, _weight in extra_plane_groups]
-    plane_weights = [pw] * len(planes) + [w for _grp, _slack, w in extra_plane_groups]
+    # conformer/polymer planes all carry the shared conformer weight/slack (pw/psl) and the
+    # shared conformer gate. Selection-driven planes are NOT here — they are the standalone
+    # `group_plane` term below, with their own per-entry type/weight/gate.
+    plane_groups = list(planes)
     if plane_groups:
         # variable group size -> pad to the widest group; padding columns hold local
         # index 0 (a valid atom) and are zeroed in grp_mask (same layout as distance).
@@ -926,8 +930,8 @@ def build_spec(
         plane = PlaneArrays(
             idx=idx,
             grp_mask=grp_mask,
-            slack=np.asarray(plane_slacks, dtype=np.float64),
-            weight=np.asarray(plane_weights, dtype=np.float64),
+            slack=np.full(n_plane, psl),
+            weight=np.full(n_plane, pw),
             mask=np.ones(n_plane),
         )
 
@@ -1103,6 +1107,52 @@ def build_spec(
             stop_step=stop_step,
         )
 
+    # ---- standalone best-fit-plane arrays (padded, local indices) -------------------
+    group_plane = None
+    if plane_restraints:
+        n = len(plane_restraints)
+        # Each entry POOLS all of its groups into one plane, so a row is the concatenated
+        # atom list (padded to the widest entry). `free` is therefore per-ATOM: it repeats
+        # each group's `move_free` flag across that group's atoms.
+        pooled = [
+            [int(s) for grp in pr.target_sites for s in grp] for pr in plane_restraints
+        ]
+        free_flags = [
+            [
+                1.0 if pr.move_free[gi] else 0.0
+                for gi, grp in enumerate(pr.target_sites)
+                for _ in grp
+            ]
+            for pr in plane_restraints
+        ]
+        max_atoms = max(len(row) for row in pooled)
+        idx = np.zeros((n, max_atoms), dtype=np.int64)
+        grp_mask = np.zeros((n, max_atoms))
+        free = np.zeros((n, max_atoms))
+        for r, (row, flags) in enumerate(zip(pooled, free_flags)):
+            local = [g2l[g] for g in row]
+            idx[r, : len(local)] = local
+            grp_mask[r, : len(local)] = 1.0
+            free[r, : len(flags)] = flags
+        start_sigma, stop_sigma = _group_sigmas(plane_restraints, conf_start_sigma)
+        start_step, stop_step = _group_steps(plane_restraints)
+        group_plane = GroupPlaneArrays(
+            idx=idx,
+            grp_mask=grp_mask,
+            free=free,
+            target1=np.array([float(r.target1) for r in plane_restraints]),
+            target2=np.array([float(r.target2) for r in plane_restraints]),
+            geom_type=np.array(
+                [DIST_TYPE_CODES[r.geom_type] for r in plane_restraints], dtype=np.int64
+            ),
+            weight=np.array([float(r.weight) for r in plane_restraints]),
+            mask=np.ones(n),
+            start_sigma=start_sigma,
+            stop_sigma=stop_sigma,
+            start_step=start_step,
+            stop_step=stop_step,
+        )
+
     spec = RestraintSpec(
         n_active=len(active_sites),
         active_sites=active_sites,
@@ -1115,6 +1165,7 @@ def build_spec(
         rmsd=rmsd,
         group_angle=group_angle,
         group_dihedral=group_dihedral,
+        group_plane=group_plane,
         vdw=vdw_arrays,
         vdw_config=vdw_config,
         active_vdw_config=active_vdw_config,
@@ -1141,7 +1192,8 @@ def build_spec(
     vdw_desc = "+".join(vdw_parts) if vdw_parts else "off"
     logger.info(
         "built spec: n_active=%d bonds=%d angles=%d chirals=%d plane=%d cistrans=%d "
-        "distances=%d rmsd=%d group_angle=%d group_dihedral=%d vdw=%s custom=%d",
+        "distances=%d rmsd=%d group_angle=%d group_dihedral=%d group_plane=%d "
+        "vdw=%s custom=%d",
         spec.n_active,
         len(bonds),
         len(angles),
@@ -1152,6 +1204,7 @@ def build_spec(
         len(rmsd_restraints),
         len(angle_restraints),
         len(dihedral_restraints),
+        len(plane_restraints),
         vdw_desc,
         len(custom_specs),
     )
