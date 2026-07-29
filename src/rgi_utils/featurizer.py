@@ -22,7 +22,7 @@ import logging
 import numpy as np
 from rdkit import Chem
 
-from rgi_utils._mol_build import uff_relax
+from rgi_utils._mol_build import ff_relax, parse_relax_force_field
 from rgi_utils.atom_context import LigandConf
 from rgi_utils.spec import (
     DIST_TYPE_CODES,
@@ -110,37 +110,66 @@ def _cistrans_rad(crds: np.ndarray, i: int, j: int, k: int, ll: int) -> float:
     return float(np.arctan2(y, x))
 
 
-def _extract_conformer(ligand_confs: list[LigandConf], *, relax: bool = True):
+def _extract_conformer(
+    ligand_confs: list[LigandConf],
+    *,
+    relax: bool = True,
+    force_field: str = "uff",
+):
     """Return bond/angle/chiral/cistrans restraint tuples and plane groups in GLOBAL atom
-    indices."""
+    indices.
+
+    ``relax`` is the STRUCTURAL switch (the polymer call site passes False: monomer-library
+    residues are never force-field relaxed); ``force_field`` is the user's
+    ``conformer_restraints_config.relax_force_field`` choice, applied to LIGANDS only.
+    """
     bonds = []  # (g0, g1, r0)
     angles = []  # (g0, g1, g2, th0)
     chirals = []  # (g0, g1, g2, g3, vol0)
     cistrans = []  # (g0, g1, g2, g3, phi0)
     planes = []  # tuple(global idx, ...) — a planar atom group (ring or sp2 group)
+    ff = str(force_field).lower()
+    do_relax = relax and ff != "none"
 
-    for lc in ligand_confs:
+    for li, lc in enumerate(ligand_confs):
         mol = lc.mol
         crds = np.asarray(lc.conf_coords, dtype=np.float64)
         gidx = np.asarray(lc.global_indices, dtype=np.int64)
-        # Derive the bond/angle/chiral/cistrans TARGETS from a UFF-relaxed copy of the
-        # tool's conformer. Each tool's cached conformer carries its own idiosyncrasies
+        # Derive the bond/angle/chiral/cistrans TARGETS from a force-field-relaxed copy of
+        # the tool's conformer. Each tool's cached conformer carries its own idiosyncrasies
         # (the boltz v2 ~/.boltz/mols cache Kekule-localizes aromatic rings ~1.34/1.48;
         # other tools' ref_pos has non-ideal bond/angle lengths), so without this the
         # restraint just reproduces them and is a no-op vs the force-field-ideal the emb
-        # metric measures against. uff_relax KEEPS the fold (local minimisation from the
+        # metric measures against. ff_relax KEEPS the fold (local minimisation from the
         # existing conformer) -- unlike a from-scratch ETKDG embed, which mis-folds
         # big/flexible/phosphate ligands -- and brings bonds/angles onto the shared
-        # force-field ideal. Falls back to the cached coords if UFF fails.
+        # force-field ideal. Falls back to the cached coords if UFF fails (an explicitly
+        # requested MMFF raises instead -- see ff_relax).
         # Guard: only when the mol has REAL bond orders (an aromatic or double bond).
-        # chai/esmfold2 expose no bond orders -> their mol is all-single, so UFF would
+        # chai/esmfold2 expose no bond orders -> their mol is all-single, so the relax would
         # localize aromatic rings to single-bond lengths (~1.5), corrupting the target;
         # for those tools the cached conformer holds the real reference geometry.
-        if relax and any(
+        has_orders = any(
             b.GetIsAromatic() or b.GetBondType() == Chem.BondType.DOUBLE
             for b in mol.GetBonds()
-        ):
-            _relaxed = uff_relax(mol, crds)
+        )
+        if do_relax and not has_orders and ff != "uff":
+            # An explicitly requested MMFF that would silently not run at all. Raise rather
+            # than skip -- "I set relax_force_field: mmff94s and got un-relaxed targets" is
+            # exactly the invisible outcome the explicit setting is meant to rule out.
+            _at = f"global atom index {int(gidx[0])}, " if len(gidx) else ""
+            raise ValueError(
+                f"conformer_restraints_config.relax_force_field={force_field!r}: ligand "
+                f"#{li} ({_at}{mol.GetNumAtoms()} atoms) has "
+                "no aromatic or double bond, so the relax is skipped and the force field "
+                "would never run. Either the tool supplied no real bond orders (chai / "
+                "esmfold2 without SMILES -- relaxing an all-single mol would collapse "
+                "aromatic rings to ~1.5 A), or the ligand is genuinely saturated. Supply "
+                "the ligand as SMILES/CCD, or set relax_force_field: uff (same skip, no "
+                "error) or none."
+            )
+        if do_relax and has_orders:
+            _relaxed = ff_relax(mol, crds, ff)
             if _relaxed is not None and len(_relaxed) == len(crds):
                 crds = _relaxed
 
@@ -717,7 +746,13 @@ def build_spec(
     pw = _conf_weight(cfg, "plane")
     psl = _conf_slack(cfg, "plane", 0.0)
 
-    bonds, angles, chirals, cistrans, planes = _extract_conformer(ligand_confs)
+    # Which force field idealises the reference conformer before the targets are measured
+    # off it. LIGANDS only -- the polymer call below stays relax=False (monomer-library
+    # residues are never relaxed), so this can never fire there.
+    relax_ff = parse_relax_force_field(cfg)
+    bonds, angles, chirals, cistrans, planes = _extract_conformer(
+        ligand_confs, force_field=relax_ff
+    )
     polymer_atoms = np.empty(0, dtype=np.int64)
     if polymer_geometry is not None:
         pb, pa, pc, _pd, pp = _extract_conformer(
@@ -1193,7 +1228,7 @@ def build_spec(
     logger.info(
         "built spec: n_active=%d bonds=%d angles=%d chirals=%d plane=%d cistrans=%d "
         "distances=%d rmsd=%d group_angle=%d group_dihedral=%d group_plane=%d "
-        "vdw=%s custom=%d",
+        "vdw=%s custom=%d relax_ff=%s",
         spec.n_active,
         len(bonds),
         len(angles),
@@ -1207,5 +1242,6 @@ def build_spec(
         len(plane_restraints),
         vdw_desc,
         len(custom_specs),
+        relax_ff,
     )
     return spec

@@ -89,6 +89,18 @@ torsion; it needs real bond orders, which every tool supplies — chai via its a
 source-SMILES path (`chai/adapter.py` `_mol_from_smiles`, Kekulized orders), the
 geometry-perceived fallback (no SMILES) being all-single so `cistrans=0`.
 
+`_extract_conformer` does NOT measure targets off the tool's cached conformer directly — it first
+**force-field relaxes** a copy (`_mol_build.ff_relax`, fold-preserving local minimisation), because
+each tool's cache carries its own idiosyncrasies (boltz v2 Kekulé-localizes aromatic rings
+~1.34/1.48). The force field is `conformer_restraints_config.relax_force_field`: `uff` (default) /
+`mmff94` / `mmff94s` / `none`. Two non-obvious consequences: (1) the relax runs only when the mol
+has an aromatic or DOUBLE bond — the proxy for "real bond orders", since relaxing an all-single
+chai/esmfold2 mol would collapse aromatic rings to ~1.5 Å — and an explicit `mmff*` **raises**
+where `uff` silently skips; (2) plane-group membership is confirmed on the **relaxed** coords, so
+changing the force field can change the `plane=` COUNT, while bonds/angles/chirals/cistrans are
+topology-derived and must not move. `relax=False` (the polymer/monomer-library call site) is a
+separate structural switch and is never affected.
+
 #### `monlib_geom.py`
 
 Polymer bond/angle/plane/link TARGETS from a **CCP4 monomer library** (gemmi, lazy-imported)
@@ -166,6 +178,21 @@ perceive_bonds=False)` — the shared RDKit builder. protenix/openfold pass real
 runs `SetNoImplicit(False)` + `UpdatePropertyCache` **before**
 `AssignStereochemistryFrom3D`, else stereocentres read as 3-coordinate and every
 chiral restraint silently vanishes.
+
+`ff_relax(mol, coords, force_field="uff")` — the fold-preserving relax whose output the conformer
+TARGETS are measured off (`featurizer._extract_conformer`); `parse_relax_force_field` validates
+`relax_force_field` and is called from `config.py` at PARSE time, because the conformer whitelist
+only checks the key and a bad VALUE would otherwise slip through on any run where no ligand opts
+in. Two RDKit traps it encodes: (1) **MMFF typing kekulizes the mol it is handed** (aromatic flags
+cleared, bonds → SINGLE/DOUBLE — reproducible on caffeine), which would corrupt the downstream
+`cistrans`/`plane` perception, so every RDKit call runs on the local `Chem.Mol(mol)` copy, never on
+`mol`; (2) **MMFF has no metal parameters** (`MMFFHasAllMoleculeParams` False for Fe where UFF is
+True; `MMFFOptimizeMolecule` then returns −1 without raising). Failure policies differ ON PURPOSE:
+UFF is the unrequested default so it soft-fails to the cached conformer (`return None`), while an
+explicit `mmff*` raises `RelaxError` — including on an unsanitized mol, where RDKit's own
+`RuntimeError` is re-wrapped rather than swallowed. `maxIters=200` is shared and should stay: all
+three force fields report rc=1 there on ATP but the geometry is converged (identical to 3 decimals
+at 2000/20000 iterations), and moving it would shift every existing UFF target.
 
 #### Standalone plane restraints (`plane_restr_data.py`)
 

@@ -13,6 +13,43 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Force fields available to `ff_relax` / `conformer_restraints_config.relax_force_field`.
+# "none" is not a force field: it disables the relax so the targets come straight off the
+# tool's cached conformer.
+_RELAX_FORCE_FIELDS = ("uff", "mmff94", "mmff94s", "none")
+
+
+class RelaxError(ValueError):
+    """A force-field relax the user EXPLICITLY asked for could not be performed.
+
+    Raised only for `mmff94`/`mmff94s`. UFF is the default (nobody asked for it), so a UFF
+    failure stays a soft fall-back to the cached conformer -- see :func:`ff_relax`.
+    """
+
+
+def parse_relax_force_field(conformer_config: dict | None) -> str:
+    """Validated ``relax_force_field`` from the conformer config; ``"uff"`` when omitted.
+
+    Mirrors ``monlib_geom.parse_config``: the module that consumes the vocabulary owns its
+    validation, and ``config.py`` calls this while PARSING so a typo raises there rather
+    than several minutes later. Validating only the config KEY would not be enough -- an
+    unknown value would slip through unnoticed on any run where no ligand opts in, leaving
+    a `mmf94` typo silently running UFF.
+
+    A YAML ``null`` counts as omitted (matching ``_conf_slack``'s null handling); the
+    STRING ``"none"`` is the explicit "do not relax at all".
+    """
+    value = (conformer_config or {}).get("relax_force_field")
+    if value is None:
+        return "uff"
+    ff = str(value).lower()
+    if ff not in _RELAX_FORCE_FIELDS:
+        raise ValueError(
+            f"conformer_restraints_config.relax_force_field: unknown value {value!r}, "
+            f"expected one of {list(_RELAX_FORCE_FIELDS)}"
+        )
+    return ff
+
 
 def atomic_number(symbol: str) -> int:
     """Atomic number for an element symbol; 0 if unknown (treated as padding)."""
@@ -31,7 +68,7 @@ def build_ligand_mol(elements, coords, bonds_local, perceive_bonds=False):
     restraints — a tool that lacks bond orders may pass order=1 for every bond.
 
     Bond ORDER does matter for one downstream consumer: the conformer restraint's
-    UFF-relax (``featurizer._extract_conformer`` -> :func:`uff_relax`) needs aromatic
+    force-field relax (``featurizer._extract_conformer`` -> :func:`ff_relax`) needs aromatic
     rings to be perceivable as aromatic, or it puckers a flat single-bond ring to
     sp3. ``order`` therefore accepts BOTH conventions seen across tools: the
     RDKit-ish 1/2/3 (single/double/triple) and biotite ``BondType`` codes, whose
@@ -183,9 +220,9 @@ def generate_ideal_conformer(mol, target_mol=None):
         return None
 
 
-def uff_relax(mol, coords):
-    """UFF-relax ``coords`` (a conformer of ``mol``) to ideal bond/angle geometry while
-    KEEPING the input fold.
+def ff_relax(mol, coords, force_field="uff"):
+    """Force-field-relax ``coords`` (a conformer of ``mol``) to ideal bond/angle geometry
+    while KEEPING the input fold.
 
     Unlike :func:`generate_ideal_conformer` (a from-scratch ETKDG embed that mis-folds
     big/flexible/phosphate ligands), this starts from the tool's existing conformer and
@@ -195,14 +232,44 @@ def uff_relax(mol, coords):
     consistent across tools (every tool's cached conformer otherwise carries its own
     bond/angle idiosyncrasies). Stereo is preserved (local minimisation from a fixed
     start). Returns heavy-atom coords in ``mol`` atom order, or None on failure.
+
+    ``force_field`` (``conformer_restraints_config.relax_force_field``): ``"uff"``
+    (default) / ``"mmff94"`` / ``"mmff94s"``. Neither is uniformly better -- on adenosine
+    monophosphate MMFF lands the conjugated exocyclic C6-N6 far closer to the monomer
+    library (1.376-1.389 vs UFF 1.428, library 1.330) while UFF wins on the glycosidic
+    C1'-N9 -- hence a user-selectable option rather than a new default. ``"none"`` is
+    handled by the CALLER (it means "do not call this at all").
+
+    **The failure policies differ deliberately.** UFF is the default that nobody asked
+    for, so a failure returns None and the caller keeps its cached conformer (unchanged
+    long-standing behaviour). MMFF is only ever reached because the user explicitly set
+    ``relax_force_field``, so any failure raises :class:`RelaxError` rather than silently
+    producing un-relaxed targets that look like MMFF ones. This matters in practice: MMFF
+    has NO metal parameters (``MMFFHasAllMoleculeParams`` is False for Fe where UFF is
+    True, and ``MMFFOptimizeMolecule`` then returns -1 without raising).
+
+    **MMFF mutates the mol it is handed.** ``MMFFHasAllMoleculeParams`` /
+    ``MMFFGetMoleculeProperties`` / ``MMFFOptimizeMolecule`` KEKULIZE their argument --
+    aromatic flags cleared, bonds rewritten to SINGLE/DOUBLE (reproducible on caffeine).
+    ``featurizer._extract_conformer`` perceives ``cistrans`` from ``BondType.DOUBLE`` and
+    ``plane`` from ring info, so leaking that into the caller's mol would silently change
+    which restraints get built. Every RDKit call below therefore runs on the local
+    ``Chem.Mol(mol)`` copy (deep enough to protect the caller) -- never on ``mol``.
+
+    ``maxIters=200`` is shared by both force fields. RDKit reports rc=1 ("iteration limit")
+    there for all of UFF/MMFF94/MMFF94s on ATP, but the geometry is converged in practice:
+    re-running at 2000 and 20000 iterations gives bond lengths identical to 3 decimals and
+    only flips rc to 0. So rc=1 is accepted, and raising the budget would buy nothing while
+    moving every existing UFF target.
     """
     import numpy as np
     from rdkit import Chem
     from rdkit.Chem import AllChem
 
+    ff = str(force_field).lower()
     try:
         coords = np.asarray(coords, dtype=np.float64)
-        m = Chem.Mol(mol)
+        m = Chem.Mol(mol)  # deep copy: shields the caller from MMFF's kekulization
         conf = Chem.Conformer(m.GetNumAtoms())
         for i in range(m.GetNumAtoms()):
             conf.SetAtomPosition(
@@ -211,11 +278,40 @@ def uff_relax(mol, coords):
         m.RemoveAllConformers()
         m.AddConformer(conf, assignId=True)
         mh = Chem.AddHs(m, addCoords=True)  # Hs placed from heavy-atom geometry
-        if AllChem.UFFOptimizeMolecule(mh, maxIters=200) not in (0, 1):
-            return None  # not converged / no force field -> keep the tool's conformer
+        if ff == "uff":
+            if AllChem.UFFOptimizeMolecule(mh, maxIters=200) not in (0, 1):
+                return (
+                    None  # not converged / no force field -> keep the tool's conformer
+                )
+        else:
+            # Pre-check on the COPY: a clearer message than the bare rc == -1 that a
+            # metal-containing (or otherwise un-typeable) ligand would otherwise produce.
+            variant = "MMFF94s" if ff == "mmff94s" else "MMFF94"
+            if not AllChem.MMFFHasAllMoleculeParams(mh):
+                raise RelaxError(
+                    f"relax_force_field={force_field!r}: RDKit has no {variant} parameters "
+                    "for this ligand (MMFF covers no metals, unlike UFF). Use "
+                    "relax_force_field: uff, or none to skip the relax entirely."
+                )
+            rc = AllChem.MMFFOptimizeMolecule(mh, maxIters=200, mmffVariant=variant)
+            if rc == -1:
+                raise RelaxError(
+                    f"relax_force_field={force_field!r}: {variant} force-field setup "
+                    "failed for this ligand. Use relax_force_field: uff, or none to skip "
+                    "the relax entirely."
+                )
         mh = Chem.RemoveHs(mh)
         if mh.GetNumAtoms() != mol.GetNumAtoms():
             return None
         return np.asarray(mh.GetConformer(0).GetPositions(), dtype=np.float64)
-    except Exception:
+    except RelaxError:
+        raise
+    except Exception as exc:
+        if ff.startswith("mmff"):
+            # Explicitly requested -> never degrade silently. This also covers the mol
+            # whose SanitizeMol failed in build_ligand_mol (a bare except: pass there), on
+            # which RDKit raises a Pre-condition Violation RuntimeError.
+            raise RelaxError(
+                f"relax_force_field={force_field!r}: relax failed for this ligand: {exc}"
+            ) from exc
         return None

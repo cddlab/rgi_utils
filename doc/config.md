@@ -687,9 +687,71 @@ Behaviour worth knowing:
 - **`chiral` is unchanged** — still reference-conformer volumes. Only the sign protects
   stereochemistry, and the library's `ChiralityType` convention would have to be reconciled with
   the internal atom ordering first.
-- Ligand conformers are untouched (they keep the UFF-relaxed reference-conformer path).
+- Ligand conformers are untouched (they keep the force-field-relaxed reference-conformer path —
+  see [`relax_force_field`](#relax_force_field--which-force-field-idealises-the-ligand-reference-not-a-term)).
 - A bad path raises rather than silently restraining nothing; setup logs a separate
   `monomer library: N/M residues from <path> …` line with the components it matched.
+
+### `relax_force_field` — which force field idealises the ligand reference (not a term)
+
+Like `monomer_library`, this builds nothing of its own — it changes where **ligand** targets come
+from. Where `monomer_library` covers polymers, this covers ligands.
+
+A predictor's cached ligand conformer is not refinement geometry either: boltz v2's `~/.boltz/mols`
+cache Kekulé-localizes aromatic rings (~1.34/1.48 Å alternating), and other tools' `ref_pos` carries
+its own bond/angle idiosyncrasies. Measuring targets straight off it would just reproduce them. So
+the conformer is first **locally relaxed** — the fold is preserved, only local geometry idealises —
+and the bond/angle/chiral/cistrans/plane targets are measured off the relaxed copy.
+
+```yaml
+conformer_restraints_config:
+  relax_force_field: mmff94s     # uff (default) | mmff94 | mmff94s | none
+  bond: {}
+  angle: {}
+```
+
+| value | meaning |
+|---|---|
+| `uff` | **default.** Universal Force Field. Covers essentially any element, including metals |
+| `mmff94` | Merck Molecular Force Field 94 — better parameterised for organic/drug-like chemistry |
+| `mmff94s` | the MMFF94 "s" (planar-nitrogen) variant — flattens amide/amine nitrogens |
+| `none` | do not relax at all; targets come straight off the predictor's cached conformer |
+
+**Neither force field is uniformly better** — this is a real choice, not a strictly-better upgrade.
+Measured on adenosine-5'-monophosphate against the monomer-library values tabulated above (Å):
+
+| bond | monomer library | `uff` | `mmff94` | `mmff94s` |
+|---|---|---|---|---|
+| exocyclic `C6-N6` (conjugated) | 1.330 | 1.428 | 1.389 | **1.376** |
+| glycosidic `C1'-N9` | 1.476 | **1.465** | 1.447 | 1.447 |
+
+MMFF is much closer on the conjugated exocyclic C–N; UFF is closer on the glycosidic bond. Two
+caveats on reading that table: it was measured from a from-scratch ETKDG embed, whereas a real run
+starts from the *tool's* cached conformer (different starting basin, so absolute values will not
+reproduce even where the ordering does); and although RDKit reports "iteration limit" at the
+production 200 iterations for all three, the geometry is converged — re-running at 2000 and 20000
+gives bond lengths identical to 3 decimals.
+
+Behaviour worth knowing:
+
+- **MMFF raises where UFF falls back.** UFF is the default nobody asked for, so a failure quietly
+  keeps the cached conformer. `mmff94`/`mmff94s` are only ever reached because you set them, so any
+  failure raises instead of producing un-relaxed targets that look like MMFF ones. This is not
+  hypothetical: **MMFF has no metal parameters**, so a metal-containing ligand that UFF relaxes
+  fine will raise under MMFF. Switch that run to `uff`, or to `none`.
+- **A skipped relax also raises under MMFF.** The relax only runs on a mol with real bond orders
+  (detected as "has an aromatic or double bond"), because relaxing an order-less mol would collapse
+  aromatic rings to ~1.5 Å. Under `uff` such a ligand is skipped silently; under an explicit MMFF it
+  raises, since "I set `mmff94s` and got un-relaxed targets" is exactly the invisible outcome the
+  explicit setting exists to rule out. Note the check also fires on a *genuinely saturated* ligand
+  whose bond orders are real.
+- **The `plane` count can change with the force field.** Plane-group membership is confirmed by the
+  **relaxed** conformer being coplanar within 0.1 Å, so a borderline-puckered ring can be restrained
+  under one force field and dropped under another. Every other count (bonds/angles/chirals/cistrans)
+  is topology-derived and must not move.
+- **Polymers are untouched.** Monomer-library and reference-conformer polymer residues are never
+  force-field relaxed, so this setting cannot affect them.
+- Verbose setup reports the choice as `relax_ff=…` on the `built spec:` line.
 
 ### Energy terms
 

@@ -168,7 +168,7 @@ class ChaiStructureAdapter:
         Bonds are emitted KEKULIZED (explicit single/double), NOT as order 4 (AROMATIC):
         AROMATIC bonds leave the rebuild's SanitizeMol unable to restore the implicit-H
         on an aromatic N-H (uracil/adenine) -- it picks the pyridine tautomer (n, 0 H)
-        over the real [nH] -- a different mol whose uff_relax gets wrong UFF types and
+        over the real [nH] -- a different mol whose ff_relax gets wrong force-field types and
         blows the bond/angle TARGETS up (ZKD: max bond 35 A -> the prediction explodes).
         Kekule lets SanitizeMol re-perceive aromaticity AND get the correct valence/H --
         mirrors protenix's json_parser bond emission (the "other tool" this matches).

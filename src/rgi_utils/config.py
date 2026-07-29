@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 
 from rgi_utils import monlib_geom
 from rgi_utils._config_util import check_window_exclusive, coerce_bool
+from rgi_utils._mol_build import parse_relax_force_field
 from rgi_utils.base_pair_restr_data import BasePairData
 from rgi_utils.custom.data import CustomData
 from rgi_utils.distance_restr_data import DistanceData
@@ -147,6 +148,9 @@ class RestraintsConfig:
             # NOT a term: points the polymer bond/angle/plane/link TARGETS at a CCP4
             # monomer library instead of the predictor's reference conformer.
             "monomer_library",
+            # NOT a term: which force field idealises the LIGAND reference conformer
+            # before the bond/angle/chiral/cistrans/plane targets are measured off it.
+            "relax_force_field",
         }
         unknown_conformer = {
             key
@@ -163,6 +167,12 @@ class RestraintsConfig:
         # parsing the config, not several minutes later when the first structure builds
         # its polymer geometry. Parsing is stdlib-only (gemmi loads lazily).
         monlib_geom.parse_config(conformer_config)
+        # Same reasoning for the relax force field: the whitelist above only checks the
+        # KEY, so an unknown VALUE ("mmf94") would slip through and silently run UFF on any
+        # run where no ligand opts in (build_spec would never reach it). Validate the value
+        # while parsing. Stdlib-only -- _mol_build imports RDKit inside its functions, so
+        # the "import rgi_utils needs numpy only" invariant holds.
+        parse_relax_force_field(conformer_config)
         # conformer terms share ONE gate window. Like every other restraint it is EITHER
         # a sigma window OR a step window (mutually exclusive); reuse the shared check.
         check_window_exclusive(conformer_config, "conformer_restraints_config")
