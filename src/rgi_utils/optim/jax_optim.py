@@ -371,3 +371,65 @@ def energy_of(spec, coords) -> float:
     prepared = jax_energy.prepare_spec(spec)
     active = coords[..., active_idx, :]
     return float(jax_energy.total_energy(active, prepared))
+
+
+def dynamic_vdw_energy(spec, coords) -> float:
+    """The dynamic (optimizer-only) VdW terms alone (>= 0); for finalize stats.
+
+    The jax twin of ``TorchRestraintOptimizer.dynamic_vdw_energy``. Both the fixed
+    background (``spec.vdw_config``) and the active-active polymer neighbour list
+    (``spec.active_vdw_config``) are applied ONLY inside the optimizer, so
+    ``energy_breakdown`` -- which reads ``spec.vdw`` (the static intra + inter-ligand
+    rows) -- cannot see them. Without this, AF3's finalize printed ``vdw=0.00000`` for
+    terms that ran at every diffusion step, i.e. a number that could not distinguish
+    "no clash" from "never measured".
+
+    Host-side (not for the loop) and ungated, matching torch: this is a residual report
+    at the final coordinates, not a step of the CG objective.
+    """
+    if not spec.is_active():
+        return 0.0
+    vc = getattr(spec, "vdw_config", None)
+    ac = getattr(spec, "active_vdw_config", None)
+    has_vdw = vc is not None and vc.weight > 0
+    has_active_vdw = ac is not None and ac.weight > 0
+    if not (has_vdw or has_active_vdw):
+        return 0.0
+    active = coords[..., jnp.asarray(spec.active_sites, dtype=jnp.int32), :]
+    total = 0.0
+    if has_vdw:
+        total += float(
+            _vdw_pair_energy(
+                active,
+                coords[..., jnp.asarray(vc.background_global, dtype=jnp.int32), :],
+                jnp.asarray(vc.ligand_local, dtype=jnp.int32),
+                jnp.asarray(vc.ligand_radii),
+                jnp.asarray(vc.background_radii),
+                jnp.asarray(float(vc.scale)),
+                jnp.asarray(float(vc.weight)),
+            )
+        )
+    if has_active_vdw:
+        # same int32 pair-code guard as make_minimizer (fail loudly, never corrupt the
+        # covalent-pair exclusion) -- stats must not diverge from what was minimised.
+        check_active_vdw_int32_safe(int(ac.radii.shape[0]))
+        radii = jnp.asarray(ac.radii)
+        neighbours, pair_factor = _build_active_vdw_pairs(
+            active,
+            radii,
+            jnp.asarray(ac.polymer_mask, dtype=bool),
+            jnp.asarray(ac.excluded_codes, dtype=jnp.int32),
+            jnp.asarray(float(ac.dmax)),
+            int(ac.max_neighbors),
+        )
+        total += float(
+            _active_vdw_pair_energy(
+                active,
+                neighbours,
+                pair_factor,
+                radii,
+                jnp.asarray(float(ac.scale)),
+                jnp.asarray(float(ac.weight)),
+            )
+        )
+    return total

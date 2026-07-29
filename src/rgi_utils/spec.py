@@ -148,7 +148,7 @@ class VdwConfig:
     ``background_global`` and held *fixed*. Each optimization step recomputes the clash
     penalty against the moving ligand, so only the ligand is pushed out of contacts,
     keeping the optimised variable set limited to ``active_sites``. The penalty is
-    ``clamp(d - scale*(r_i+r_j), max=0)**2`` summed over pairs within ``dmax`` —
+    ``clamp(d - scale*(r_i+r_j), max=0)**2`` over ALL ligand x background pairs —
     identical maths to ``vdw_energy``, only the pair list is dynamic.
     """
 
@@ -158,6 +158,13 @@ class VdwConfig:
     background_global: np.ndarray  # (n_bg,) global atom indices (fixed background)
     background_radii: np.ndarray  # (n_bg,) VdW radius per background atom
     scale: float = 0.75
+    # NOT READ by this half. Both optimizers evaluate all ligand x background pairs with
+    # no cutoff (`_vdw_pair_energy` takes no dmax): the clamp already zeroes every pair
+    # beyond contact, so all-pairs is bit-identical in value AND gradient to a cutoff at
+    # any `dmax` >= the contact radius scale*(r_i+r_j) (~3 A at defaults). Kept so the
+    # field is uniform across the three VdW configs, but a `dmax` BELOW the contact radius
+    # will NOT narrow this half while it does narrow the intramolecular
+    # (`_build_intramolecular_vdw`) and polymer active-active (`ActiveVdwConfig`) halves.
     dmax: float = 5.0
 
 
@@ -402,6 +409,15 @@ class RestraintSpec:
     vdw: VdwArrays | None = None
     vdw_config: VdwConfig | None = None
     active_vdw_config: ActiveVdwConfig | None = None
+    # DIAGNOSTIC ONLY (never read by the energy/optim layers): the intramolecular pair
+    # census. `eligible` = non-bonded pairs (topological distance > 2) BEFORE the
+    # reference-conformer `dmax` filter; `built` = rows that survived it. `len(vdw.idx)`
+    # cannot substitute for either — it is the intra rows CONCATENATED with the
+    # inter-ligand ones, so dividing it by `eligible` mixes two populations. A clash on a
+    # culled pair shows up neither in the restraint nor in `finalize vdw=`, so setup
+    # reports built/eligible explicitly.
+    vdw_intra_eligible: int = 0
+    vdw_intra_built: int = 0
     distance: DistanceArrays | None = None
     rmsd: RmsdArrays | None = None
     # centroid angle/dihedral restraints between atom GROUPS (distinct from the conformer

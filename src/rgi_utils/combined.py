@@ -250,8 +250,19 @@ class CombinedRestraints:
             avc = self.spec.active_vdw_config
             sv = self.spec.vdw  # static intra + inter-ligand pairs (energy layer)
             vdw_bits = []
+            elig = int(getattr(self.spec, "vdw_intra_eligible", 0))
             if sv is not None:
                 vdw_bits.append(f"{int(sv.mask.sum())}static")
+            if elig:
+                # `static` is the intramolecular rows CONCATENATED with the inter-ligand
+                # ones, so `static/elig` would divide two different populations. Report the
+                # intramolecular census separately: built/eligible BEFORE the
+                # reference-conformer `dmax` cull. built << eligible means most pairs carry
+                # no restraint AND no finalize energy, so a clash between them is silent —
+                # which is exactly why this is printed even when built is 0.
+                vdw_bits.append(
+                    f"{int(getattr(self.spec, 'vdw_intra_built', 0))}intra/{elig}nb"
+                )
             if vc is not None:
                 vdw_bits.append(
                     f"{len(vc.ligand_local)}lig/{len(vc.background_global)}bg"
@@ -634,20 +645,42 @@ class CombinedRestraints:
             # setup spec means SATISFIED (cross-check the setup `custom=N` count).
             custom_bd = self._custom_breakdown(coords)
             total += sum(custom_bd.values())
-            # The dynamic fixed-background VdW (spec.vdw_config) is applied only inside
-            # the torch optimizer and is absent from the static per-term breakdown
-            # above (energy_breakdown reads only spec.vdw). Add it directly (it is
-            # >= 0 by construction) — NOT as (optimizer.energy - static total), which
-            # would mix the float64 static breakdown with the float32 optimizer energy
-            # and leave the static terms' rounding error in the result (even negative).
-            if (
-                (self._backend or self._infer_backend(coords)) == "torch"
-                and getattr(self.spec, "vdw_config", None) is not None
-                and self._optimizer is not None
-            ):
+            # The dynamic VdW halves — fixed background (spec.vdw_config) and active-active
+            # polymer (spec.active_vdw_config) — are applied only inside the optimizers and
+            # are absent from the static per-term breakdown above (energy_breakdown reads
+            # only spec.vdw). Add them directly (they are >= 0 by construction) — NOT as
+            # (optimizer.energy - static total), which would mix the float64 static
+            # breakdown with the float32 optimizer energy and leave the static terms'
+            # rounding error in the result (even negative).
+            #
+            # BOTH backends: the fixed-background term was ported to jnp long ago (see
+            # _build_optimizer), so gating this on torch made AF3 print vdw=0.00000 for a
+            # term that ran every step — a number that cannot distinguish "no clash" from
+            # "never measured", which is exactly the trap the per-term counts exist to
+            # avoid. jax has no optimizer object (only a pure minimizer closure), so its
+            # stats go through the module-level function instead.
+            _be = self._backend or self._infer_backend(coords)
+            _has_dyn_vdw = (
+                getattr(self.spec, "vdw_config", None) is not None
+                or getattr(self.spec, "active_vdw_config", None) is not None
+            )
+            dyn_vdw = 0.0
+            if _has_dyn_vdw and _be == "torch":
+                # Build the optimizer if finalize ran before any minimize (diagnostic-only
+                # call). Without this torch silently reported 0.0 while jax — which needs no
+                # optimizer object — reported the true residual: a backend asymmetry in
+                # exactly the number used to decide whether VdW is working. Go through
+                # _ensure_backend, not _build_optimizer: the latter reads self._backend,
+                # which is still None on this path.
+                if self._optimizer is None:
+                    self._ensure_backend(_be)
                 dyn_vdw = float(self._optimizer.dynamic_vdw_energy(coords))
-                bd["vdw"] += dyn_vdw
-                total += dyn_vdw
+            elif _has_dyn_vdw and _be == "jax":
+                from rgi_utils.optim.jax_optim import dynamic_vdw_energy
+
+                dyn_vdw = float(dynamic_vdw_energy(self.spec, coords))
+            bd["vdw"] += dyn_vdw
+            total += dyn_vdw
             msg = (
                 f"[rgi_utils] finalize (step {istep}): "
                 f"bond={bd['bond']:.5f} angle={bd['angle']:.5f} "

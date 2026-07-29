@@ -732,6 +732,158 @@ def test_jax_vdw_pushes_ligand_off_fixed_protein():
     assert np.allclose(np.asarray(coords[0, n]), bg_before, atol=1e-9)
 
 
+def test_torch_intramolecular_vdw_separates_clashing_pair():
+    """Static intramolecular VdW ALONE: a folded 1-4 pair inside one ligand is pushed
+    back out to the contact threshold.
+
+    The fixed-background and inter-ligand halves have had convergence tests since they
+    were written; this half only had spec-construction tests, so a regression that
+    stopped it reaching the CG objective would have been invisible on CPU CI.
+    """
+    torch = pytest.importorskip("torch")
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+
+    m = Chem.MolFromSmiles("CCCC")
+    m = Chem.AddHs(m)
+    AllChem.EmbedMolecule(m, randomSeed=1)
+    m = Chem.RemoveHs(m)  # heavy-only: the ONE non-bonded pair is C0-C3 (topo 3)
+    c = np.asarray(m.GetConformer().GetPositions())
+    n = m.GetNumAtoms()
+    lc = LigandConf(
+        mol=m, conf_coords=c, global_indices=np.arange(n), conformer_restraints=True
+    )
+    # vdw ONLY (no bond/angle block -> weight 0 -> not built), so the objective is the
+    # intramolecular term alone and the assertion cannot be met by bond relaxation.
+    # mode=intramolecular additionally keeps the fixed-background half out.
+    spec = build_spec(
+        [lc],
+        [],
+        {"vdw": {"weight": 1.0, "mode": "intramolecular"}},
+        conf_start_sigma=1e30,
+    )
+    assert spec.vdw is not None and len(spec.vdw.idx) == 1
+    assert spec.vdw_config is None
+    # every non-bonded pair survived the dmax cull here (anti-butane C0-C3 is ~3.9 A)
+    assert spec.vdw_intra_eligible == 1
+    r_min = float(spec.vdw.r_min[0])
+
+    coords_np = np.zeros((1, n, 3))
+    coords_np[0] = c
+    coords_np[0, 3, :] = c[0] + np.array([1.0, 0.0, 0.0])  # fold C3 onto C0
+    coords = torch.tensor(coords_np, dtype=torch.float64)
+
+    opt = TorchRestraintOptimizer(spec, max_iter=300)
+    d0 = float(torch.linalg.norm(coords[0, 0] - coords[0, 3]))
+    assert d0 < r_min
+    assert opt.energy(coords) > 0.0
+    opt.minimize(coords)
+    d1 = float(torch.linalg.norm(coords[0, 0] - coords[0, 3]))
+    # Assert the clash is FULLY resolved, not merely `d1 > d0`. The pair may land well
+    # beyond r_min: the one-sided penalty makes every `d >= r_min` a zero-energy,
+    # zero-gradient plateau, so with no bond/angle term in this spec there is nothing to
+    # stop the CG in the plateau once it gets there. (In a real run the other conformer
+    # terms and the network's own denoising are what hold contacts AT the threshold.)
+    assert d1 >= r_min, f"clash not resolved: {d0} -> {d1} (r_min={r_min})"
+    assert opt.energy(coords) == pytest.approx(0.0, abs=1e-12)
+
+
+def test_dynamic_vdw_energy_matches_across_backends():
+    """``finalize``'s vdw number must cover the OPTIMIZER-ONLY halves on BOTH backends.
+
+    ``energy_breakdown`` reads ``spec.vdw`` (the static intra + inter-ligand rows) only,
+    so the fixed background is invisible to it. While the jax side was missing, AF3
+    printed ``vdw=0.00000`` for a term that ran at every diffusion step — a number that
+    cannot distinguish "no clash" from "never measured", which is precisely the reading
+    error the per-term counts exist to prevent.
+    """
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.optim.jax_optim import dynamic_vdw_energy
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+
+    m = Chem.MolFromSmiles("CC")
+    m = Chem.AddHs(m)
+    AllChem.EmbedMolecule(m, randomSeed=1)
+    c = np.asarray(m.GetConformer().GetPositions())
+    n = m.GetNumAtoms()
+    lc = LigandConf(
+        mol=m, conf_coords=c, global_indices=np.arange(n), conformer_restraints=True
+    )
+    n_atom = n + 1
+    elements = np.zeros(n_atom, dtype=np.int64)
+    for i, atom in enumerate(m.GetAtoms()):
+        elements[i] = atom.GetAtomicNum()
+    elements[n] = 6  # heavy -> fixed VdW background
+
+    spec = build_spec(
+        [lc],
+        [],
+        {"vdw": {"weight": 1.0, "scale": 0.9}},
+        elements=elements,
+        conf_start_sigma=1e30,
+    )
+    assert spec.vdw_config is not None
+
+    coords_np = np.zeros((1, n_atom, 3))
+    coords_np[0, :n, :] = c
+    coords_np[0, n, :] = c[0] + np.array([0.5, 0.0, 0.0])  # severe clash
+
+    e_jax = dynamic_vdw_energy(spec, jnp.asarray(coords_np))
+    e_torch = TorchRestraintOptimizer(spec, max_iter=1).dynamic_vdw_energy(
+        torch.tensor(coords_np, dtype=torch.float64)
+    )
+    assert e_jax > 0.0, "jax must report the fixed-background half, not 0.0"
+    assert e_jax == pytest.approx(e_torch, rel=1e-9), f"{e_jax} vs {e_torch}"
+
+
+def test_dynamic_vdw_energy_includes_polymer_half():
+    """The active-active polymer half must reach ``finalize``'s vdw number too.
+
+    It was omitted on BOTH backends, so a polymer-restrained run reported 0.00000 for a
+    term that ran every step. Built directly from an ``ActiveVdwConfig`` (rather than a
+    polymer adapter fixture) so the test isolates the REPORTING path: with no
+    ``vdw_config``, anything non-zero here can only come from the polymer half.
+    """
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.optim.jax_optim import dynamic_vdw_energy
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+    from rgi_utils.spec import ActiveVdwConfig, RestraintSpec
+
+    # 3 active atoms; 0 is polymer. 0-1 is a covalent exclusion, so the only scored
+    # contact is 0-2 at 0.5 A against a 0.75*(1.7+1.7) = 2.55 A floor.
+    coords_np = np.array([[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, 0.0, 0.0]]])
+    spec = RestraintSpec(
+        n_active=3,
+        active_sites=np.arange(3),
+        active_vdw_config=ActiveVdwConfig(
+            weight=1.0,
+            radii=np.full(3, 1.7),
+            polymer_mask=np.array([True, False, False]),
+            excluded_codes=np.array([1], dtype=np.int64),  # pair (0,1) -> 0*3+1
+            scale=0.75,
+            dmax=5.0,
+            max_neighbors=2,
+        ),
+        conf_start_sigma=1e30,
+    )
+    assert spec.vdw is None and spec.vdw_config is None
+
+    expected = (0.5 - 0.75 * 3.4) ** 2
+    e_torch = TorchRestraintOptimizer(spec, max_iter=1).dynamic_vdw_energy(
+        torch.tensor(coords_np, dtype=torch.float64)
+    )
+    e_jax = dynamic_vdw_energy(spec, jnp.asarray(coords_np))
+    assert e_torch == pytest.approx(expected), f"torch {e_torch} != {expected}"
+    assert e_jax == pytest.approx(expected), f"jax {e_jax} != {expected}"
+
+
 def _heavy_ethane():
     """Heavy-only ethane (2 carbons, no intramolecular VdW pair) for isolating the
     inter-ligand term."""

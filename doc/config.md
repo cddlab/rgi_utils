@@ -773,8 +773,8 @@ quantity $x$:
 E = w \sum_{(i,j)} \min\big(0,\; d_{ij} - \text{scale}\cdot(r_i + r_j)\big)^2,
 ```
 
-over non-bonded atom pairs closer than `dmax`, where $d_{ij}$ is the pair distance and $r_i, r_j$
-are their VdW radii.
+where $d_{ij}$ is the pair distance and $r_i, r_j$ are their VdW radii. Which pairs enter the sum
+differs per category — see `dmax` below; it is **not** a uniform "closer than `dmax`" rule.
 
 ### Van der Waals modes
 
@@ -790,12 +790,28 @@ are their VdW radii.
 
 So to make two restrained ligands avoid each other, just keep the default `mode: both` (or set
 `intermolecular`) and give both a `vdw` block — no extra key. `scale` = fraction of the summed VdW
-radii used as the contact threshold; `dmax` = pairs farther than this are ignored (the inter-ligand
-pairs ignore `dmax` — the two ligands' frames are independent, so all cross pairs are listed and the
-clamp zeroes non-contacts). Like every conformer term, `vdw` is built only when a `vdw:` block is
-present (then `weight` defaults to 1.0); omit the block to leave it off. **The old
+radii used as the contact threshold. Like every conformer term, `vdw` is built only when a `vdw:`
+block is present (then `weight` defaults to 1.0); omit the block to leave it off. **The old
 `mode: ligand_protein` was removed** (it was only the fixed-background half) — it now raises a
 migration error pointing to `intermolecular`.
+
+#### `dmax` applies to only two of the four pair sets
+
+| pair set | `dmax` | notes |
+|---|---|---|
+| intramolecular (within one ligand) | **yes — on the REFERENCE conformer** | see the warning below |
+| inter-ligand (restrained A vs restrained B) | no | the two ligands' frames are independent, so a build-time distance is meaningless; all cross pairs are listed and the clamp zeroes non-contacts |
+| fixed background (ligand vs protein/DNA/RNA/non-restrained ligand) | no | all-pairs every step; the clamp makes this identical in value *and* gradient to a cutoff at any `dmax` above the contact radius |
+| polymer active-active | yes — on the CURRENT coordinates | rebuilt per diffusion step (see *Polymer neighbor lists*) |
+
+> **The intramolecular pair list is static and culled on the ideal conformer.** A pair farther apart
+> than `dmax` (default 5 Å) in the ligand's **reference** conformer never gets a row, however the
+> prediction subsequently folds — and a clash on a pair with no row is restrained by nothing *and*
+> contributes nothing to `finalize vdw=`, so a `0.00000` there does not mean "no clash". The cull is
+> severe for flexible ligands: on the ct209 benchmark ~30 % of eligible non-bonded pairs are kept on
+> average (11–82 % across ligands; ATP keeps 109 of 380, rigid glucose keeps 32 of 37). The setup log
+> therefore prints `Nintra/Mnb` — rows built out of eligible non-bonded pairs — so the ratio is
+> visible without re-deriving it. Raise `dmax` if your ligand folds substantially.
 
 ### Polymer neighbor lists
 

@@ -74,6 +74,45 @@ def test_plane_conformer_key_migrations():
     assert cfg.conformer_config == {"plane": {"weight": 1.0}}
 
 
+def test_unknown_vdw_subblock_key_raises():
+    """Keys INSIDE `vdw:` are read with bare `.get(key, default)` in featurizer, so a
+    typo is not merely dropped — it inverts the user's intent. `vdw: {weigth: 0}` meant
+    to DISABLE the term would silently run it at weight 1.0, and `{Mode: ...}` would
+    silently run the default `both`. Same valid-looking-but-wrong run the outer
+    whitelists exist to prevent, one nesting level deeper."""
+    for bad in ({"weigth": 0}, {"Mode": "intermolecular"}, {"cutoff": 3.0}):
+        with pytest.raises(ValueError, match=r"conformer_restraints_config\.vdw"):
+            RestraintsConfig.from_dict(
+                {"conformer_restraints_config": {"vdw": dict(bad)}}
+            )
+    # every real key parses, and a bare `vdw:` (None) must not trip the check
+    cfg = RestraintsConfig.from_dict(
+        {
+            "conformer_restraints_config": {
+                "vdw": {
+                    "weight": 1,
+                    "mode": "both",
+                    "scale": 0.75,
+                    "dmax": 5.0,
+                    "max_neighbors": 32,
+                }
+            }
+        }
+    )
+    assert cfg.conformer_config["vdw"]["mode"] == "both"
+    # a bare `vdw:` (YAML None) is the documented "on at weight 1.0" form
+    assert RestraintsConfig.from_dict(
+        {"conformer_restraints_config": {"vdw": None}}
+    ).conformer_config == {"vdw": None}
+    # ...but any other non-mapping would pass the key check vacuously and only fail later
+    # inside featurizer's `.get()`, so it must be rejected here
+    for bad_type in (1, [], "both"):
+        with pytest.raises(ValueError, match="vdw must be a mapping"):
+            RestraintsConfig.from_dict(
+                {"conformer_restraints_config": {"vdw": bad_type}}
+            )
+
+
 def test_empty_config_is_vanilla():
     """None / {} is a valid no-restraint run (must NOT trip the whitelist)."""
     assert RestraintsConfig.from_dict(None).distance_data == []

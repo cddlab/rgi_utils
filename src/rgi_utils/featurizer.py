@@ -526,7 +526,7 @@ def _build_intramolecular_vdw(
     ligand_confs: list[LigandConf],
     conformer_config: dict,
     g2l: dict,
-) -> VdwArrays | None:
+) -> tuple[VdwArrays | None, int]:
     """Static intramolecular VdW repulsion within each ligand (all backends).
 
     Penalizes non-bonded atom pairs within one ligand — topological distance > 2
@@ -536,17 +536,28 @@ def _build_intramolecular_vdw(
     works in the jax/numpy backends via ``VdwArrays``. Enabled when
     ``conformer_config['vdw']['mode']`` is ``'intramolecular'`` or ``'both'`` (the
     DEFAULT); ``'intermolecular'`` leaves it off.
+
+    Returns ``(arrays, n_eligible)`` where ``n_eligible`` counts every non-bonded
+    (topological distance > 2) pair BEFORE the ``dmax`` filter. That ratio is the number
+    to watch: the filter measures distances on the REFERENCE conformer and the list is
+    then static for the whole run, so a pair that is far apart in the ideal conformer but
+    folds into contact in the prediction never gets a row — and a clash with no row is
+    invisible to ``finalize vdw=`` as well as to the restraint. The cull is severe for
+    flexible ligands (measured on the ct209 benchmark: ~30% of eligible pairs kept on
+    average, 11%-82% across ligands; ATP keeps 109 of 380), so the count is reported at
+    setup rather than left to be inferred from a 0.00000 energy.
     """
     vcfg = (conformer_config or {}).get("vdw", {}) or {}
     weight = _conf_weight(conformer_config, "vdw")
     if weight <= 0.0 or not ligand_confs:
-        return None
+        return None, 0
     from rdkit.Chem import rdmolops
 
     scale = float(vcfg.get("scale", 0.75))
     dmax = float(vcfg.get("dmax", 5.0))
     idx_pairs: list[list[int]] = []
     r_min_list: list[float] = []
+    n_eligible = 0
     for lc in ligand_confs:
         mol = lc.mol
         crds = np.asarray(lc.conf_coords, dtype=np.float64)
@@ -560,18 +571,22 @@ def _build_intramolecular_vdw(
             for j in range(i + 1, n):
                 if topo[i, j] <= 2:  # skip 1-2 (bond) and 1-3 (angle) pairs
                     continue
+                n_eligible += 1
                 if _bond_length(crds, i, j) >= dmax:
                     continue
                 idx_pairs.append([g2l[int(gidx[i])], g2l[int(gidx[j])]])
                 r_min_list.append(scale * (radii[i] + radii[j]))
     if not idx_pairs:
-        return None
+        return None, n_eligible
     n_pair = len(idx_pairs)
-    return VdwArrays(
-        idx=np.array(idx_pairs, dtype=np.int64),
-        r_min=np.array(r_min_list, dtype=np.float64),
-        weight=np.full(n_pair, weight),
-        mask=np.ones(n_pair),
+    return (
+        VdwArrays(
+            idx=np.array(idx_pairs, dtype=np.int64),
+            r_min=np.array(r_min_list, dtype=np.float64),
+            weight=np.full(n_pair, weight),
+            mask=np.ones(n_pair),
+        ),
+        n_eligible,
     )
 
 
@@ -876,10 +891,10 @@ def build_spec(
             "conformer vdw mode must be 'intramolecular', 'intermolecular', or "
             f"'both', got {vdw_mode!r}"
         )
-    vdw_intra = (
+    vdw_intra, vdw_intra_eligible = (
         _build_intramolecular_vdw(ligand_confs, cfg, g2l)
         if vdw_mode in ("intramolecular", "both")
-        else None
+        else (None, 0)
     )
     vdw_inter = (
         _build_interligand_vdw(ligand_confs, cfg, g2l)
@@ -1204,6 +1219,8 @@ def build_spec(
         vdw=vdw_arrays,
         vdw_config=vdw_config,
         active_vdw_config=active_vdw_config,
+        vdw_intra_eligible=vdw_intra_eligible,
+        vdw_intra_built=0 if vdw_intra is None else len(vdw_intra.idx),
         conf_start_sigma=conf_start_sigma,
         conf_stop_sigma=conf_stop_sigma,
         conf_start_step=conf_start_step,
@@ -1211,8 +1228,15 @@ def build_spec(
         custom=custom_specs,
     )
     vdw_parts = []
-    if vdw_intra is not None:
-        vdw_parts.append(f"{len(vdw_intra.idx)}intra")
+    if vdw_intra is not None or vdw_intra_eligible:
+        # "Nintra/Mnb" -- N rows BUILT out of M eligible non-bonded pairs. The gap is the
+        # reference-conformer `dmax` cull; a clash on a culled pair is restrained by
+        # nothing and reported by nothing, so N alone is not a sufficient signal.
+        # Printed whenever eligible pairs EXISTED, not only when rows survived: the
+        # `0intra/Mnb` case (dmax culled every pair) is the single most important thing
+        # this field can say, and keying on `vdw_intra is not None` would hide it.
+        n_intra = 0 if vdw_intra is None else len(vdw_intra.idx)
+        vdw_parts.append(f"{n_intra}intra/{vdw_intra_eligible}nb")
     if vdw_inter is not None:
         vdw_parts.append(f"{len(vdw_inter.idx)}inter")
     if vdw_config is not None:

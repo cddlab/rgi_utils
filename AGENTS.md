@@ -293,7 +293,74 @@ plane/cistrans/vdw). `mode` picks **two categories** (default `both` = both):
 - **Intramolecular** (`mode: intramolecular`): clashes WITHIN one ligand. Static
   non-bonded ligand-internal pairs (topo distance > 2, within `dmax`), built in
   `featurizer.py` (`_build_intramolecular_vdw`) and carried in `spec.vdw` (`VdwArrays`).
-  Scored in the **energy layer → all backends**.
+  Scored in the **energy layer → all backends**. **The `dmax` cull is measured on the
+  REFERENCE conformer and the list is then static for the whole run** — a pair >`dmax`
+  apart in the ideal conformer never gets a row however the prediction folds, and a clash
+  on a row-less pair is restrained by nothing AND absent from `finalize vdw=`, so
+  `vdw=0.00000` there does NOT mean "no clash". Measured on ct209: **~30% of eligible
+  non-bonded pairs are kept** on average (11–82% across ligands; ATP 109/380, rigid
+  glucose 32/37) — flexible ligands lose the most. The setup log therefore prints
+  `Nintra/Mnb` (rows built / eligible non-bonded pairs); watch that ratio, not `N` alone.
+  **ct209's `iclash_ok` REGRESSES when the conformer block is on — leading HYPOTHESIS, not
+  yet a proven cause.** Measured 2026-07-29 with `vdw_clash_decompose.py` (chai + esm arms,
+  ~205 systems each, ON and OFF, 3 ETKDG seeds; skipped 3/2 chai, 6/0 esm): PoseBusters-
+  flagged intramolecular pairs go 1→5 (chai) and 2→8 (esm). **The chai delta is NOT evidence
+  of a restraint effect** — chai ran unseeded in that campaign, so its ON and OFF arms are two
+  independent draws rather than the same trajectory with and without the restraint (measured:
+  18.0 Å median CA-RMSD between campaigns on byte-identical OFF inputs). The esm delta stands
+  (esm passes `seed=0`). The 13 ON pairs split into:
+  * **12/13 HAVE a restraint row**, so the restraint saw them. 8 of those satisfy the RGI
+    bound and 4 violate it. The 8 land just above the floor: `scale*(r_i+r_j)` does not
+    depend on topological distance, and these pairs are **`topo=4`, i.e. 1-5** (RDKit's
+    `GetDistanceMatrix` counts BONDS: 1-4 is `topo=3`). **Compare against PoseBusters'
+    ACTUAL threshold, which is `0.7 × DG_lower_bound`, not the bound itself** — for these
+    pairs that is **2.66–3.19 Å** against a floor of `0.75*(1.7+1.55) = 2.44` Å, i.e. the
+    floor is **0.22–0.75 Å** too permissive, NOT the ~1.4 Å an earlier revision of this
+    note claimed. The uniform `scale` that would clear them is **0.82–0.98** (the two
+    OFF-arm pairs would need 1.02, i.e. beyond the full radius sum — those are
+    PoseBusters-strict cases no sane VdW floor covers). `d-floor` clusters at +0.03…+0.21
+    for most of them, versus all 3 OFF-arm pairs ≥ +0.71 Å clear. Read this carefully: the
+    term is one-sided, so at `d ≥ r_min` its gradient is exactly ZERO — the pairs are NOT
+    held there at the final step. The clustering is a hypothesis about the trajectory, not
+    something the endpoint proves.
+  * **1/13 has no row at all** (`dmax` cull, esm, `topo` 9). Under a single ETKDG seed this
+    read 3/13; two of those three flipped when the seed changed, so the multi-seed run
+    counts a pair as row-less only when EVERY seed culls it. The cull is therefore a much
+    smaller contributor than a single embed suggests — and 3 further pairs were seed-
+    unstable, so 1 is a lower bound.
+  **SETTLED by a per-term local-CG ablation at the ON endpoint** (`vdw_ablation.py`, all 13
+  ON pairs + 3 OFF controls, conditions S0 no-op / S1 vdw-only / S3 all-but-vdw / S4 all @
+  100 and @1000 iters / S4 with the flagged row's `r_min` replaced by PoseBusters' actual
+  threshold). Three findings, each refuting a candidate:
+  * **NOT an iteration shortfall.** S4@100 and S4@1000 agree to ≤0.13 Å on every pair and
+    final `max|∇E|` is ~1e-3. `max_iter: 100` was never the limit.
+  * **NOT the other terms compressing the pair.** S3 (bond+angle+chiral+cistrans+plane, no
+    vdw) does not pull these pairs together — it relaxes most of them OUTWARD (e.g.
+    2.467→2.534, 3.143→3.711). S3 and S4 land within 0.01 Å of each other, i.e. vdw
+    contributes essentially nothing at these geometries.
+  * **The floor is simply in the wrong place.** For 10 of 13 ON pairs the vdw-only run (S1)
+    leaves the pair untouched with E and gradient exactly 0 — the term is fully satisfied.
+    Replacing that row's `r_min` with `0.7 × DG_lower_bound` moves 7 pairs from clashing to
+    the threshold (e.g. 2.436→2.659 against a 2.660 threshold). The restraint converges
+    correctly; it just stops 0.2–0.8 Å too early.
+  **Consequence for any fix.** A corrected floor lands the pair EXACTLY on the threshold —
+  the penalty is one-sided, so CG stops the moment it clears — and PoseBusters uses a
+  strict `<`, so `d == threshold` still counts as a clash (the same saturation as the
+  ligand–protein side). A usable floor needs a margin above `0.7 × DG_lower_bound`, not
+  equality; and adopting the metric's own bound verbatim optimises the scorer, so validate
+  on a holdout. The pairs with no row at all (`dmax` cull) are untouched by any floor change —
+  that is the separate, smaller issue. **Row-less count: 2 under the ablation's single ETKDG
+  seed, 1 under the 3-seed decomposition** (which only calls a pair row-less when EVERY seed
+  culls it). Both numbers are correct for their own convention; the 3-seed one is the
+  conservative figure to quote.
+  **What these fractions do NOT license.** The 13 ON pairs were selected from a campaign in
+  which **chai ran unseeded** — 5 of them are chai's, and re-running chai produces a different
+  structure (18.0 Å median CA-RMSD on byte-identical OFF inputs), so the SET of flagged pairs is
+  not reproducible. The per-pair mechanism above is a statement about each endpoint's local
+  landscape and survives; the prevalence ratios (12/13, 10/13, 7 fixed by the corrected floor)
+  do NOT, and must be re-derived from the seeded campaign before being quoted as benchmark
+  statistics. Seeds were pinned for chai and boltz on 2026-07-29 (`sb_chai.sh`, `sb_boltz.sh`,
+  `sb_boltz_steer.sh`); af3/protenix/of3/esm were already seeded.
 - **Intermolecular** (`mode: intermolecular`): clashes between that ligand and **every
   other molecule** — protein, DNA/RNA, and any other ligand (restrained or not). One
   category, **two implementation halves** depending on whether the other molecule is fixed
@@ -321,10 +388,30 @@ beyond contact — same maths as boltz's radius search). `mode` defaults to **`b
 migration hint pointing to `intermolecular` (which additionally repels other restrained
 ligands), mirroring the rejected `backend:` key. An unknown mode raises. VdW is **off unless
 a `vdw:` block is present** (then `weight` defaults to 1.0, like every conformer term — see
-`featurizer._conf_weight`); omit the block to leave it off. The `built spec: ...
-vdw=Iintra+Jinter+Llig/Mbg` log breaks the counts down: `intra` = intramolecular, `inter`
-+ `lig/bg` together = intermolecular (`inter` = restrained-ligand pairs, `lig/bg` =
-fixed background) — confirm `Jinter>0` when you expect ligand-ligand repulsion.
+`featurizer._conf_weight`); omit the block to leave it off. Unknown keys INSIDE the `vdw:`
+block raise (`config.py`), so `vdw: {weigth: 0}` can no longer silently run at weight 1.0.
+
+**`dmax` is honoured by only two of the four pair sets**: intramolecular (on the REFERENCE
+conformer) and polymer active-active (on the CURRENT coordinates, rebuilt per step). The
+inter-ligand and fixed-background halves are all-pairs — the clamp already zeroes
+everything beyond contact, so a `dmax` above the contact radius is equivalent, but a
+`dmax` BELOW it narrows only the first two. `VdwConfig.dmax` is therefore a stored-but-
+unread field (kept for uniformity); do not read it as a cutoff.
+
+The `built spec: ... vdw=Iintra/Enb+Jinter+Llig/Mbg+Ppoly/Qnn` log breaks the counts down:
+`intra` = intramolecular (with `/Enb` = eligible non-bonded pairs before the `dmax` cull),
+`inter` + `lig/bg` together = intermolecular (`inter` = restrained-ligand pairs, `lig/bg` =
+fixed background), `poly/nn` = the polymer active-active list — confirm `Jinter>0` when you
+expect ligand-ligand repulsion. `combined.py`'s user-facing `setup:` line prints the same
+information but with intra+inter already CONCATENATED as `Nstatic/Enb` (they share one
+`VdwArrays`), so use the `built spec:` line when you need them apart.
+
+**`finalize`'s `vdw=` covers all four halves on BOTH backends** — the static rows come from
+`energy_breakdown`, and the two optimizer-only halves are added by
+`TorchRestraintOptimizer.dynamic_vdw_energy` / `jax_optim.dynamic_vdw_energy`. (It used to
+add the fixed background on torch only and never the polymer half, so AF3 reported
+`vdw=0.00000` for terms that ran every step.) The one thing it still cannot see is a clash
+on a pair the `dmax` cull removed — there is no row to score.
 
 ### Custom restraints (the extension point — `rgi_utils/custom/`)
 

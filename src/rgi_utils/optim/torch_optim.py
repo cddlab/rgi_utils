@@ -644,20 +644,55 @@ class TorchRestraintOptimizer:
             return float(e)
 
     def dynamic_vdw_energy(self, coords) -> float:
-        """The dynamic fixed-background VdW term alone (>= 0); for finalize stats.
+        """The dynamic (optimizer-only) VdW terms alone (>= 0); for finalize stats.
+
+        Covers BOTH optimizer-only halves: the fixed background (``spec.vdw_config``) and
+        the active-active polymer neighbour list (``spec.active_vdw_config``). Neither is
+        in the static per-term breakdown (``energy_breakdown`` reads only ``spec.vdw``), so
+        omitting one would print ``vdw=0.00000`` for a term that ran every diffusion step
+        -- "0 because unmeasured", not "0 because satisfied".
 
         Computed directly (not as energy - static_total) so the reported value is
-        exact and non-negative, with no float32/float64 cancellation error.
+        exact and non-negative, with no float32/float64 cancellation error. Ungated: this
+        is a residual report at the final coords, not a step of the objective.
         """
         if not self.spec.is_active():
             return 0.0
-        # _ensure builds self._vdw (via _setup_vdw); call it BEFORE the _vdw guard so a
-        # fresh optimizer reports the true VdW (matches energy()) instead of 0.0, which
+        # _ensure builds self._vdw/_active_vdw (via _setup_vdw); call it BEFORE the guards
+        # so a fresh optimizer reports the true VdW (matches energy()) instead of 0.0, which
         # would read as a false "VdW satisfied" in the verbose finalize log.
         self._ensure(coords.device, coords.dtype)
-        if self._vdw is None:
+        if self._vdw is None and self._active_vdw is None:
             return 0.0
         with torch.no_grad():
             active = coords[..., self._active_idx, :]
-            bg_pos = coords[..., self._vdw["bg_global"], :]
-            return float(self._vdw_energy(active, bg_pos))
+            total = 0.0
+            if self._vdw is not None:
+                bg_pos = coords[..., self._vdw["bg_global"], :]
+                total += float(self._vdw_energy(active, bg_pos))
+            if self._active_vdw is not None:
+                from rgi_utils.optim._torch_cg_gpu import (
+                    active_vdw_pair_energy,
+                    build_active_vdw_pairs,
+                )
+
+                av = self._active_vdw
+                neighbours, pair_factor = build_active_vdw_pairs(
+                    active,
+                    av["radii"],
+                    av["polymer_mask"],
+                    av["excluded_codes"],
+                    av["dmax"],
+                    av["max_neighbors"],
+                )
+                total += float(
+                    active_vdw_pair_energy(
+                        active,
+                        neighbours,
+                        pair_factor,
+                        av["radii"],
+                        av["scale"],
+                        av["weight"],
+                    )
+                )
+            return total

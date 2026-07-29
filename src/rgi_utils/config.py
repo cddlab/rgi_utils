@@ -163,6 +163,33 @@ class RestraintsConfig:
                 f"{sorted(unknown_conformer)}. Known keys: "
                 f"{sorted(known_conformer_keys)}"
             )
+        # Same reasoning one level deeper: every key inside `vdw:` is read with a bare
+        # `.get(key, default)` in featurizer.py, so `vdw: {weigth: 0}` intended to DISABLE
+        # the term silently runs it at weight 1.0, and `vdw: {Mode: intermolecular}`
+        # silently runs the default `both`. That is the same valid-looking-but-wrong run
+        # this whitelist exists to prevent, so it must raise here too.
+        if "vdw" in conformer_config:
+            vdw_config = conformer_config["vdw"]
+            # A bare `vdw:` (YAML None) is the documented "on at weight 1.0" form. Anything
+            # else non-mapping (`vdw: 1`, `vdw: []`) would pass a key check vacuously and
+            # then blow up inside featurizer's `.get()` — reject it here, where the message
+            # can name the offending value.
+            if vdw_config is not None and not isinstance(vdw_config, dict):
+                raise ValueError(
+                    "conformer_restraints_config.vdw must be a mapping (or omitted/null "
+                    f"for the defaults), got {type(vdw_config).__name__}: {vdw_config!r}"
+                )
+            known_vdw_keys = {"weight", "mode", "scale", "dmax", "max_neighbors"}
+            unknown_vdw = {
+                key
+                for key in (vdw_config or {})
+                if not str(key).startswith("_") and key not in known_vdw_keys
+            }
+            if unknown_vdw:
+                raise ValueError(
+                    "conformer_restraints_config.vdw: unknown key(s) "
+                    f"{sorted(unknown_vdw)}. Known keys: {sorted(known_vdw_keys)}"
+                )
         # Validate the monomer-library spec HERE so a typo'd path/option raises while
         # parsing the config, not several minutes later when the first structure builds
         # its polymer geometry. Parsing is stdlib-only (gemmi loads lazily).
