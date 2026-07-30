@@ -92,9 +92,10 @@ geometry-perceived fallback (no SMILES) being all-single so `cistrans=0`.
 `_extract_conformer` does NOT measure targets off the tool's cached conformer directly — it first
 **force-field relaxes** a copy (`_mol_build.ff_relax`, fold-preserving local minimisation), because
 each tool's cache carries its own idiosyncrasies (boltz v2 Kekulé-localizes aromatic rings
-~1.34/1.48). The force field is `conformer_restraints_config.relax_force_field`: `uff` (default) /
-`mmff94` / `mmff94s` / `none`. Two non-obvious consequences: (1) the relax runs only when the mol
-has an aromatic or DOUBLE bond — the proxy for "real bond orders", since relaxing an all-single
+~1.34/1.48). The force field is `conformer_restraints_config.relax_force_field.ligand`:
+`uff` (default) / `mmff94` / `mmff94s` / `none`. Two non-obvious consequences: (1) the relax
+runs only when the mol has an aromatic or DOUBLE bond — the proxy for "real bond orders", since
+relaxing an all-single
 chai/esmfold2 mol would collapse aromatic rings to ~1.5 Å — and an explicit `mmff*` **raises**
 where `uff` silently skips; (2) plane-group membership is confirmed on the **relaxed** coords, so
 changing the force field can change the `plane=` COUNT, while bonds/angles/chirals/cistrans are
@@ -181,9 +182,10 @@ chiral restraint silently vanishes.
 
 `ff_relax(mol, coords, force_field="uff")` — the fold-preserving relax whose output the conformer
 TARGETS are measured off (`featurizer._extract_conformer`); `parse_relax_force_field` validates
-`relax_force_field` and is called from `config.py` at PARSE time, because the conformer whitelist
-only checks the key and a bad VALUE would otherwise slip through on any run where no ligand opts
-in. Two RDKit traps it encodes: (1) **MMFF typing kekulizes the mol it is handed** (aromatic flags
+the `relax_force_field: {ligand: ...}` mapping and is called from `config.py` at PARSE time, because
+the conformer whitelist only checks the outer key and a bad nested key or VALUE would otherwise
+slip through on any run where no ligand opts in. Two RDKit traps it encodes: (1) **MMFF typing
+kekulizes the mol it is handed** (aromatic flags
 cleared, bonds → SINGLE/DOUBLE — reproducible on caffeine), which would corrupt the downstream
 `cistrans`/`plane` perception, so every RDKit call runs on the local `Chem.Mol(mol)` copy, never on
 `mol`; (2) **MMFF has no metal parameters** (`MMFFHasAllMoleculeParams` False for Fe where UFF is

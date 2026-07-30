@@ -121,7 +121,8 @@ def _extract_conformer(
 
     ``relax`` is the STRUCTURAL switch (the polymer call site passes False: monomer-library
     residues are never force-field relaxed); ``force_field`` is the user's
-    ``conformer_restraints_config.relax_force_field`` choice, applied to LIGANDS only.
+    ``conformer_restraints_config.relax_force_field.ligand`` choice, applied to LIGANDS
+    only.
     """
     bonds = []  # (g0, g1, r0)
     angles = []  # (g0, g1, g2, th0)
@@ -155,18 +156,20 @@ def _extract_conformer(
         )
         if do_relax and not has_orders and ff != "uff":
             # An explicitly requested MMFF that would silently not run at all. Raise rather
-            # than skip -- "I set relax_force_field: mmff94s and got un-relaxed targets" is
-            # exactly the invisible outcome the explicit setting is meant to rule out.
+            # than skip -- "I set relax_force_field.ligand: mmff94s and got
+            # un-relaxed targets" is exactly the invisible outcome the explicit setting
+            # is meant to rule out.
             _at = f"global atom index {int(gidx[0])}, " if len(gidx) else ""
             raise ValueError(
-                f"conformer_restraints_config.relax_force_field={force_field!r}: ligand "
-                f"#{li} ({_at}{mol.GetNumAtoms()} atoms) has "
+                "conformer_restraints_config.relax_force_field."
+                f"ligand={force_field!r}: ligand #{li} "
+                f"({_at}{mol.GetNumAtoms()} atoms) has "
                 "no aromatic or double bond, so the relax is skipped and the force field "
                 "would never run. Either the tool supplied no real bond orders (chai / "
                 "esmfold2 without SMILES -- relaxing an all-single mol would collapse "
                 "aromatic rings to ~1.5 A), or the ligand is genuinely saturated. Supply "
-                "the ligand as SMILES/CCD, or set relax_force_field: uff (same skip, no "
-                "error) or none."
+                "the ligand as SMILES/CCD, or set relax_force_field: {ligand: uff} "
+                "(same skip, no error) or {ligand: none}."
             )
         if do_relax and has_orders:
             _relaxed = ff_relax(mol, crds, ff)

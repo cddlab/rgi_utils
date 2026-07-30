@@ -695,7 +695,9 @@ Behaviour worth knowing:
 ### `relax_force_field` — which force field idealises the ligand reference (not a term)
 
 Like `monomer_library`, this builds nothing of its own — it changes where **ligand** targets come
-from. Where `monomer_library` covers polymers, this covers ligands.
+from. Where `monomer_library` covers polymers, this covers ligands. The mapping currently accepts
+only `ligand`; polymers use the CCP4 monomer library and have no force-field option here. The old
+scalar form (`relax_force_field: uff`) is rejected with a migration hint.
 
 A predictor's cached ligand conformer is not refinement geometry either: boltz v2's `~/.boltz/mols`
 cache Kekulé-localizes aromatic rings (~1.34/1.48 Å alternating), and other tools' `ref_pos` carries
@@ -705,7 +707,8 @@ and the bond/angle/chiral/cistrans/plane targets are measured off the relaxed co
 
 ```yaml
 conformer_restraints_config:
-  relax_force_field: mmff94s     # uff (default) | mmff94 | mmff94s | none
+  relax_force_field:
+    ligand: mmff94s     # uff (default) | mmff94 | mmff94s | none
   bond: {}
   angle: {}
 ```

@@ -148,8 +148,9 @@ class RestraintsConfig:
             # NOT a term: points the polymer bond/angle/plane/link TARGETS at a CCP4
             # monomer library instead of the predictor's reference conformer.
             "monomer_library",
-            # NOT a term: which force field idealises the LIGAND reference conformer
-            # before the bond/angle/chiral/cistrans/plane targets are measured off it.
+            # NOT a term: its `ligand` key selects which force field idealises the LIGAND
+            # reference conformer before the bond/angle/chiral/cistrans/plane targets are
+            # measured off it.
             "relax_force_field",
         }
         unknown_conformer = {

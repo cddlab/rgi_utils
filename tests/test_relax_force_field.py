@@ -1,4 +1,4 @@
-"""``conformer_restraints_config.relax_force_field``: UFF / MMFF reference relaxation.
+"""``conformer_restraints_config.relax_force_field.ligand``: reference relaxation.
 
 The conformer restraint measures its bond/angle/chiral/cistrans/plane targets off a
 force-field-relaxed copy of the tool's cached conformer, not off the cached conformer
@@ -48,19 +48,45 @@ def _bond_snapshot(mol):
     ],
 )
 def test_parse_relax_force_field_values(value, expected):
-    assert parse_relax_force_field({"relax_force_field": value}) == expected
+    assert parse_relax_force_field({"relax_force_field": {"ligand": value}}) == expected
 
 
 def test_parse_relax_force_field_defaults_to_uff():
-    # omitted and an explicit YAML null both mean "not set" -> the long-standing default.
+    # Omitted ligand and an explicit YAML null mean "not set" -> the existing default.
     assert parse_relax_force_field({}) == "uff"
     assert parse_relax_force_field(None) == "uff"
-    assert parse_relax_force_field({"relax_force_field": None}) == "uff"
+    assert parse_relax_force_field({"relax_force_field": {}}) == "uff"
+    assert parse_relax_force_field({"relax_force_field": {"ligand": None}}) == "uff"
+
+
+@pytest.mark.parametrize("spec", ["uff", None, 1, []])
+def test_parse_relax_force_field_rejects_non_mapping(spec):
+    with pytest.raises(ValueError, match="must be a mapping"):
+        parse_relax_force_field({"relax_force_field": spec})
+
+
+def test_parse_relax_force_field_scalar_error_has_migration_hint():
+    with pytest.raises(ValueError) as exc_info:
+        RestraintsConfig.from_dict(
+            {
+                "conformer_restraints_config": {
+                    "bond": {},
+                    "relax_force_field": "mmff94s",
+                }
+            }
+        )
+    assert "scalar form is no longer supported" in str(exc_info.value)
+    assert "relax_force_field: {ligand: 'mmff94s'}" in str(exc_info.value)
+
+
+def test_parse_relax_force_field_rejects_unknown_key():
+    with pytest.raises(ValueError, match=r"unknown key\(s\) \['monomer'\]"):
+        parse_relax_force_field({"relax_force_field": {"monomer": "uff"}})
 
 
 def test_parse_relax_force_field_rejects_typo():
     with pytest.raises(ValueError, match="unknown value 'mmf94'"):
-        parse_relax_force_field({"relax_force_field": "mmf94"})
+        parse_relax_force_field({"relax_force_field": {"ligand": "mmf94"}})
 
 
 def test_config_validates_value_not_just_key():
@@ -72,13 +98,23 @@ def test_config_validates_value_not_just_key():
     """
     with pytest.raises(ValueError, match="relax_force_field"):
         RestraintsConfig.from_dict(
-            {"conformer_restraints_config": {"bond": {}, "relax_force_field": "mmf94"}}
+            {
+                "conformer_restraints_config": {
+                    "bond": {},
+                    "relax_force_field": {"ligand": "mmf94"},
+                }
+            }
         )
-    # the valid values parse
+    # The valid mapping is preserved in the parsed config.
     cfg = RestraintsConfig.from_dict(
-        {"conformer_restraints_config": {"bond": {}, "relax_force_field": "mmff94s"}}
+        {
+            "conformer_restraints_config": {
+                "bond": {},
+                "relax_force_field": {"ligand": "mmff94s"},
+            }
+        }
     )
-    assert cfg.conformer_config["relax_force_field"] == "mmff94s"
+    assert cfg.conformer_config["relax_force_field"] == {"ligand": "mmff94s"}
 
 
 # ----------------------------------------------------------------------- the switch
@@ -109,7 +145,7 @@ def test_mmff94s_differs_from_mmff94_on_amide():
 
 
 def test_none_keeps_the_cached_conformer_exactly():
-    """relax_force_field: none -> targets come straight off the tool's conformer."""
+    """ligand: none -> targets come straight off the tool's conformer."""
     mol, crds = _embed("Nc1ncnc2n(cnc12)[C@@H]1O[C@H](CO)[C@@H](O)[C@H]1O")
     lc = LigandConf(
         mol=mol,
@@ -212,7 +248,7 @@ def test_uff_and_none_skip_silently():
 def test_build_spec_routes_the_config_value():
     lc = _all_single_ligand()
     with pytest.raises(ValueError, match="relax_force_field"):
-        build_spec([lc], [], {"bond": {}, "relax_force_field": "mmff94"})
+        build_spec([lc], [], {"bond": {}, "relax_force_field": {"ligand": "mmff94"}})
     # the same ligand builds fine under the default
     spec = build_spec([lc], [], {"bond": {}})
     assert spec.bond is not None
@@ -265,7 +301,10 @@ def test_relax_error_escapes_combined_setup():
             adapter,
             1,
             config={
-                "conformer_restraints_config": {**conf, "relax_force_field": "mmff94"}
+                "conformer_restraints_config": {
+                    **conf,
+                    "relax_force_field": {"ligand": "mmff94"},
+                }
             },
         )
 
