@@ -169,7 +169,8 @@ class ActiveVdwConfig:
 
     A fixed-width nearest-neighbour list is rebuilt from the current coordinates once
     per diffusion step and held fixed during CG.  This keeps each energy evaluation
-    O(N*K), while 1-2/1-3 covalent pairs are removed through ``excluded_codes``.
+    O(N*K), while 1-2/1-3/1-4 covalent pairs are removed through
+    ``excluded_codes``.
     """
 
     weight: float
@@ -192,10 +193,11 @@ def check_active_vdw_int32_safe(n_active: int) -> None:
     (and the sorted ``excluded_codes``) as int32 because JAX runs with x64 disabled by
     default, so forcing int64 there is silently downcast back. Once ``n_active**2``
     exceeds the int32 range the codes wrap negative, which breaks the sortedness
-    ``jnp.searchsorted`` relies on and silently corrupts the covalent 1-2/1-3 exclusion.
-    Fail loudly instead. The torch optimizer uses int64 and is unaffected, so this bound
-    only limits the restrained-polymer size under JAX/AF3. (Conservative: it trips at
-    ``n_active**2 > 2**31 - 1``, a hair below the exact ``n**2 - n - 1`` maximum code.)
+    ``jnp.searchsorted`` relies on and silently corrupts the covalent 1-2/1-3/1-4
+    exclusion. Fail loudly instead. The torch optimizer uses int64 and is unaffected,
+    so this bound only limits the restrained-polymer size under JAX/AF3. (Conservative:
+    it trips at ``n_active**2 > 2**31 - 1``, a hair below the exact
+    ``n**2 - n - 1`` maximum code.)
     """
     if n_active * n_active > _ACTIVE_VDW_INT32_MAX:
         raise ValueError(

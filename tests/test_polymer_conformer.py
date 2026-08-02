@@ -152,6 +152,10 @@ def test_protein_builds_peptide_link_plane_and_vdw_exclusions():
     # Peptide C-N and the CA-C-N 1-3 pair must never receive VdW repulsion.
     assert 2 * spec.n_active + 5 in set(av.excluded_codes.tolist())
     assert 1 * spec.n_active + 5 in set(av.excluded_codes.tolist())
+    # The cross-link CA-C-N-CA 1-4 path is also excluded, while the N-CA-C-N-CA
+    # 1-5 path remains eligible for VdW repulsion.
+    assert 1 * spec.n_active + 6 in set(av.excluded_codes.tolist())
+    assert 0 * spec.n_active + 6 not in set(av.excluded_codes.tolist())
 
 
 def test_polymer_residue_local_aromatic_ring_builds_plane():

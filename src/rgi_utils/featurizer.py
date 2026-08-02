@@ -562,8 +562,30 @@ def _build_active_vdw_config(
         if i != j:
             excluded.add(i * n_active + j)
 
+    adjacency: dict[int, set[int]] = {}
     for g0, g1, _target in bonds:
-        exclude(g0, g1)
+        g0, g1 = int(g0), int(g1)
+        adjacency.setdefault(g0, set()).add(g1)
+        adjacency.setdefault(g1, set()).add(g0)
+
+    # Exclude every pair separated by at most three covalent bonds (1-2/1-3/1-4),
+    # including paths that cross peptide or phosphodiester links.
+    for start in adjacency:
+        seen = {start}
+        frontier = {start}
+        for _distance in range(3):
+            frontier = {
+                neighbour
+                for atom in frontier
+                for neighbour in adjacency.get(atom, ())
+                if neighbour not in seen
+            }
+            for end in frontier:
+                exclude(start, end)
+            seen.update(frontier)
+
+    # Keep explicit angle exclusions even if an incomplete external geometry source
+    # supplied an angle without both constituent bonds.
     for g0, g1, g2, _target in angles:
         exclude(g0, g1)
         exclude(g1, g2)
@@ -591,9 +613,9 @@ def _build_intramolecular_vdw(
 ) -> VdwArrays | None:
     """Static intramolecular VdW repulsion within each ligand (all backends).
 
-    Penalizes non-bonded atom pairs within one ligand — topological distance > 2
-    (so 1-2 bonds and 1-3 angles are skipped) and reference-conformer distance
-    < ``dmax`` — with a lower bound ``scale * (r_i + r_j)``. Unlike the dynamic
+    Penalizes non-bonded atom pairs within one ligand — topological distance > 3
+    (so 1-2 bonds, 1-3 angles, and 1-4 dihedrals are skipped) and reference-conformer
+    distance < ``dmax`` — with a lower bound ``scale * (r_i + r_j)``. Unlike the
     dynamic fixed-background ``VdwConfig``, the pair list is fixed, so this term also
     works in the jax/numpy backends via ``VdwArrays``. Enabled when
     ``conformer_config['vdw']['mode']`` is ``'intramolecular'`` or ``'both'`` (the
@@ -620,7 +642,7 @@ def _build_intramolecular_vdw(
         radii = [_vdw_radius(a.GetAtomicNum()) for a in mol.GetAtoms()]
         for i in range(n):
             for j in range(i + 1, n):
-                if topo[i, j] <= 2:  # skip 1-2 (bond) and 1-3 (angle) pairs
+                if topo[i, j] <= 3:  # skip 1-2, 1-3, and 1-4 pairs
                     continue
                 if _bond_length(crds, i, j) >= dmax:
                     continue

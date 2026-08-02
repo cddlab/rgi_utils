@@ -162,10 +162,10 @@ def test_vdw_config_fixed_background():
 def test_intramolecular_vdw_static_arrays():
     """vdw mode=intramolecular builds a static spec.vdw (works in jax/numpy too),
     not the dynamic fixed-background vdw_config."""
-    m = Chem.MolFromSmiles("CCCC")  # butane: only C1-C4 has topological dist > 2
+    m = Chem.MolFromSmiles("CCCCC")  # pentane: only C1-C5 has topological dist > 3
     m = Chem.AddHs(m)
     AllChem.EmbedMolecule(m, randomSeed=1)
-    m = Chem.RemoveHs(m)  # 4 heavy atoms
+    m = Chem.RemoveHs(m)  # 5 heavy atoms
     n = m.GetNumAtoms()
     c = np.asarray(m.GetConformer().GetPositions())
     lc = LigandConf(
@@ -178,8 +178,9 @@ def test_intramolecular_vdw_static_arrays():
     # static VdwArrays, not the dynamic fixed-background config
     assert spec.vdw is not None
     assert spec.vdw_config is None
-    # butane: the only non-bonded heavy pair is C1-C4 (topological distance 3)
+    # Pentane's 1-4 pairs are excluded; only C1-C5 (topological distance 4) remains.
     assert spec.vdw.idx.shape == (1, 2)
+    np.testing.assert_array_equal(spec.vdw.idx[0], [0, 4])
     assert float(spec.vdw.weight[0]) == 1.0
     assert int(spec.vdw.idx.max()) < spec.n_active  # valid local indices
 
@@ -192,7 +193,7 @@ def test_intramolecular_vdw_static_arrays():
 def test_vdw_both_modes_compose():
     """vdw mode='both' builds the static intramolecular spec.vdw AND the dynamic
     fixed-background vdw_config together (separate spec fields, scored independently)."""
-    m = Chem.MolFromSmiles("CCCC")  # butane: one non-bonded heavy pair (C1-C4)
+    m = Chem.MolFromSmiles("CCCCC")  # pentane: one retained pair (C1-C5)
     m = Chem.AddHs(m)
     AllChem.EmbedMolecule(m, randomSeed=1)
     m = Chem.RemoveHs(m)
@@ -215,7 +216,7 @@ def test_vdw_both_modes_compose():
     )
     # BOTH flavours present and independent
     assert spec.vdw is not None  # static intramolecular (all backends)
-    assert spec.vdw.idx.shape == (1, 2)  # butane C1-C4
+    assert spec.vdw.idx.shape == (1, 2)  # pentane C1-C5
     assert spec.vdw_config is not None  # dynamic fixed-background (torch)
     assert {int(x) for x in spec.vdw_config.background_global} == {n, n + 1}
 
@@ -340,9 +341,9 @@ def test_interligand_vdw_default_both():
 
 def test_interligand_vdw_composes_with_intra():
     """mode='both' CONCATENATES intra (per ligand) + inter (cross) pairs into one
-    spec.vdw: two butanes give 2 intra (one C1-C4 each) + n*n inter."""
-    lcA, n = _lig_heavy_at("CCCC", base=0, seed=1)  # butane: 1 intra pair (C1-C4)
-    lcB, _ = _lig_heavy_at("CCCC", base=100, seed=2)
+    spec.vdw: two pentanes give 2 intra (one C1-C5 each) + n*n inter."""
+    lcA, n = _lig_heavy_at("CCCCC", base=0, seed=1)  # pentane: 1 intra pair (C1-C5)
+    lcB, _ = _lig_heavy_at("CCCCC", base=100, seed=2)
     spec = build_spec([lcA, lcB], [], {"vdw": {"weight": 1.0, "dmax": 10.0}})
     assert spec.vdw.idx.shape == (2 + n * n, 2)
 
@@ -363,13 +364,13 @@ def test_interligand_vdw_only_in_both_mode():
 
 def test_vdw_mode_intermolecular_excludes_intra():
     """mode='intermolecular' = fixed background + inter-ligand, but NO intramolecular: two
-    butanes (each would add 1 intra C1-C4 pair under 'both') give ONLY the n*n inter cross
+    pentanes (each would add 1 intra C1-C5 pair under 'both') give ONLY the n*n inter cross
     pairs in spec.vdw, plus a fixed-background vdw_config from a non-active heavy atom."""
-    lcA, n = _lig_heavy_at("CCCC", base=0, seed=1)
-    lcB, _ = _lig_heavy_at("CCCC", base=4, seed=2)
-    elements = np.zeros(9, dtype=np.int64)
-    elements[:8] = 6  # the two butanes (in active_sites)
-    elements[8] = 7  # a background heavy atom (NOT in active_sites)
+    lcA, n = _lig_heavy_at("CCCCC", base=0, seed=1)
+    lcB, _ = _lig_heavy_at("CCCCC", base=5, seed=2)
+    elements = np.zeros(11, dtype=np.int64)
+    elements[:10] = 6  # the two pentanes (in active_sites)
+    elements[10] = 7  # a background heavy atom (NOT in active_sites)
     spec = build_spec(
         [lcA, lcB],
         [],
@@ -379,7 +380,7 @@ def test_vdw_mode_intermolecular_excludes_intra():
     assert spec.vdw is not None
     assert spec.vdw.idx.shape == (n * n, 2)  # inter only, NO intra (would be 2 + n*n)
     assert spec.vdw_config is not None  # fixed-background half present
-    assert {int(x) for x in spec.vdw_config.background_global} == {8}
+    assert {int(x) for x in spec.vdw_config.background_global} == {10}
 
 
 def test_vdw_mode_ligand_protein_removed():

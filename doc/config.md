@@ -816,7 +816,8 @@ are their VdW radii.
 
 `vdw.mode` picks **two categories** (default `"both"` = both):
 
-- `"intramolecular"` — clashes **within** a ligand (static ligand-internal pairs, all backends).
+- `"intramolecular"` — clashes **within** a ligand (static pairs more than three covalent bonds
+  apart, all backends).
 - `"intermolecular"` — clashes between the ligand and **every other molecule**: the **fixed
   background** (every non-padding atom not being optimized — protein, DNA/RNA, any **non-restrained**
   ligand; dynamic, torch/jax) **and** other **restrained** ligands (≥2 ligands that each set
@@ -837,10 +838,11 @@ migration error pointing to `intermolecular`.
 
 For selected polymers, a fixed-width active-active neighbor list is rebuilt once from the current
 coordinates at each diffusion step and held fixed during CG. Energy evaluation is therefore
-`O(N * max_neighbors)` rather than all-pairs on every CG iteration. Covalent 1-2 and 1-3 pairs,
-including peptide and phosphodiester links, are excluded. Polymer atoms are also checked against
-non-active fixed-background atoms on torch and JAX. Omit `start_sigma` (the default `+inf`) to keep
-VdW active from the first denoising step; setting `start_sigma` delays all conformer terms together.
+`O(N * max_neighbors)` rather than all-pairs on every CG iteration. Covalent 1-2, 1-3, and 1-4
+pairs, including paths across peptide and phosphodiester links, are excluded. Polymer atoms are also
+checked against non-active fixed-background atoms on torch and JAX. Omit `start_sigma` (the default
+`+inf`) to keep VdW active from the first denoising step; setting `start_sigma` delays all conformer
+terms together.
 
 `max_neighbors` (default 32) caps each atom's neighbor list: a buried atom with more than
 `max_neighbors` partners within `dmax` keeps only its nearest `max_neighbors`. The nearest are the
