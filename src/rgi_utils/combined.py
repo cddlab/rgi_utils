@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 
 from rgi_utils.config import RestraintsConfig
+from rgi_utils.energy._terms import PER_ENTRY_KEYS, iter_spec_terms
 from rgi_utils.featurizer import _conf_weight, build_spec
 from rgi_utils.polymer import build_polymer_geometry
 
@@ -145,18 +146,8 @@ class CombinedRestraints:
         if config is not None:
             self.set_config(config)
         cfg = self.config
-        for dr in cfg.distance_data:
-            dr.resolve_sites(adapter)
-        for rr in cfg.rmsd_data:
-            rr.resolve_sites(adapter)
-        for ar in cfg.angle_data:
-            ar.resolve_sites(adapter)
-        for dr in cfg.dihedral_data:
-            dr.resolve_sites(adapter)
-        for ir in cfg.improper_data:
-            ir.resolve_sites(adapter)
-        for pr in cfg.plane_data:
-            pr.resolve_sites(adapter)
+        for restraint in cfg.iter_resolvable_data():
+            restraint.resolve_sites(adapter)
         # merge code-added custom restraints into a LOCAL list, then resolve every custom
         # entry's selections. Do NOT mutate cfg.custom_data in place: a config-less
         # re-setup() of a reused instance reuses the same config object, so an in-place
@@ -239,18 +230,17 @@ class CombinedRestraints:
             return
         self._warn_never_active()
         if cfg.verbose:
+            term_counts = {
+                term.key: int(array.mask.sum())
+                for term, array in iter_spec_terms(self.spec)
+            }
             d = self.spec.distance
-            n_dist = 0 if d is None else int(d.mask.sum())
-            rm = self.spec.rmsd
-            n_rmsd = 0 if rm is None else int(rm.mask.sum())
-            ga = self.spec.group_angle
-            n_grp_angle = 0 if ga is None else int(ga.mask.sum())
-            gd = self.spec.group_dihedral
-            n_grp_dihedral = 0 if gd is None else int(gd.mask.sum())
-            gi = self.spec.group_improper
-            n_grp_improper = 0 if gi is None else int(gi.mask.sum())
-            gp = self.spec.group_plane
-            n_grp_plane = 0 if gp is None else int(gp.mask.sum())
+            n_dist = term_counts.get("distance", 0)
+            n_rmsd = term_counts.get("rmsd", 0)
+            n_grp_angle = term_counts.get("group_angle", 0)
+            n_grp_dihedral = term_counts.get("group_dihedral", 0)
+            n_grp_improper = term_counts.get("group_improper", 0)
+            n_grp_plane = term_counts.get("group_plane", 0)
             vc = self.spec.vdw_config
             avc = self.spec.active_vdw_config
             sv = self.spec.vdw  # static intra + inter-ligand pairs (energy layer)
@@ -278,16 +268,11 @@ class CombinedRestraints:
                     else f"{float(ss.min()):g}..{float(ss.max()):g}"
                 )
 
-            # per-term conformer counts so a silently-empty sub-restraint (e.g. plane=0 when
-            # the caller expected polymer aromatic/peptide planes) is visible at setup, not
-            # only inferable from a 0.00000 finalize energy (which also reads 0 when built).
-            def _nrow(arr):
-                return int(arr.mask.sum()) if arr is not None else 0
-
-            conf_counts = (
-                f"bond={_nrow(self.spec.bond)} angle={_nrow(self.spec.angle)} "
-                f"chiral={_nrow(self.spec.chiral)} plane={_nrow(self.spec.plane)} "
-                f"cistrans={_nrow(self.spec.cistrans)}"
+            # Keep conformer sub-term counts visible without maintaining another
+            # restraint list outside the shared registry.
+            conf_counts = " ".join(
+                f"{key}={term_counts.get(key, 0)}"
+                for key in ("bond", "angle", "chiral", "plane", "cistrans")
             )
             # ref-anchored built-in distance/angle/dihedral live in spec.custom (kind ref_geom);
             # break them out so they are visibly built (they do not show in the distances= count).
@@ -371,85 +356,35 @@ class CombinedRestraints:
                 "(conf_start_step <= step <= conf_stop_step) is EMPTY and the conformer "
                 "terms NEVER activate — set conf_stop_step above conf_start_step"
             )
-        d = spec.distance
-        if d is not None and d.mask.sum() > 0:
-            active = np.asarray(d.mask) > 0
-            ss = np.asarray(d.start_sigma)[active]
-            if ss.size and float(ss.min()) < 0:
+        labels = {
+            "distance": "distance",
+            "rmsd": "RMSD",
+            "group_angle": "group angle",
+            "group_dihedral": "group dihedral",
+            "group_improper": "group improper",
+            "group_plane": "group plane",
+        }
+        for term, array in iter_spec_terms(spec, PER_ENTRY_KEYS):
+            label = labels[term.key]
+            active = np.asarray(array.mask) > 0
+            start_sigma = np.asarray(array.start_sigma)[active]
+            if start_sigma.size and float(start_sigma.min()) < 0:
                 msgs.append(
-                    "one or more distance restraints have start_sigma < 0, so they "
+                    f"one or more {label} restraints have start_sigma < 0, so they "
                     "will NEVER activate (gate is sigma <= start_sigma)"
                 )
-            stop = np.asarray(d.stop_sigma)[active]
-            if stop.size and np.any(stop > ss):
+            stop_sigma = np.asarray(array.stop_sigma)[active]
+            if stop_sigma.size and np.any(stop_sigma > start_sigma):
                 errors.append(
-                    "one or more distance restraints have stop_sigma > start_sigma, so "
-                    "their active window is EMPTY and they NEVER activate"
+                    f"one or more {label} restraints have stop_sigma > start_sigma, "
+                    "so their active window is EMPTY and they NEVER activate"
                 )
-            sstep = np.asarray(d.start_step)[active]
-            estep = np.asarray(d.stop_step)[active]
-            if estep.size and np.any(estep < sstep):
+            start_step = np.asarray(array.start_step)[active]
+            stop_step = np.asarray(array.stop_step)[active]
+            if stop_step.size and np.any(stop_step < start_step):
                 errors.append(
-                    "one or more distance restraints have stop_step < start_step, so "
+                    f"one or more {label} restraints have stop_step < start_step, so "
                     "their active step window is EMPTY and they NEVER activate"
-                )
-        rm = spec.rmsd
-        if rm is not None and rm.mask.sum() > 0:
-            active = np.asarray(rm.mask) > 0
-            ss = np.asarray(rm.start_sigma)[active]
-            if ss.size and float(ss.min()) < 0:
-                msgs.append(
-                    "one or more RMSD restraints have start_sigma < 0, so they "
-                    "will NEVER activate (gate is sigma <= start_sigma)"
-                )
-            # stop_sigma > start_sigma inverts the window stop_sigma<=sigma<=start_sigma
-            # to EMPTY -> the restraint is silently a no-op (counts/finalize still read
-            # non-zero), so raise on the impossible window rather than warn.
-            stop = np.asarray(rm.stop_sigma)[active]
-            if stop.size and np.any(stop > ss):
-                errors.append(
-                    "one or more RMSD restraints have stop_sigma > start_sigma, so the "
-                    "active window (stop_sigma <= sigma <= start_sigma) is EMPTY and "
-                    "they NEVER activate — set stop_sigma below start_sigma"
-                )
-            sstep = np.asarray(rm.start_step)[active]
-            estep = np.asarray(rm.stop_step)[active]
-            if estep.size and np.any(estep < sstep):
-                errors.append(
-                    "one or more RMSD restraints have stop_step < start_step, so their "
-                    "active step window is EMPTY and they NEVER activate"
-                )
-        # group-centroid angle/dihedral: same per-restraint gate as distance/rmsd, so the
-        # same silent-no-op traps apply (start_sigma < 0 never fires; stop > start is an
-        # empty window). Counts + ungated finalize energy would both read non-zero.
-        for label, arr in (
-            ("angle", spec.group_angle),
-            ("dihedral", spec.group_dihedral),
-            ("improper", spec.group_improper),
-            ("plane", spec.group_plane),
-        ):
-            if arr is None or arr.mask.sum() <= 0:
-                continue
-            active = np.asarray(arr.mask) > 0
-            ss = np.asarray(arr.start_sigma)[active]
-            if ss.size and float(ss.min()) < 0:
-                msgs.append(
-                    f"one or more group {label} restraints have start_sigma < 0, so "
-                    f"they will NEVER activate (gate is sigma <= start_sigma)"
-                )
-            stop = np.asarray(arr.stop_sigma)[active]
-            if stop.size and np.any(stop > ss):
-                errors.append(
-                    f"one or more group {label} restraints have stop_sigma > "
-                    f"start_sigma, so their active window is EMPTY and they NEVER "
-                    f"activate — set stop_sigma below start_sigma"
-                )
-            sstep = np.asarray(arr.start_step)[active]
-            estep = np.asarray(arr.stop_step)[active]
-            if estep.size and np.any(estep < sstep):
-                errors.append(
-                    f"one or more group {label} restraints have stop_step < start_step, "
-                    f"so their active step window is EMPTY and they NEVER activate"
                 )
         # custom restraints: each CustomSpec is its own restraint (no mask array), so the
         # same two traps apply as the built-in families above — start_sigma < 0 never fires

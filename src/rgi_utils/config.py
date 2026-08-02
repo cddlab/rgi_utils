@@ -25,6 +25,43 @@ from rgi_utils.ref_geom_restr_data import RefGeomData, is_ref_anchored
 from rgi_utils.rmsd_restr_data import RmsdData
 
 
+@dataclass(frozen=True)
+class _EntryRoute:
+    section: str
+    destination: str
+    data_type: type
+    ref_geom: str | None = None
+    ref_group_counter: object | None = None
+
+
+_ENTRY_ROUTES = (
+    _EntryRoute(
+        "distance_restraints_config", "distance_data", DistanceData, "distance"
+    ),
+    _EntryRoute("rmsd_restraints_config", "rmsd_data", RmsdData),
+    _EntryRoute("angle_restraints_config", "angle_data", AngleRestraintData, "angle"),
+    _EntryRoute(
+        "dihedral_restraints_config",
+        "dihedral_data",
+        DihedralRestraintData,
+        "dihedral",
+    ),
+    _EntryRoute(
+        "improper_restraints_config",
+        "improper_data",
+        ImproperRestraintData,
+        "improper",
+    ),
+    _EntryRoute(
+        "plane_restraints_config",
+        "plane_data",
+        PlaneRestraintData,
+        "plane",
+        count_plane_groups,
+    ),
+)
+
+
 @dataclass
 class RestraintsConfig:
     verbose: bool = False
@@ -61,6 +98,11 @@ class RestraintsConfig:
         default_factory=list
     )  # nucleic-acid base-pair restraints (expand to distance + plane)
 
+    def iter_resolvable_data(self):
+        """Yield every ordinary built-in entry that resolves against an adapter."""
+        for route in _ENTRY_ROUTES:
+            yield from getattr(self, route.destination)
+
     @classmethod
     def from_dict(cls, config: dict | None) -> "RestraintsConfig":
         config = config or {}
@@ -78,15 +120,9 @@ class RestraintsConfig:
             "method",
             "max_iter",
             "conformer_restraints_config",
-            "distance_restraints_config",
-            "rmsd_restraints_config",
-            "angle_restraints_config",
-            "dihedral_restraints_config",
-            "improper_restraints_config",
-            "plane_restraints_config",
             "custom_restraints_config",
             "base_pair_restraints_config",
-        }
+        } | {route.section for route in _ENTRY_ROUTES}
         _unknown_top = set(config) - _KNOWN_TOP_LEVEL - {"start_sigma"}
         if _unknown_top:
             # 'backend' was removed as a config key: it is now inferred from how the
@@ -226,82 +262,26 @@ class RestraintsConfig:
             conf_stop_step=conf_stop_step,
             conformer_config=conformer_config,
         )
-        # A distance/angle/dihedral entry with an entry-local refs map or an
-        # ``atom_selectionN: "refN and ..."`` group is routed through RefGeomData. Each
-        # named reference is fitted independently; ordinary entries keep the array path.
-        for entry in config.get("distance_restraints_config", []) or []:
-            if is_ref_anchored(entry):
-                rg = RefGeomData("distance")
-                rg.set_config(entry)
-                cfg.custom_data.append(rg)
-                continue
-            dd = DistanceData()
-            dd.set_config(entry)
-            # start_sigma is optional; omitted -> active at every step (+inf gate).
-            if dd.start_sigma is None:
-                dd.start_sigma = _ALWAYS_ON
-            cfg.distance_data.append(dd)
-        for entry in config.get("rmsd_restraints_config", []) or []:
-            rr = RmsdData()
-            rr.set_config(entry)
-            # start_sigma is optional; omitted -> active at every step (+inf gate).
-            if rr.start_sigma is None:
-                rr.start_sigma = _ALWAYS_ON
-            cfg.rmsd_data.append(rr)
-        # group-centroid angle (3 groups) / dihedral (4 groups) restraints — same
-        # per-entry start_sigma convention as distance/rmsd (None -> +inf = every step).
-        for entry in config.get("angle_restraints_config", []) or []:
-            if is_ref_anchored(entry):
-                rg = RefGeomData("angle")
-                rg.set_config(entry)
-                cfg.custom_data.append(rg)
-                continue
-            ad = AngleRestraintData()
-            ad.set_config(entry)
-            if ad.start_sigma is None:
-                ad.start_sigma = _ALWAYS_ON
-            cfg.angle_data.append(ad)
-        for entry in config.get("dihedral_restraints_config", []) or []:
-            if is_ref_anchored(entry):
-                rg = RefGeomData("dihedral")
-                rg.set_config(entry)
-                cfg.custom_data.append(rg)
-                continue
-            dd = DihedralRestraintData()
-            dd.set_config(entry)
-            if dd.start_sigma is None:
-                dd.start_sigma = _ALWAYS_ON
-            cfg.dihedral_data.append(dd)
-        for entry in config.get("improper_restraints_config", []) or []:
-            if is_ref_anchored(entry):
-                rg = RefGeomData("improper")
-                rg.set_config(entry)
-                cfg.custom_data.append(rg)
-                continue
-            improper = ImproperRestraintData()
-            improper.set_config(entry)
-            if improper.start_sigma is None:
-                improper.start_sigma = _ALWAYS_ON
-            cfg.improper_data.append(improper)
-        # standalone best-fit-plane restraints (1..4 selection groups pooled into ONE
-        # plane). A reference-anchored entry measures something different (the prediction
-        # atoms' RMS distance to a plane fitted from the external structure), so it is
-        # routed to RefGeomData like the distance/angle/dihedral ref forms. The group count
-        # varies per entry, so it is counted HERE and passed in: that keeps
-        # RefGeomData.n_groups a plain int (it is read in five places, all of which rely on
-        # "a missing atom_selectionN raises").
-        for entry in config.get("plane_restraints_config", []) or []:
-            if is_ref_anchored(entry):
-                n_groups = count_plane_groups(entry)
-                rg = RefGeomData("plane", n_groups=n_groups)
-                rg.set_config(entry)
-                cfg.custom_data.append(rg)
-                continue
-            pd = PlaneRestraintData()
-            pd.set_config(entry)
-            if pd.start_sigma is None:
-                pd.start_sigma = _ALWAYS_ON
-            cfg.plane_data.append(pd)
+        # Parse every ordinary built-in entry through one routing table. Reference-
+        # anchored entries keep their distinct closure path but share the same dispatch.
+        for route in _ENTRY_ROUTES:
+            destination = getattr(cfg, route.destination)
+            for entry in config.get(route.section, []) or []:
+                if route.ref_geom is not None and is_ref_anchored(entry):
+                    n_groups = (
+                        route.ref_group_counter(entry)
+                        if route.ref_group_counter is not None
+                        else None
+                    )
+                    reference = RefGeomData(route.ref_geom, n_groups=n_groups)
+                    reference.set_config(entry)
+                    cfg.custom_data.append(reference)
+                    continue
+                restraint = route.data_type()
+                restraint.set_config(entry)
+                if restraint.start_sigma is None:
+                    restraint.start_sigma = _ALWAYS_ON
+                destination.append(restraint)
         # custom restraints (expression DSL / code fn). start_sigma None -> +inf (active
         # every step) is applied when the CustomSpec is built (CustomData.build_spec).
         for entry in config.get("custom_restraints_config", []) or []:

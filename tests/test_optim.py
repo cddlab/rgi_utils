@@ -616,7 +616,7 @@ def test_gated_prepared_folds_group_gate_cpu():
 def test_gated_prepared_folds_group_plane_gate_cpu():
     """Same regression for the standalone plane term: it is a per-entry (PER_ENTRY_KEYS)
     term, so the GPU pre-gate must fold its window into the mask. Registering it in
-    ``_TERMS`` with gate ``"group"`` is what makes this work — a ``"conf"`` gate would
+    ``TERM_DEFS`` with an entry gate is what makes this work — a ``"conf"`` gate would
     silently tie it to the conformer window instead."""
     torch = pytest.importorskip("torch")
     from rgi_utils.energy._terms import CONF_KEYS, PER_ENTRY_KEYS

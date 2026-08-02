@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from rgi_utils import _geometry as G
 from rgi_utils.custom import vocabulary as V
 from rgi_utils.custom.backends import get_ops
 from rgi_utils.custom.context import RestraintContext
@@ -45,16 +46,18 @@ def _plane_value(ops, pred_blocks, ref_blocks):
 
 
 def _ref_geom_penalty(ops, geom, type_code, value, target1, target2):
-    if type_code == 0:
-        deviation = value - target1
-        if geom in ("dihedral", "improper"):
-            deviation = V.wrap(ops, deviation)
-        return deviation * deviation
-    if type_code == 1:
-        return V.flat_bottomed(ops, value, target1, target2)
-    if type_code == 2:
-        return V.flat_bottomed1(ops, value, target1)
-    return V.flat_bottomed2(ops, value, target2)
+    harmonic = value - target1
+    if geom in ("dihedral", "improper"):
+        harmonic = G.wrap(ops, harmonic)
+    deviation = G.restraint_delta(
+        ops,
+        value,
+        target1,
+        target2,
+        type_code,
+        harmonic_deviation=harmonic,
+    )
+    return deviation * deviation
 
 
 def build_closure(spec, ops):

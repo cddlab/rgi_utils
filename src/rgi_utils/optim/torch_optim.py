@@ -190,7 +190,7 @@ class TorchRestraintOptimizer:
         monotonically so each gate flips at most once -> a few states -> a few compiles,
         then reuse. distance is now a per-entry term (in ``PER_ENTRY_KEYS``), so it is gated
         and folded here like rmsd/group. The conformer-gated key set (``CONF_KEYS``) and the
-        per-entry-gated set (``PER_ENTRY_KEYS``) both come from ``_TERMS``, so adding a term
+        per-entry-gated set (``PER_ENTRY_KEYS``) both come from ``TERM_DEFS``, so adding a term
         can't silently leave it ungated on the compiled path."""
         p = self._prepared
         # conformer gate: active sigma window (conf_stop <= sigma <= conf_start) AND
@@ -332,7 +332,7 @@ class TorchRestraintOptimizer:
         mi = max_iter if max_iter is not None else self.max_iter
         # VdW is a conformer restraint -> gated by the conformer window: active sigma
         # window (conf_stop <= sigma <= conf_start) AND active step window
-        # (conf_start_step <= step <= conf_stop_step). NOT a _TERMS entry, so this gate is
+        # (conf_start_step <= step <= conf_stop_step). NOT a TERM_DEFS entry, so this gate is
         # maintained by hand (the PER_ENTRY/CONF_KEYS safety net does not cover it).
         vdw_active = (
             self._vdw is not None
@@ -369,17 +369,7 @@ class TorchRestraintOptimizer:
             )
         )
 
-        has_dist = self.spec.has_distance()
-        has_conf = self.spec.has_conformer()
-        has_rmsd = self.spec.has_rmsd()
-        # group-centroid angle/dihedral and the standalone best-fit plane are CG-solved like
-        # rmsd (not closed-form), so the solver branch must run when any is present.
-        has_group = (
-            self.spec.has_group_angle()
-            or self.spec.has_group_dihedral()
-            or self.spec.has_group_improper()
-            or self.spec.has_group_plane()
-        )
+        has_builtin = self.spec.has_conformer() or self.spec.has_per_entry()
         has_custom = self.spec.has_custom()
         prepared = self._prepared
 
@@ -399,7 +389,7 @@ class TorchRestraintOptimizer:
             # (total_energy sums every active term). Distance is an autodiff CG term too: its
             # energy rescales the centroid gradient (reduced-mass scale) so each group
             # translates rigidly with the minimal-displacement split — no closed-form shift.
-            if has_dist or has_conf or has_rmsd or has_group or has_custom:
+            if has_builtin or has_custom:
                 active = active.detach().clone()
                 active.requires_grad_(True)
                 bg_pos = None

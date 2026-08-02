@@ -190,5 +190,10 @@ class PlaneRestraintData:
             n_atoms,
         )
 
+    def iter_global_sites(self):
+        """Yield every resolved global coordinate index used by this restraint."""
+        for group in self.target_sites or ():
+            yield from group
+
     def is_valid(self) -> bool:
         return self.run_restr

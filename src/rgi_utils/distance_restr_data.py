@@ -174,5 +174,10 @@ class DistanceData:
             len(self.target_sites2),
         )
 
+    def iter_global_sites(self):
+        """Yield every resolved global coordinate index used by this restraint."""
+        yield from self.target_sites1 or ()
+        yield from self.target_sites2 or ()
+
     def is_valid(self) -> bool:
         return self.run_restr

@@ -147,224 +147,107 @@ def _parse_common(
     self.geom_type, self.target1, self.target2 = parse_geom_type(config, base, conv)
 
 
-class AngleRestraintData:
-    """Centroid angle restraint between three atom groups (vertex = group 2).
+class _GroupGeomRestraintData:
+    """Shared parser and resolver for centroid-based angular restraints."""
 
-    Restraint types mirror the distance restraint (``harmonic`` / ``flat-bottomed`` /
-    ``flat-bottomed1`` / ``flat-bottomed2``) on the angle value; ``target1``/``target2``
-    are stored in RADIANS (from the config's degrees). ``start_sigma`` defaults to None
-    here; ``RestraintsConfig.from_dict`` turns an omitted value into +inf.
-    """
-
-    atom_selection1: str
-    atom_selection2: str
-    atom_selection3: str
-    target1: float  # radians
-    target2: float  # radians
-    geom_type: str | None  # harmonic / flat-bottomed / flat-bottomed1 / flat-bottomed2
-    move_free: tuple  # per-group "free to move" bools (the rest are pinned)
-    weight: float
-    target_sites1: list
-    target_sites2: list
-    target_sites3: list
-    run_restr: bool
-    start_sigma: float
-    stop_sigma: float
-    start_step: float  # step-window lower bound (-inf = always); XOR the sigma window
-    stop_step: float  # step-window upper bound (+inf = always)
+    _n_groups: int
+    _geom_name: str
+    _target_base: str
+    _known_keys: set
+    _default_free: tuple
 
     def __init__(self):
-        self.atom_selection1 = None
-        self.atom_selection2 = None
-        self.atom_selection3 = None
+        for group in range(1, self._n_groups + 1):
+            setattr(self, f"atom_selection{group}", None)
+            setattr(self, f"target_sites{group}", None)
         self.target1 = None
         self.target2 = None
         self.geom_type = None
-        self.move_free = None  # set by set_config -> _parse_move (default all free)
+        self.move_free = None
         self.weight = 1.0
-        self.target_sites1 = None
-        self.target_sites2 = None
-        self.target_sites3 = None
         self.run_restr = None
-        self.start_sigma = None  # from_dict defaults None -> +inf (every step)
-        self.stop_sigma = -1.0  # never released (active down to sigma=0)
-        self.start_step = float(
-            "-inf"
-        )  # step-window (omitted -> always); XOR sigma win
-        self.stop_step = float("inf")
-
-    def set_config(self, config: dict):
-        warn_unknown_keys(
-            config, _KNOWN_ANGLE_KEYS, "angle_restraints_config entry", logger
-        )
-        self.atom_selection1 = config.get("atom_selection1", None)
-        self.atom_selection2 = config.get("atom_selection2", None)
-        self.atom_selection3 = config.get("atom_selection3", None)
-        # default move: arms (groups 1 + 3) free, vertex (group 2) pinned
-        _parse_common(
-            self,
-            config,
-            n_groups=3,
-            base="target_angle",
-            default_free=(True, False, True),
-            label="angle",
-        )
-        self.run_restr = (
-            self.atom_selection1 is not None
-            and self.atom_selection2 is not None
-            and self.atom_selection3 is not None
-            and self.geom_type is not None
-        )
-        if not self.run_restr:
-            raise ValueError(
-                "angle restraint needs atom_selection1/2/3 and a type block "
-                "(harmonic / flat-bottomed / flat-bottomed1 / flat-bottomed2)"
-            )
-
-    def resolve_sites(self, adapter: FrameworkAdapter) -> None:
-        if not self.run_restr:
-            return
-        (
-            self.target_sites1,
-            self.target_sites2,
-            self.target_sites3,
-        ) = resolve_group_sites(
-            adapter,
-            [self.atom_selection1, self.atom_selection2, self.atom_selection3],
-        )
-        logger.info(
-            "angle restraint resolved: groups %d/%d/%d atoms",
-            len(self.target_sites1),
-            len(self.target_sites2),
-            len(self.target_sites3),
-        )
-
-    def is_valid(self) -> bool:
-        return self.run_restr
-
-
-class DihedralRestraintData:
-    """Centroid dihedral restraint between four atom groups (axis = centroid2-centroid3 line).
-
-    Restraint types mirror the distance restraint on the dihedral value;
-    ``target1``/``target2`` are stored in RADIANS (from the config's degrees). The
-    ``harmonic`` type is periodicity-safe (deviation wrapped to +-180); flat-bottomed
-    windows cannot straddle +-180 (``target1 < target2`` enforced). ``start_sigma`` None
-    -> +inf in ``from_dict``.
-    """
-
-    atom_selection1: str
-    atom_selection2: str
-    atom_selection3: str
-    atom_selection4: str
-    target1: float  # radians
-    target2: float  # radians
-    geom_type: str | None
-    move_free: tuple  # per-group "free to move" bools (the rest are pinned)
-    weight: float
-    target_sites1: list
-    target_sites2: list
-    target_sites3: list
-    target_sites4: list
-    run_restr: bool
-    start_sigma: float
-    stop_sigma: float
-    start_step: float  # step-window lower bound (-inf = always); XOR the sigma window
-    stop_step: float  # step-window upper bound (+inf = always)
-
-    _geom_name = "dihedral"
-    _target_base = "target_dihedral"
-    _known_keys = _KNOWN_DIHEDRAL_KEYS
-
-    def __init__(self):
-        self.atom_selection1 = None
-        self.atom_selection2 = None
-        self.atom_selection3 = None
-        self.atom_selection4 = None
-        self.target1 = None
-        self.target2 = None
-        self.geom_type = None
-        self.move_free = None  # set by set_config -> _parse_move (default all free)
-        self.weight = 1.0
-        self.target_sites1 = None
-        self.target_sites2 = None
-        self.target_sites3 = None
-        self.target_sites4 = None
-        self.run_restr = None
-        self.start_sigma = None  # from_dict defaults None -> +inf (every step)
-        self.stop_sigma = -1.0  # never released
-        self.start_step = float(
-            "-inf"
-        )  # step-window (omitted -> always); XOR sigma win
+        self.start_sigma = None
+        self.stop_sigma = -1.0
+        self.start_step = float("-inf")
         self.stop_step = float("inf")
 
     def set_config(self, config: dict):
         label = f"{self._geom_name}_restraints_config entry"
         warn_unknown_keys(config, self._known_keys, label, logger)
-        self.atom_selection1 = config.get("atom_selection1", None)
-        self.atom_selection2 = config.get("atom_selection2", None)
-        self.atom_selection3 = config.get("atom_selection3", None)
-        self.atom_selection4 = config.get("atom_selection4", None)
-        # default move: end groups (1 + 4) free, axis (groups 2 + 3) pinned
+        for group in range(1, self._n_groups + 1):
+            setattr(
+                self,
+                f"atom_selection{group}",
+                config.get(f"atom_selection{group}"),
+            )
         _parse_common(
             self,
             config,
-            n_groups=4,
+            n_groups=self._n_groups,
             base=self._target_base,
-            default_free=(True, False, False, True),
+            default_free=self._default_free,
             label=self._geom_name,
         )
-        self.run_restr = (
-            self.atom_selection1 is not None
-            and self.atom_selection2 is not None
-            and self.atom_selection3 is not None
-            and self.atom_selection4 is not None
-            and self.geom_type is not None
+        self.run_restr = self.geom_type is not None and all(
+            getattr(self, f"atom_selection{group}") is not None
+            for group in range(1, self._n_groups + 1)
         )
         if not self.run_restr:
+            selections = (
+                "atom_selection1/2/3" if self._n_groups == 3 else "atom_selection1..4"
+            )
             raise ValueError(
-                f"{self._geom_name} restraint needs atom_selection1..4 and a type block "
+                f"{self._geom_name} restraint needs {selections} and a type block "
                 "(harmonic / flat-bottomed / flat-bottomed1 / flat-bottomed2)"
             )
 
     def resolve_sites(self, adapter: FrameworkAdapter) -> None:
         if not self.run_restr:
             return
-        (
-            self.target_sites1,
-            self.target_sites2,
-            self.target_sites3,
-            self.target_sites4,
-        ) = resolve_group_sites(
-            adapter,
-            [
-                self.atom_selection1,
-                self.atom_selection2,
-                self.atom_selection3,
-                self.atom_selection4,
-            ],
-        )
+        selections = [
+            getattr(self, f"atom_selection{group}")
+            for group in range(1, self._n_groups + 1)
+        ]
+        sites = resolve_group_sites(adapter, selections)
+        for group, group_sites in enumerate(sites, start=1):
+            setattr(self, f"target_sites{group}", group_sites)
         logger.info(
-            "%s restraint resolved: groups %d/%d/%d/%d atoms",
+            "%s restraint resolved: groups %s atoms",
             self._geom_name,
-            len(self.target_sites1),
-            len(self.target_sites2),
-            len(self.target_sites3),
-            len(self.target_sites4),
+            "/".join(str(len(group_sites)) for group_sites in sites),
         )
+
+    def iter_global_sites(self):
+        """Yield every resolved global coordinate index used by this restraint."""
+        for group in range(1, self._n_groups + 1):
+            yield from getattr(self, f"target_sites{group}") or ()
 
     def is_valid(self) -> bool:
         return self.run_restr
 
 
-class ImproperRestraintData(DihedralRestraintData):
-    """Centroid improper restraint between four ordered atom groups.
+class AngleRestraintData(_GroupGeomRestraintData):
+    """Centroid angle restraint between three atom groups."""
 
-    The measured value intentionally uses the same signed torsion convention as
-    :class:`DihedralRestraintData`: the angle between planes 1-2-3 and 2-3-4, about
-    the group-2--group-3 axis. It is a separate restraint type so configuration,
-    diagnostics, and custom formulas can express improper intent independently.
-    """
+    _n_groups = 3
+    _geom_name = "angle"
+    _target_base = "target_angle"
+    _known_keys = _KNOWN_ANGLE_KEYS
+    _default_free = (True, False, True)
+
+
+class DihedralRestraintData(_GroupGeomRestraintData):
+    """Centroid ordered torsion restraint between four atom groups."""
+
+    _n_groups = 4
+    _geom_name = "dihedral"
+    _target_base = "target_dihedral"
+    _known_keys = _KNOWN_DIHEDRAL_KEYS
+    _default_free = (True, False, False, True)
+
+
+class ImproperRestraintData(DihedralRestraintData):
+    """Centroid improper restraint using the ordered torsion convention."""
 
     _geom_name = "improper"
     _target_base = "target_improper"

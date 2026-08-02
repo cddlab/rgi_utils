@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from rgi_utils.energy._terms import CONF_KEYS, PER_ENTRY_KEYS, iter_spec_terms
+
 # ---------------------------------------------------------------------------
 # Distance restraint type codes (shared across numpy / torch / jax backends).
 # These mirror the string types used in the YAML config.
@@ -445,90 +447,62 @@ class RestraintSpec:
     # array-based terms above. Empty when no custom restraint is configured.
     custom: list = field(default_factory=list)
 
+    def has_array_term(self, key: str) -> bool:
+        """Return whether one registered array-backed term is active."""
+        return any(iter_spec_terms(self, (key,)))
+
     def has_conformer(self) -> bool:
-        """True if any conformer (bond/angle/chiral/plane/cistrans/vdw) restraint
-        exists."""
+        """Return whether any shared-window conformer restraint is active."""
         if self.vdw_config is not None and self.vdw_config.weight > 0:
             return True
         if self.active_vdw_config is not None and self.active_vdw_config.weight > 0:
             return True
-        return any(
-            arr is not None and arr.mask.sum() > 0
-            for arr in (
-                self.bond,
-                self.angle,
-                self.chiral,
-                self.plane,
-                self.cistrans,
-                self.vdw,
-            )
-        )
+        return any(iter_spec_terms(self, CONF_KEYS))
+
+    def has_per_entry(self) -> bool:
+        """Return whether any registered per-entry restraint is active."""
+        return any(iter_spec_terms(self, PER_ENTRY_KEYS))
 
     def has_distance(self) -> bool:
-        """True if any distance restraint exists."""
-        return self.distance is not None and self.distance.mask.sum() > 0
+        """Return whether a distance restraint is active."""
+        return self.has_array_term("distance")
 
     def has_rmsd(self) -> bool:
-        """True if any RMSD restraint exists. Like conformer, RMSD is optimised by
-        the CG solver (not closed-form), so the solver must run when this is True."""
-        return self.rmsd is not None and self.rmsd.mask.sum() > 0
+        """Return whether an RMSD restraint is active."""
+        return self.has_array_term("rmsd")
 
     def has_group_angle(self) -> bool:
-        """True if any group-centroid angle restraint exists. CG-solved (not closed-form),
-        so the solver must run when this is True."""
-        return self.group_angle is not None and self.group_angle.mask.sum() > 0
+        """Return whether a group-centroid angle restraint is active."""
+        return self.has_array_term("group_angle")
 
     def has_group_dihedral(self) -> bool:
-        """True if any group-centroid dihedral restraint exists. CG-solved (not
-        closed-form), so the solver must run when this is True."""
-        return self.group_dihedral is not None and self.group_dihedral.mask.sum() > 0
+        """Return whether a group-centroid dihedral restraint is active."""
+        return self.has_array_term("group_dihedral")
 
     def has_group_improper(self) -> bool:
-        """True if any group-centroid improper restraint exists."""
-        return self.group_improper is not None and self.group_improper.mask.sum() > 0
+        """Return whether a group-centroid improper restraint is active."""
+        return self.has_array_term("group_improper")
 
     def has_group_plane(self) -> bool:
-        """True if any standalone best-fit-plane restraint exists. CG-solved (not
-        closed-form), so the solver must run when this is True. Distinct from the
-        conformer ``plane`` term, which ``has_conformer()`` covers."""
-        return self.group_plane is not None and self.group_plane.mask.sum() > 0
+        """Return whether a standalone best-fit-plane restraint is active."""
+        return self.has_array_term("group_plane")
 
     def has_custom(self) -> bool:
-        """True if any custom restraint (rgi_utils.custom) is configured. Custom restraints
-        are CG-solved closures added to the objective, so the solver must run when True."""
-        return len(self.custom) > 0
+        """Return whether any custom restraint closure is configured."""
+        return bool(self.custom)
 
     def is_active(self) -> bool:
-        """True if there is any work to do."""
+        """Return whether there is any optimization work to do."""
         return self.n_active > 0 and (
-            self.has_conformer()
-            or self.has_distance()
-            or self.has_rmsd()
-            or self.has_group_angle()
-            or self.has_group_dihedral()
-            or self.has_group_plane()
-            or self.has_group_improper()
-            or self.has_custom()
+            self.has_conformer() or self.has_per_entry() or self.has_custom()
         )
 
     def max_start_sigma(self) -> float:
-        """Largest start_sigma over all active restraints. The optimizer can skip
-        a step entirely when the noise level exceeds this (nothing is active yet)."""
-        vals = []
+        """Largest start sigma over every active registered restraint."""
+        values = []
         if self.has_conformer():
-            vals.append(float(self.conf_start_sigma))
-        if self.has_distance() and self.distance is not None:
-            vals.append(float(np.max(self.distance.start_sigma)))
-        if self.has_rmsd() and self.rmsd is not None:
-            vals.append(float(np.max(self.rmsd.start_sigma)))
-        if self.has_group_angle() and self.group_angle is not None:
-            vals.append(float(np.max(self.group_angle.start_sigma)))
-        if self.has_group_dihedral() and self.group_dihedral is not None:
-            vals.append(float(np.max(self.group_dihedral.start_sigma)))
-        if self.has_group_improper() and self.group_improper is not None:
-            vals.append(float(np.max(self.group_improper.start_sigma)))
-        if self.has_group_plane() and self.group_plane is not None:
-            vals.append(float(np.max(self.group_plane.start_sigma)))
-        for c in self.custom:
-            vals.append(float(c.start_sigma))
-        return max(vals) if vals else -1.0
+            values.append(float(self.conf_start_sigma))
+        for _term, array in iter_spec_terms(self, PER_ENTRY_KEYS):
+            values.append(float(np.max(array.start_sigma)))
+        values.extend(float(custom.start_sigma) for custom in self.custom)
+        return max(values) if values else -1.0

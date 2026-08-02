@@ -39,8 +39,11 @@ Design = **3 layers + autodiff + static shapes + GPU-complete optimization**:
    `active_sites` itself stores *global* flat atom indices. Multiple ligands are
    collision-free because each supplies disjoint global indices.
 
-2. **Energy layer** (`energy/{numpy,torch,jax}_energy.py`, differentiable pure
-   functions): identical flat-bottomed maths in all three backends —
+2. **Energy layer** (`_array_ops.py`, `_geometry.py`, `energy/_kernels.py`):
+   geometry and flat-bottomed penalty maths are implemented ONCE against a lazy backend
+   ops facade; `energy/{numpy,torch,jax}_energy.py` are thin public API adapters. The
+   single `energy/_terms.py` `TermDef` registry drives spec packing, dispatch, gating,
+   and breakdown for
    `bond/angle/chiral/plane/cistrans/vdw/distance/rmsd/group_angle/group_dihedral/group_improper/group_plane`
    (cistrans = periodicity-safe torsion for cis/trans; plane = [servalcat](https://github.com/keitaroyam/servalcat)-style best-fit
    plane over whole planar atom GROUPS (aromatic/conjugated rings + non-ring sp2 groups),
@@ -51,8 +54,8 @@ Design = **3 layers + autodiff + static shapes + GPU-complete optimization**:
    GROUPS' centroids — the angular analogue of the centroid-distance restraint, distinct from the
    per-atom `angle`/`cistrans` conformer terms; `group_plane` = the SAME best-fit-plane quantity as
    `plane` but over selection-resolved groups (`plane_restraints_config`), with the four
-   distance-style types and a PER-ENTRY gate instead of the shared conformer one — the two share
-   one `_plane_rms` helper per backend so the eigh maths is never duplicated).
+   distance-style types and a PER-ENTRY gate instead of the shared conformer one — every path,
+   including custom/reference restraints, uses the same stop-gradient plane/Kabsch primitives).
    `prepare_spec(spec)` → backend arrays;
    `total_energy(positions, prepared)` → scalar. Gradients come from autodiff
    (no hand-written grad). `numpy_energy` is the reference;

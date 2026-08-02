@@ -197,18 +197,7 @@ def make_minimizer(
     prepared = jax_energy.prepare_spec(spec)
     max_ss = spec.max_start_sigma()
     is_cg = (method or "cg").lower() in ("cg", "ncg", "nonlinear-cg", "nonlinearcg")
-    has_dist = spec.has_distance()
-    has_conf = spec.has_conformer()
-    has_rmsd = spec.has_rmsd()
-    # group-centroid angle/dihedral and the standalone best-fit plane are CG-solved (energy
-    # terms gated per-restraint inside total_energy via sigma), so the solver branch must
-    # run when any is present.
-    has_group = (
-        spec.has_group_angle()
-        or spec.has_group_dihedral()
-        or spec.has_group_improper()
-        or spec.has_group_plane()
-    )
+    has_builtin = spec.has_conformer() or spec.has_per_entry()
     # custom restraints -> jnp closures (active_coords) -> scalar (weight folded);
     # selections baked as static jnp index arrays, so they trace inside lax.scan. Added to
     # the CG objective with a per-entry sigma gate (jnp.where).
@@ -257,18 +246,10 @@ def make_minimizer(
         # closed-form shift), plus the fixed-background VdW term (gated on conf_start_sigma —
         # the `jnp.where` zeroes its weight AND gradient above the gate). has_conf is already
         # True when vdw_config is set.
-        if (
-            has_dist
-            or has_conf
-            or has_rmsd
-            or has_vdw
-            or has_active_vdw
-            or has_group
-            or has_custom
-        ):
+        if has_builtin or has_vdw or has_active_vdw or has_custom:
             if has_vdw or has_active_vdw:
                 # conformer window: active sigma window (conf_stop <= sigma <= conf_start)
-                # AND active step window (conf_sstep <= step <= conf_estep). NOT a _TERMS
+                # AND active step window (conf_sstep <= step <= conf_estep). NOT a TERM_DEFS
                 # entry, so this gate is maintained by hand (mirrors torch_optim).
                 _s = jnp.asarray(sigma)
                 _st = jnp.asarray(step)

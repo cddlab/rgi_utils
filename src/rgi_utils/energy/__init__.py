@@ -1,7 +1,8 @@
 """Restraint energy backends.
 
-Each backend module (``numpy_energy``, ``torch_energy``, ``jax_energy``) exposes
-the same two entry points:
+Shared geometry and energy kernels are implemented against the lazy array facade;
+the ``numpy_energy``, ``torch_energy``, and ``jax_energy`` modules are thin adapters that
+preserve the same two public entry points:
 
     prepare_spec(spec, ...) -> prepared   # convert RestraintSpec -> backend arrays
     total_energy(positions, prepared) -> scalar

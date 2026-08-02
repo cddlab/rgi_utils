@@ -511,5 +511,10 @@ class RmsdData:
             resid_map=self.resid_map,
         )
 
+    def iter_global_sites(self):
+        """Yield resolved fit and calculation indices used by this restraint."""
+        yield from self.fit_target_sites or ()
+        yield from self.calc_target_sites or ()
+
     def is_valid(self) -> bool:
         return self.run_restr
