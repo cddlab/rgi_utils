@@ -13,6 +13,7 @@ GEOMETRY = (
     "distance",
     "angle",
     "dihedral",
+    "improper",
     "centroid",
     "rg",
     "norm",
@@ -61,6 +62,11 @@ def dihedral(ops, block_a, block_b, block_c, block_d):
     y = ops.vdot(m1, n2)
     x = ops.where((x == 0.0) & (y == 0.0), x + EPS, x)
     return ops.arctan2(y, x)
+
+
+def improper(ops, block_a, block_b, block_c, block_d):
+    """Signed improper angle using the ordered dihedral convention."""
+    return dihedral(ops, block_a, block_b, block_c, block_d)
 
 
 def _kabsch_R(ops, moving_centered, target_centered):

@@ -283,6 +283,10 @@ def group_dihedral_energy(
     return np.sum(weight * delta**2 * mask)
 
 
+# Improper uses the same ordered four-centroid torsion as dihedral.
+group_improper_energy = group_dihedral_energy
+
+
 def _kabsch_R(Q0, P0):
     """Optimal proper rotation ``R`` (det +1) minimising ``sum_a ||R Q0_a - P0_a||^2``
     (Kabsch). ``Q0``/``P0`` are centred, padding-zeroed ``(..., A, 3)``. Returns
@@ -436,6 +440,7 @@ _LEAF_FNS = {
     "rmsd_energy": rmsd_energy,
     "group_angle_energy": group_angle_energy,
     "group_dihedral_energy": group_dihedral_energy,
+    "group_improper_energy": group_improper_energy,
     "group_plane_energy": group_plane_energy,
 }
 

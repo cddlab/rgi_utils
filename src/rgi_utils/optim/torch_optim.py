@@ -377,6 +377,7 @@ class TorchRestraintOptimizer:
         has_group = (
             self.spec.has_group_angle()
             or self.spec.has_group_dihedral()
+            or self.spec.has_group_improper()
             or self.spec.has_group_plane()
         )
         has_custom = self.spec.has_custom()

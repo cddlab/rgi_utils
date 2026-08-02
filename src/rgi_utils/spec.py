@@ -343,6 +343,16 @@ class GroupDihedralArrays:
 
 
 @dataclass
+class GroupImproperArrays(GroupDihedralArrays):
+    """Centroid improper restraints between four ordered atom groups.
+
+    The array layout and measured signed torsion are identical to
+    :class:`GroupDihedralArrays`; the separate type preserves restraint identity in
+    configuration, dispatch, gating, and diagnostics.
+    """
+
+
+@dataclass
 class GroupPlaneArrays:
     """Standalone best-fit-plane restraints over selection-resolved atom groups (padded).
 
@@ -409,6 +419,7 @@ class RestraintSpec:
     # per-restraint start_sigma/stop_sigma like distance/rmsd.
     group_angle: GroupAngleArrays | None = None
     group_dihedral: GroupDihedralArrays | None = None
+    group_improper: GroupImproperArrays | None = None
     # standalone best-fit-plane restraints over selection-resolved groups
     # (plane_restraints_config) — same measured quantity as `plane` above but with the four
     # distance-style types and a per-entry gate (see GroupPlaneArrays).
@@ -472,6 +483,10 @@ class RestraintSpec:
         closed-form), so the solver must run when this is True."""
         return self.group_dihedral is not None and self.group_dihedral.mask.sum() > 0
 
+    def has_group_improper(self) -> bool:
+        """True if any group-centroid improper restraint exists."""
+        return self.group_improper is not None and self.group_improper.mask.sum() > 0
+
     def has_group_plane(self) -> bool:
         """True if any standalone best-fit-plane restraint exists. CG-solved (not
         closed-form), so the solver must run when this is True. Distinct from the
@@ -492,6 +507,7 @@ class RestraintSpec:
             or self.has_group_angle()
             or self.has_group_dihedral()
             or self.has_group_plane()
+            or self.has_group_improper()
             or self.has_custom()
         )
 
@@ -509,6 +525,8 @@ class RestraintSpec:
             vals.append(float(np.max(self.group_angle.start_sigma)))
         if self.has_group_dihedral() and self.group_dihedral is not None:
             vals.append(float(np.max(self.group_dihedral.start_sigma)))
+        if self.has_group_improper() and self.group_improper is not None:
+            vals.append(float(np.max(self.group_improper.start_sigma)))
         if self.has_group_plane() and self.group_plane is not None:
             vals.append(float(np.max(self.group_plane.start_sigma)))
         for c in self.custom:

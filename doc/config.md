@@ -23,7 +23,8 @@ check their spelling against this page. Source of truth:
 - [Activation windows](#sigma-gating-start_sigma--stop_sigma) and [step gating](#step-gating-start_step--stop_step-alternative-to-sigma)
 - [Atom-selection DSL](#atom-selection-dsl) and [penalty shapes](#penalty-shapes-shared)
 - [Distance](#distance_restraints_config-list), [group angle](#angle_restraints_config-list),
-  [group dihedral](#dihedral_restraints_config-list), and [plane](#plane_restraints_config-list)
+  [group dihedral](#dihedral_restraints_config-list), [improper](#improper_restraints_config-list),
+  and [plane](#plane_restraints_config-list)
 - [Base pairs](#base_pair_restraints_config-list)
 - [Conformer geometry and VdW](#conformer_restraints_config-single-dict)
 - [RMSD](#rmsd_restraints_config-list)
@@ -42,6 +43,7 @@ restraints_config:
   distance_restraints_config: [ ... ]   # list
   angle_restraints_config:    [ ... ]   # list  (group-centroid angle)
   dihedral_restraints_config: [ ... ]   # list  (group-centroid dihedral)
+  improper_restraints_config: [ ... ]   # list  (out-of-plane angle)
   plane_restraints_config:    [ ... ]   # list  (best-fit-plane flatness / coplanarity)
   base_pair_restraints_config: [ ... ]  # list  (nucleic-acid Watson-Crick base pairs)
   conformer_restraints_config: { ... }  # single dict (ligand/polymer local geometry)
@@ -52,7 +54,7 @@ restraints_config:
 A restraint type is active only if its block is present (and, for conformer terms, the term's
 `weight > 0`).
 
-Distance, angle, dihedral, plane, conformer, RMSD, and base-pair are the seven built-in restraint
+Distance, angle, dihedral, improper, plane, conformer, RMSD, and base-pair are the eight built-in restraint
 types (base-pair expands into distance and plane restraints under the hood).
 `custom_restraints_config` defines an original restraint as a math formula or Python callable.
 
@@ -87,7 +89,7 @@ window:
 - **Active window:** `stop_sigma <= sigma <= start_sigma`. `stop_sigma > start_sigma` is an empty
   window and **raises** (a silent no-op would read as "satisfied").
 
-Where they live: **once per `distance` / `angle` / `dihedral` / `rmsd` / `custom` entry**, and **once
+Where they live: **once per `distance` / `angle` / `dihedral` / `improper` / `rmsd` / `custom` entry**, and **once
 for all conformer terms** (`conformer_restraints_config.start_sigma` / `.stop_sigma`). When `sigma`
 exceeds every active restraint's `start_sigma`, the whole minimization step is skipped (cheap at high
 noise).
@@ -107,7 +109,7 @@ denoising iteration counter). Same shape as the sigma window, on the step axis:
 - **Active window:** `start_step <= step <= stop_step`. `stop_step < start_step` is an empty window
   and **raises**.
 
-Available on the same entries as the sigma window (`distance` / `angle` / `dihedral` / `rmsd` /
+Available on the same entries as the sigma window (`distance` / `angle` / `dihedral` / `improper` / `rmsd` /
 `custom`, and the shared `conformer_restraints_config`).
 
 > **A restraint uses EITHER the sigma window OR the step window — never both.** Setting any of
@@ -157,8 +159,8 @@ distance, angle, volume, …) from its target. Four block names choose how $\del
 | `flat-bottomed1` | $\min(0,\, x - t_1)$ | lower bound — penalise only $x \lt t_1$ |
 | `flat-bottomed2` | $\max(0,\, x - t_2)$ | upper bound — penalise only $x \gt t_2$ |
 
-The same four shapes drive the `distance` / `angle` / `dihedral` / `plane` / `rmsd` blocks (only
-the target key differs: `target_distance` / `target_angle` / `target_dihedral` / `target_plane` /
+The same four shapes drive the `distance` / `angle` / `dihedral` / `improper` / `plane` / `rmsd` blocks (only
+the target key differs: `target_distance` / `target_angle` / `target_dihedral` / `target_improper` / `target_plane` /
 `target_rmsd`, with `…1` / `…2` for the flat-bottomed bounds). `plane` is the one block whose type
 is OPTIONAL — its measured quantity is an RMS deviation with an implicit target of 0, so an omitted
 block means `harmonic` with `target_plane: 0`. The **conformer** terms use the flat-bottomed shape with a symmetric `slack`:
@@ -344,6 +346,37 @@ dihedral_restraints_config:
       ref1: {ref_cif: state1.cif}
     move: [1, 4]  # groups 1 and 4 move; group 3 is pinned
     harmonic: {target_dihedral: 180.0}
+```
+
+## `improper_restraints_config` (list)
+
+Restrains the signed out-of-plane angle of four group centroids. Its mathematical convention is
+identical to [`dihedral_restraints_config`](#dihedral_restraints_config-list): the angle between
+planes 1–2–3 and 2–3–4 about the 2–3 axis, with range $[-180^\circ, 180^\circ]$. It has a separate
+config, spec term, energy breakdown, and log name (`group_improper`).
+
+The full dihedral field surface applies unchanged: `atom_selection1..4`, `move`, `weight`,
+`unit`, sigma/step windows, and prediction/reference groups. The default pins groups 2–3 and moves
+groups 1 and 4. Only the target names differ:
+
+| block | params |
+|---|---|
+| `harmonic` | `target_improper` |
+| `flat-bottomed` | `target_improper1`, `target_improper2` |
+| `flat-bottomed1` | `target_improper1` |
+| `flat-bottomed2` | `target_improper2` |
+
+Harmonic deviations are periodicity-safe; flat-bottomed windows cannot straddle the $\pm180^\circ$
+boundary. Targets are degrees by default and may use `unit: radians`.
+
+```yaml
+improper_restraints_config:
+  - atom_selection1: "chain A and resid 10"
+    atom_selection2: "chain A and resid 11"
+    atom_selection3: "chain A and resid 12"
+    atom_selection4: "chain A and resid 13"
+    move: [1, 4]
+    harmonic: {target_improper: 0.0}
 ```
 
 ## `plane_restraints_config` (list)
@@ -913,7 +946,7 @@ energy), and **math** (elementwise / reduction helpers) — plus operators.
 #### Geometry
 
 Geometry functions operate on selection **centroids**; angular results are in **radians** (note: the
-built-in `angle` / `dihedral` configs take *degrees*, but a custom formula is in radians).
+built-in `angle` / `dihedral` / `improper` configs take *degrees*, but a custom formula is in radians).
 $\lVert\cdot\rVert$ is the Euclidean norm:
 
 | call | result | definition | use it for |
@@ -922,6 +955,7 @@ $\lVert\cdot\rVert$ is the Euclidean norm:
 | `distance(A,B)` | scalar | $\lVert c_A - c_B \rVert$ | a separation between two groups; a **difference of two distances** encodes symmetry / equidistance |
 | `angle(A,B,C)` | scalar (rad) | $\arccos\big( (c_A - c_B)\cdot(c_C - c_B) / (\lVert c_A - c_B \rVert\,\lVert c_C - c_B \rVert) \big)$, vertex $B$ | the bend of three groups about the vertex $B$ |
 | `dihedral(A,B,C,D)` | scalar (rad) | torsion about the B–C centroid axis, range $\pm\pi$ | the twist / handedness across four groups — a **periodic** quantity: wrap its deviation, see below |
+| `improper(A,B,C,D)` | scalar (rad) | signed out-of-plane angle about the B–C centroid axis, range $\pm\pi$ | the custom-form counterpart of `improper_restraints_config`; wrap its deviation |
 | `rg(A)` | scalar | $\sqrt{\frac{1}{\lvert A\rvert}\sum_i \lVert x_i - c_A \rVert^2}$ — radius of gyration | the compactness of one group (collapse vs extension) |
 | `norm(v)` | scalar | $\lVert v \rVert$ | the length of a vector you built, e.g. `centroid(A) - centroid(B)` |
 | `dot(u,v)` | scalar | $u \cdot v$ | projections and cosine-like terms |
@@ -977,7 +1011,7 @@ stop-gradient values: they act as fixed landmarks and do not pull the fit anchor
 selections are omitted, the reference is used in its own coordinate frame.
 
 Reference-backed selections work with the normal geometry vocabulary: `distance(A,B)`,
-`angle(A,B,C)`, `dihedral(A,B,C,D)`, `centroid(A)`, `coords(A)`, and `kabsch(A,B)`. At least one
+`angle(A,B,C)`, `dihedral(A,B,C,D)`, `improper(A,B,C,D)`, `centroid(A)`, `coords(A)`, and `kabsch(A,B)`. At least one
 selection in the custom entry must come from the prediction; an all-reference expression is a
 constant and raises.
 
@@ -993,21 +1027,21 @@ numpy finite-difference through the SVD, matching the built-in RMSD restraint.
 
 #### Degenerate geometry
 
-`angle` and `dihedral` are ill-defined when the centroids collapse —
+`angle`, `dihedral`, and `improper` are ill-defined when the centroids collapse —
 coincident centroids, a collinear A–B–C for `angle`, or a `dihedral` whose central axis runs parallel
 to an arm. The value stays finite but its gradient is near-zero, so the term cannot push the
 structure; choose groups whose centroids are distinct and non-collinear. (`distance` / `rg` have no
 such caveat.)
 
-#### Dihedral periodicity
+#### Dihedral and improper periodicity
 
-Wrap every `dihedral` deviation. A dihedral is periodic ($\phi$ and $\phi + 2\pi$
+Wrap every `dihedral` and `improper` deviation. These angles are periodic ($\phi$ and $\phi + 2\pi$
 are the same geometry), so a penalty on its **deviation** must fold that deviation into
 $[-\pi, \pi]$ first. Write `wrap(dihedral(A,B,C,D) - t)**2` (harmonic), **not** the naïve
 `harmonic(dihedral(A,B,C,D), t)`: the naïve form counts $\phi = +179^\circ$ against $t = -179^\circ$
 as a $358^\circ$ deviation (huge energy, and a gradient pointing the *long way* round) instead of the
 correct $2^\circ$. `wrap(x)` $= \mathrm{atan2}(\sin x, \cos x)$ is exactly the fold the
-built-in `dihedral_restraints_config` / conformer `cistrans` apply internally — see the Math table.
+built-in `dihedral_restraints_config` / `improper_restraints_config` / conformer `cistrans` apply internally — see the Math table.
 For a window, wrap relative to the centre: `flat_bottomed(wrap(dihedral(...) - centre), -w, w)` — and
 because the deviation is wrapped, this window **can straddle $\pm 180^\circ$** (the built-in
 flat-bottomed dihedral cannot). Note `t` / `centre` are in **radians** (a custom formula does no degree

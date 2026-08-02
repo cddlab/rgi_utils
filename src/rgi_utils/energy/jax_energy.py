@@ -276,6 +276,10 @@ def group_dihedral_energy(
     return jnp.sum(weight * delta**2 * mask)
 
 
+# Improper uses the same ordered four-centroid torsion as dihedral.
+group_improper_energy = group_dihedral_energy
+
+
 def _kabsch_R(Q0, P0):
     """Optimal proper rotation R (det +1) s.t. R Q0 ~ P0 (Kabsch). ``H`` (and thus R)
     is wrapped in ``stop_gradient`` so ``jax.grad`` flows only through the moving atoms
@@ -405,6 +409,7 @@ _LEAF_FNS = {
     "rmsd_energy": rmsd_energy,
     "group_angle_energy": group_angle_energy,
     "group_dihedral_energy": group_dihedral_energy,
+    "group_improper_energy": group_improper_energy,
     "group_plane_energy": group_plane_energy,
 }
 

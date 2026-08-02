@@ -303,6 +303,10 @@ def group_dihedral_energy(
     return torch.sum(weight * delta**2 * mask)
 
 
+# Improper uses the same ordered four-centroid torsion as dihedral.
+group_improper_energy = group_dihedral_energy
+
+
 def _kabsch_R(Q0, P0):
     """Optimal proper rotation R (det +1) s.t. R Q0 ~ P0 (Kabsch). Computed under
     ``no_grad`` and detached, so the gradient flows only through the moving atoms in
@@ -436,6 +440,7 @@ _LEAF_FNS = {
     "rmsd_energy": rmsd_energy,
     "group_angle_energy": group_angle_energy,
     "group_dihedral_energy": group_dihedral_energy,
+    "group_improper_energy": group_improper_energy,
     "group_plane_energy": group_plane_energy,
 }
 

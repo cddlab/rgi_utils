@@ -34,6 +34,7 @@ from rgi_utils.spec import (
     DistanceArrays,
     GroupAngleArrays,
     GroupDihedralArrays,
+    GroupImproperArrays,
     GroupPlaneArrays,
     PlaneArrays,
     RestraintSpec,
@@ -670,13 +671,14 @@ def build_spec(
     custom_restraints: list | None = None,
     polymer_geometry=None,
     plane_restraints: list | None = None,
+    improper_restraints: list | None = None,
 ) -> RestraintSpec:
     """Build a RestraintSpec. ``distance_restraints`` are DistanceData with
     ``target_sites1``/``target_sites2`` already resolved to global indices;
     ``rmsd_restraints`` are RmsdData with ``target_sites``/``ref_coords`` resolved;
-    ``angle_restraints``/``dihedral_restraints`` are AngleRestraintData /
-    DihedralRestraintData with their group ``target_sites{1..N}`` resolved to global
-    indices (N=3 for angle, N=4 for dihedral). ``plane_restraints`` are
+    ``angle_restraints``/``dihedral_restraints``/``improper_restraints`` carry
+    resolved group ``target_sites{1..N}`` global indices (N=3 for angle, N=4 for
+    dihedral/improper). ``plane_restraints`` are
     PlaneRestraintData with ``target_sites`` (a LIST of per-group global-index lists)
     resolved — the standalone ``plane_restraints_config`` term, which is independent of
     the conformer ``plane`` sub-block (its own weight/type/gate per entry). The base-pair
@@ -722,6 +724,9 @@ def build_spec(
     ]
     dihedral_restraints = [
         dr for dr in (dihedral_restraints or []) if getattr(dr, "run_restr", False)
+    ]
+    improper_restraints = [
+        ir for ir in (improper_restraints or []) if getattr(ir, "run_restr", False)
     ]
     plane_restraints = [
         pr for pr in (plane_restraints or []) if getattr(pr, "run_restr", False)
@@ -833,9 +838,12 @@ def build_spec(
     for gdr in dihedral_restraints:
         for g in range(4):
             active.update(int(s) for s in getattr(gdr, f"target_sites{g + 1}"))
-    # standalone plane restraints (incl. the base-pair coplanarity macro): every group of
-    # every entry. Unlike the conformer `planes` above these are never dropped by the
-    # conformer plane weight — they carry their own per-entry weight.
+    for gir in improper_restraints:
+        for g in range(4):
+            active.update(int(s) for s in getattr(gir, f"target_sites{g + 1}"))
+    # Standalone plane restraints (including the base-pair coplanarity macro): every
+    # group of every entry. Unlike the conformer planes above, these have their own
+    # per-entry weight and are never dropped by the conformer plane weight.
     for pr in plane_restraints:
         for grp in pr.target_sites:
             active.update(int(s) for s in grp)
@@ -1147,6 +1155,34 @@ def build_spec(
 
     # ---- standalone best-fit-plane arrays (padded, local indices) -------------------
     group_plane = None
+
+    group_improper = None
+    if improper_restraints:
+        n = len(improper_restraints)
+        (g1, g2, g3, g4), (m1, m2, m3, m4) = _pad_groups(improper_restraints, 4, g2l)
+        start_sigma, stop_sigma = _group_sigmas(improper_restraints, conf_start_sigma)
+        start_step, stop_step = _group_steps(improper_restraints)
+        codes, t1, t2, move_free = _group_geom_params(improper_restraints)
+        group_improper = GroupImproperArrays(
+            grp1_idx=g1,
+            grp2_idx=g2,
+            grp3_idx=g3,
+            grp4_idx=g4,
+            grp1_mask=m1,
+            grp2_mask=m2,
+            grp3_mask=m3,
+            grp4_mask=m4,
+            target1=t1,
+            target2=t2,
+            geom_type=codes,
+            move_free=move_free,
+            weight=np.array([float(r.weight) for r in improper_restraints]),
+            mask=np.ones(n),
+            start_sigma=start_sigma,
+            stop_sigma=stop_sigma,
+            start_step=start_step,
+            stop_step=stop_step,
+        )
     if plane_restraints:
         n = len(plane_restraints)
         # Each entry POOLS all of its groups into one plane, so a row is the concatenated
@@ -1206,6 +1242,7 @@ def build_spec(
         group_plane=group_plane,
         vdw=vdw_arrays,
         vdw_config=vdw_config,
+        group_improper=group_improper,
         active_vdw_config=active_vdw_config,
         conf_start_sigma=conf_start_sigma,
         conf_stop_sigma=conf_stop_sigma,
@@ -1230,7 +1267,8 @@ def build_spec(
     vdw_desc = "+".join(vdw_parts) if vdw_parts else "off"
     logger.info(
         "built spec: n_active=%d bonds=%d angles=%d chirals=%d plane=%d cistrans=%d "
-        "distances=%d rmsd=%d group_angle=%d group_dihedral=%d group_plane=%d "
+        "distances=%d rmsd=%d group_angle=%d group_dihedral=%d "
+        "group_improper=%d group_plane=%d "
         "vdw=%s custom=%d relax_ff=%s",
         spec.n_active,
         len(bonds),
@@ -1242,6 +1280,7 @@ def build_spec(
         len(rmsd_restraints),
         len(angle_restraints),
         len(dihedral_restraints),
+        len(improper_restraints),
         len(plane_restraints),
         vdw_desc,
         len(custom_specs),

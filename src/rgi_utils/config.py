@@ -15,7 +15,11 @@ from rgi_utils._mol_build import parse_relax_force_field
 from rgi_utils.base_pair_restr_data import BasePairData
 from rgi_utils.custom.data import CustomData
 from rgi_utils.distance_restr_data import DistanceData
-from rgi_utils.group_geom_restr_data import AngleRestraintData, DihedralRestraintData
+from rgi_utils.group_geom_restr_data import (
+    AngleRestraintData,
+    DihedralRestraintData,
+    ImproperRestraintData,
+)
 from rgi_utils.plane_restr_data import PlaneRestraintData, count_plane_groups
 from rgi_utils.ref_geom_restr_data import RefGeomData, is_ref_anchored
 from rgi_utils.rmsd_restr_data import RmsdData
@@ -44,6 +48,9 @@ class RestraintsConfig:
     dihedral_data: list = field(
         default_factory=list
     )  # group-centroid dihedral restraints
+    improper_data: list = field(
+        default_factory=list
+    )  # group-centroid improper restraints
     plane_data: list = field(
         default_factory=list
     )  # standalone best-fit-plane restraints
@@ -75,6 +82,7 @@ class RestraintsConfig:
             "rmsd_restraints_config",
             "angle_restraints_config",
             "dihedral_restraints_config",
+            "improper_restraints_config",
             "plane_restraints_config",
             "custom_restraints_config",
             "base_pair_restraints_config",
@@ -264,6 +272,17 @@ class RestraintsConfig:
             if dd.start_sigma is None:
                 dd.start_sigma = _ALWAYS_ON
             cfg.dihedral_data.append(dd)
+        for entry in config.get("improper_restraints_config", []) or []:
+            if is_ref_anchored(entry):
+                rg = RefGeomData("improper")
+                rg.set_config(entry)
+                cfg.custom_data.append(rg)
+                continue
+            improper = ImproperRestraintData()
+            improper.set_config(entry)
+            if improper.start_sigma is None:
+                improper.start_sigma = _ALWAYS_ON
+            cfg.improper_data.append(improper)
         # standalone best-fit-plane restraints (1..4 selection groups pooled into ONE
         # plane). A reference-anchored entry measures something different (the prediction
         # atoms' RMS distance to a plane fitted from the external structure), so it is

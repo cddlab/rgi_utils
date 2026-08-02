@@ -48,6 +48,7 @@ _GEOM_SPEC = {
     "distance": (2, "target_distance"),
     "angle": (3, "target_angle"),
     "dihedral": (4, "target_dihedral"),
+    "improper": (4, "target_improper"),
     # plane takes 1..4 groups, so its group count is NOT fixed by the geometry: `None`
     # means "the caller supplies n_groups" (config.py counts the entry's contiguous
     # atom_selectionN keys via plane_restr_data.count_plane_groups). Keeping n_groups a

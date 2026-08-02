@@ -26,7 +26,7 @@ See each tool's guide in [`doc/`](doc/) for install / run details, and
 > instead of hand-writing from this README when you're unsure. (For adding RGI support to a
 > *new* tool's code, use the separate `implement-rgi` skill.)
 
-Seven **built-in** restraint types, all minimized during the denoising loop to guide coordinate optimization:
+Eight **built-in** restraint types, all minimized during the denoising loop to guide coordinate optimization:
 
 - **conformer** — ligand and polymer-local bond / angle / chiral-volume / VdW;
   ligand-only cistrans (E/Z) / plane
@@ -42,6 +42,7 @@ Seven **built-in** restraint types, all minimized during the denoising loop to g
 - **angle** — the angle of three atom groups' centroids (vertex = group 2), in degrees;
   the angular analogue of the distance restraint.
 - **dihedral** — the dihedral of four atom groups' centroids (axis = groups 2–3), in degrees.
+- **improper** — the signed out-of-plane angle of four atom groups' centroids, in degrees.
 - **plane** — best-fit-plane flatness of any atom group you select (out-of-plane RMS, Angstrom):
   hold a nucleobase or aromatic side chain flat, make two groups share one plane, or pull a group
   onto a plane taken from a reference structure. The selection-driven form of the conformer `plane`
@@ -51,7 +52,7 @@ Seven **built-in** restraint types, all minimized during the denoising loop to g
 - **base-pair** — a named Watson–Crick nucleotide pair expanded into H-bond distance
   restraints and an optional base-coplanarity restraint.
 
-Beyond these seven built-ins you can define your **own** restraint — see
+Beyond these eight built-ins you can define your **own** restraint — see
 [Custom restraints](#custom-restraints) below.
 
 The default `method='CG'` solver (a nonlinear conjugate gradient with autodiff gradients)
@@ -120,6 +121,7 @@ restraints_config = {
     ],
     # "rmsd_restraints_config": [{"ref_pdb": "ref.pdb", "harmonic": {"target_rmsd": 0.0}}],
     # "dihedral_restraints_config": [...],   # group-centroid dihedral: 4 groups, axis = 2-3
+    # "improper_restraints_config": [...],   # signed out-of-plane angle: 4 groups
 }
 
 # ONE instance per structure (not a singleton). setup() takes the config dict.
@@ -179,14 +181,14 @@ reference-side value as `ref1 and <selection>`, and define `refs.ref1` with `ref
 `ref_cif`. The ref group stays fixed; `move` may name only prediction-side group indices
 (`all`/omitted = all prediction groups).
 
-### Angle / dihedral restraints
+### Angle / dihedral / improper restraints
 
-`angle_restraints_config` (3 groups, vertex = group 2) and `dihedral_restraints_config`
-(4 groups, axis = group 2–3) restrain the angle/dihedral of the groups' centroids — distinct
+`angle_restraints_config` (3 groups, vertex = group 2), `dihedral_restraints_config`, and
+`improper_restraints_config` (both 4 groups, axis = group 2–3) restrain centroid geometry — distinct
 from the per-atom `angle` / `cistrans` *conformer* terms (internally these are the
-`group_angle` / `group_dihedral` energy terms). Same four
+`group_angle` / `group_dihedral` / `group_improper` energy terms). Same four
 types as distance (`harmonic` / `flat-bottomed` / `flat-bottomed1` / `flat-bottomed2`),
-but targets are in **degrees** (`target_angle` / `target_dihedral`). `weight` defaults to
+but targets are in **degrees** (`target_angle` / `target_dihedral` / `target_improper`). `weight` defaults to
 1.0 and translates any group size rigidly. `move` selects which groups are free (default:
 the arms move, the anchor group is pinned). With ref groups, references stay fixed and
 `move` selects prediction-side group indices; omitted/`all`/`both` moves every prediction group.
@@ -242,7 +244,7 @@ validation rules, and gating details.
 
 ### Custom restraints
 
-Define your **own** restraint — not one of the seven built-ins — as a differentiable energy,
+Define your **own** restraint — not one of the eight built-ins — as a differentiable energy,
 two ways (same vocabulary, both run on every backend):
 
 **Config only** — write the energy as a math **formula** over named selections, no Python:
@@ -272,7 +274,7 @@ restr.setup(adapter, config=restraints_config)   # add_custom BEFORE setup
 def energy(ctx): ...
 ```
 
-`ctx` / the formula expose one **vocabulary**: geometry (`distance` `angle` `dihedral` `centroid`
+`ctx` / the formula expose one **vocabulary**: geometry (`distance` `angle` `dihedral` `improper` `centroid`
 `rg` `norm` `dot`), penalty (`harmonic` `flat_bottomed` `flat_bottomed1` `flat_bottomed2`), and math
 (`sqrt` `exp` `log` `abs` `sin` `cos` `clip` `minimum` `maximum` `where` `sum` + arithmetic). Use `where(cond, a, b)`,
 not `if` (keeps it jax-traceable). The energy (× `weight`) is added to the CG objective with the

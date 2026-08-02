@@ -42,6 +42,7 @@ def test_known_top_level_keys_ok():
             "rmsd_restraints_config": [],
             "angle_restraints_config": [],
             "dihedral_restraints_config": [],
+            "improper_restraints_config": [],
             "conformer_restraints_config": {},
         }
     )

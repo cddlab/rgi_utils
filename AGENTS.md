@@ -41,13 +41,13 @@ Design = **3 layers + autodiff + static shapes + GPU-complete optimization**:
 
 2. **Energy layer** (`energy/{numpy,torch,jax}_energy.py`, differentiable pure
    functions): identical flat-bottomed maths in all three backends —
-   `bond/angle/chiral/plane/cistrans/vdw/distance/rmsd/group_angle/group_dihedral/group_plane`
+   `bond/angle/chiral/plane/cistrans/vdw/distance/rmsd/group_angle/group_dihedral/group_improper/group_plane`
    (cistrans = periodicity-safe torsion for cis/trans; plane = [servalcat](https://github.com/keitaroyam/servalcat)-style best-fit
    plane over whole planar atom GROUPS (aromatic/conjugated rings + non-ring sp2 groups),
    penalising each group's out-of-plane RMS deviation via the smallest-eigenvalue plane
    normal (stop-gradient like `rmsd`'s Kabsch rotation), opt-in/off by
    default; rmsd = Kabsch-superposed RMSD toward a target,
-   fit/calc separable; `group_angle`/`group_dihedral` = the angle/dihedral of 3/4 atom
+   fit/calc separable; `group_angle`/`group_dihedral`/`group_improper` = the angle/dihedral/improper of 3/4 atom
    GROUPS' centroids — the angular analogue of the centroid-distance restraint, distinct from the
    per-atom `angle`/`cistrans` conformer terms; `group_plane` = the SAME best-fit-plane quantity as
    `plane` but over selection-resolved groups (`plane_restraints_config`), with the four
@@ -330,12 +330,12 @@ fixed background) — confirm `Jinter>0` when you expect ligand-ligand repulsion
 
 ### Custom restraints (the extension point — `rgi_utils/custom/`)
 
-Beyond the six built-ins, a user can define an **original** restraint as a backend-agnostic
+Beyond the eight built-ins, a user can define an **original** restraint as a backend-agnostic
 energy `energy(ctx) -> scalar`. Two authoring paths, ONE mechanism:
 - **config (expression DSL)**: a `custom_restraints_config` entry with an `energy` formula string
   over a shared vocabulary + named `selections` (e.g. `"(distance(A,B) - distance(C,D))**2"`).
   A selection value may be reference-backed as `refN and <selection>` with an entry-local
-  `refs.refN` definition; the same geometry vocabulary consumes it (`distance`/`angle`/`dihedral`/
+  `refs.refN` definition; the same geometry vocabulary consumes it (`distance`/`angle`/`dihedral`/`improper`/
   `centroid`/`rg`/`norm`/`dot`/`coords`/`kabsch`/`rmsd`/`plane` + penalties + math incl.
   periodicity-safe `wrap`; full table in `doc/config.md`). External-reference RMSD is `rmsd(A,B)`
   (prediction A, reference-backed B); rigid superposition is `kabsch(A,B)`; best-fit-plane flatness is
@@ -471,15 +471,16 @@ show up in the `distances=` / `n_group_plane=` counts). Full field surface: `doc
   `B = (t1*w1 + t2*w2)/(w1+w2)` — same as angle/dihedral `weight` (a no-op at full CG convergence
   for a lone restraint). Distance is a per-entry `_TERMS` gate (like rmsd/group), so it is in the
   CG objective and the GPU pre-gate; its finalize energy comes from the same `energy_breakdown`.
-- Group angle/dihedral restraints (`angle_restraints_config` 3 groups / vertex=group2;
-  `dihedral_restraints_config` 4 groups / axis=group2-3): restrain the angle/dihedral of
+- Group angle/dihedral/improper restraints (`angle_restraints_config` 3 groups / vertex=group2;
+  `dihedral_restraints_config` 4 groups / axis=group2-3; `improper_restraints_config` uses the
+  same signed angle as a distinct out-of-plane term): restrain the angle/dihedral/improper of
   the groups' centroids. Reference groups use the same `refN and <selection>` values: angle
-  entries allow up to two distinct refs and dihedral entries up to three, each fitted
+  entries allow up to two distinct refs and dihedral/improper entries up to three, each fitted
   independently. On these ref-geometry closures, omitted/`all`/`both` moves all prediction groups;
   explicit `move` indices pin unlisted prediction groups and cannot select a reference group.
   The config surface MIRRORS the distance restraint — the four types
   `harmonic{target_angle}` / `flat-bottomed{target_angle1,target_angle2}` / `flat-bottomed1`
-  / `flat-bottomed2` (dihedral uses `target_dihedral*`), plus the `move` key. Targets are in
+  / `flat-bottomed2` (dihedral uses `target_dihedral*`; improper uses `target_improper*`), plus the `move` key. Targets are in
   **DEGREES** by default — set `unit: radians` on the entry to give them in radians instead
   (single conversion point in `group_geom_restr_data._parse_geom_type`); stored internally as
   radians either way. The spec carries
@@ -501,7 +502,7 @@ show up in the `distances=` / `n_group_plane=` counts). Full field surface: `doc
   `_terms.PER_ENTRY_KEYS`, which the torch GPU pre-gate (`torch_optim._gated_prepared`) folds
   + keys its compile cache on (so a new per-entry term can't silently go ungated on the
   compiled GPU path — a bug CPU CI can't catch). Solver-run condition in both optimizers ORs
-  in `has_group_angle()/has_group_dihedral()`. `move!=both` stop-gradients pinned groups, so
+  in `has_group_angle()/has_group_dihedral()/has_group_improper()`. `move!=both` stop-gradients pinned groups, so
   its grad parity is torch-vs-jax (not numpy-FD) — the rmsd carve-out (`test_optim`).
   Caveat: a degenerate geometry — coincident centroids, or centroid1-centroid2-centroid3 collinear for the
   dihedral — gives a near-zero / ill-defined gradient (same failure mode as the conformer

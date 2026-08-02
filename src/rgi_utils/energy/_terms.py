@@ -151,6 +151,30 @@ _SPEC_SCHEMA = [
             ("stop_step", "f"),
         ],
     ),
+    (
+        "group_improper",
+        "group_improper",
+        [
+            ("grp1_idx", "i"),
+            ("grp2_idx", "i"),
+            ("grp3_idx", "i"),
+            ("grp4_idx", "i"),
+            ("grp1_mask", "f"),
+            ("grp2_mask", "f"),
+            ("grp3_mask", "f"),
+            ("grp4_mask", "f"),
+            ("target1", "f"),
+            ("target2", "f"),
+            ("geom_type", "i"),
+            ("move_free", "f"),
+            ("weight", "f"),
+            ("mask", "f"),
+            ("start_sigma", "f"),
+            ("stop_sigma", "f"),
+            ("start_step", "f"),
+            ("stop_step", "f"),
+        ],
+    ),
     # standalone best-fit-plane restraint (plane_restraints_config): the same measured
     # quantity as the conformer `plane` term (a group's out-of-plane RMS deviation) but
     # over selection-resolved groups, shaped by the four distance-style types and gated
@@ -291,6 +315,26 @@ _TERMS = [
         "group",
     ),
     (
+        "group_improper",
+        "group_improper_energy",
+        [
+            "grp1_idx",
+            "grp2_idx",
+            "grp3_idx",
+            "grp4_idx",
+            "grp1_mask",
+            "grp2_mask",
+            "grp3_mask",
+            "grp4_mask",
+            "target1",
+            "target2",
+            "geom_type",
+            "move_free",
+            "weight",
+        ],
+        "group",
+    ),
+    (
         "group_plane",
         "group_plane_energy",
         [
@@ -358,6 +402,7 @@ BREAKDOWN_KEYS = (
     "group_angle",
     "group_dihedral",
     "group_plane",
+    "group_improper",
 )
 
 # the conformer-gated term keys (gate == "conf"): the single source of truth for which

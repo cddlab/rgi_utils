@@ -2,18 +2,22 @@
 
 ``weight`` and the two mutually-exclusive gate windows (``start_sigma``/``stop_sigma``
 vs ``start_step``/``stop_step``) are parsed identically by the distance / rmsd / angle /
-dihedral entry classes. These tests PIN the exact omitted-key defaults and the
-null/zero normalisation of every type, so the consolidation of that parse into one
+dihedral / improper entry classes. These tests PIN the exact omitted-key defaults and
+the null/zero normalisation of every type, so the consolidation of that parse into one
 shared helper (``_config_util.apply_window_params``) cannot silently drift a default —
-notably rmsd, whose ``weight`` field default is ``None`` (normalised to 1.0) where the
-other three pre-init 1.0, and whose ``stop_sigma`` re-asserts -1.0.
+notably rmsd, whose ``weight`` field default is ``None`` (normalised to 1.0) while the
+other entries pre-init 1.0, and whose ``stop_sigma`` re-asserts -1.0.
 """
 
 import pytest
 
 from rgi_utils.custom.data import CustomData
 from rgi_utils.distance_restr_data import DistanceData
-from rgi_utils.group_geom_restr_data import AngleRestraintData, DihedralRestraintData
+from rgi_utils.group_geom_restr_data import (
+    AngleRestraintData,
+    DihedralRestraintData,
+    ImproperRestraintData,
+)
 from rgi_utils.rmsd_restr_data import RmsdData
 
 # minimal valid configs per type, parameterised so the shared keys (weight + windows)
@@ -49,6 +53,16 @@ _BASE = {
             "atom_selection3": "chain C",
             "atom_selection4": "chain D",
             "harmonic": {"target_dihedral": 180.0},
+        },
+    ),
+    "improper": (
+        ImproperRestraintData,
+        {
+            "atom_selection1": "chain A",
+            "atom_selection2": "chain B",
+            "atom_selection3": "chain C",
+            "atom_selection4": "chain D",
+            "harmonic": {"target_improper": 180.0},
         },
     ),
     "custom": (

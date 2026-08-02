@@ -103,6 +103,15 @@ class RestraintContext:
             self._coords_of(d),
         )
 
+    def improper(self, a, b, c, d):
+        return V.improper(
+            self._ops,
+            self._coords_of(a),
+            self._coords_of(b),
+            self._coords_of(c),
+            self._coords_of(d),
+        )
+
     def centroid(self, a):
         return V.centroid(self._ops, self._coords_of(a))
 
@@ -227,6 +236,10 @@ class ResolveContext:
         return 1.0
 
     def dihedral(self, a, b, c, d):
+        self._block_of(a), self._block_of(b), self._block_of(c), self._block_of(d)
+        return 1.0
+
+    def improper(self, a, b, c, d):
         self._block_of(a), self._block_of(b), self._block_of(c), self._block_of(d)
         return 1.0
 

@@ -23,6 +23,8 @@ def _geom_value(ops, geom, blocks):
         return V.angle(ops, blocks[0], blocks[1], blocks[2])
     if geom == "dihedral":
         return V.dihedral(ops, blocks[0], blocks[1], blocks[2], blocks[3])
+    if geom == "improper":
+        return V.improper(ops, blocks[0], blocks[1], blocks[2], blocks[3])
     raise ValueError(f"ref_geom: unknown geom {geom!r}")
 
 
@@ -45,7 +47,7 @@ def _plane_value(ops, pred_blocks, ref_blocks):
 def _ref_geom_penalty(ops, geom, type_code, value, target1, target2):
     if type_code == 0:
         deviation = value - target1
-        if geom == "dihedral":
+        if geom in ("dihedral", "improper"):
             deviation = V.wrap(ops, deviation)
         return deviation * deviation
     if type_code == 1:

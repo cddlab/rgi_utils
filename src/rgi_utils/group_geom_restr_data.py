@@ -1,6 +1,6 @@
-"""Parse + resolve group-centroid angle / dihedral restraints.
+"""Parse + resolve group-centroid angle / dihedral / improper restraints.
 
-These restrain the angle (3 groups) / dihedral (4 groups) formed by the centroids
+These restrain the angle (3 groups) / dihedral or improper (4 groups) formed by centroids
 of atom groups — the angular analogue of the centroid-distance restraint in
 ``distance_restr_data.py``, and they mirror its config surface: the four restraint
 types ``harmonic`` / ``flat-bottomed`` / ``flat-bottomed1`` / ``flat-bottomed2`` and the
@@ -66,6 +66,7 @@ _KNOWN_ANGLE_KEYS = {
     "flat-bottomed2",
 }
 _KNOWN_DIHEDRAL_KEYS = _KNOWN_ANGLE_KEYS | {"atom_selection4"}
+_KNOWN_IMPROPER_KEYS = _KNOWN_DIHEDRAL_KEYS
 
 
 def resolve_group_sites(
@@ -118,23 +119,28 @@ def _parse_move(config: dict, n_groups: int, default_free: tuple) -> tuple:
 
 
 def _parse_common(
-    self, config: dict, n_groups: int, base: str, default_free: tuple
+    self,
+    config: dict,
+    n_groups: int,
+    base: str,
+    default_free: tuple,
+    label: str,
 ) -> None:
     """Shared parse of weight / start_sigma / stop_sigma / move / type for both classes
-    (``self`` is the AngleRestraintData / DihedralRestraintData being filled).
+    (``self`` is the angle, dihedral, or improper data object being filled).
     ``default_free`` is the per-group free mask used when ``move`` is omitted."""
     # weight + the sigma/step gate windows: one shared parse (so the null/zero handling
-    # can't drift across distance/rmsd/angle/dihedral). The windows default to always-on
+    # can't drift across distance/rmsd/angle/dihedral/improper). The windows default to always-on
     # (set in __init__); start_sigma None -> +inf is filled by config.from_dict.
-    apply_window_params(self, config, "angle/dihedral_restraints_config entry")
+    apply_window_params(self, config, f"{label}_restraints_config entry")
     self.move_free = _parse_move(config, n_groups, default_free)
-    # angle/dihedral targets are DEGREES by default; `unit: radians` makes conv the
+    # Angle/dihedral/improper targets are degrees by default; `unit: radians` makes conv the
     # identity. The flat-bottomed `t1 < t2` check inside parse_geom_type runs on the raw
     # (pre-conv) values, so it is unit-agnostic. RMSD/distance pass `float` (native A).
     unit = str(config.get("unit", "degrees")).strip().lower()
     if unit not in ("degrees", "radians"):
         raise ValueError(
-            f"angle/dihedral 'unit' must be 'degrees' or 'radians' "
+            f"{label} 'unit' must be 'degrees' or 'radians' "
             f"(got {config.get('unit')!r})"
         )
     conv = float if unit == "radians" else (lambda x: math.radians(float(x)))
@@ -201,6 +207,7 @@ class AngleRestraintData:
             n_groups=3,
             base="target_angle",
             default_free=(True, False, True),
+            label="angle",
         )
         self.run_restr = (
             self.atom_selection1 is not None
@@ -265,6 +272,10 @@ class DihedralRestraintData:
     start_step: float  # step-window lower bound (-inf = always); XOR the sigma window
     stop_step: float  # step-window upper bound (+inf = always)
 
+    _geom_name = "dihedral"
+    _target_base = "target_dihedral"
+    _known_keys = _KNOWN_DIHEDRAL_KEYS
+
     def __init__(self):
         self.atom_selection1 = None
         self.atom_selection2 = None
@@ -288,9 +299,8 @@ class DihedralRestraintData:
         self.stop_step = float("inf")
 
     def set_config(self, config: dict):
-        warn_unknown_keys(
-            config, _KNOWN_DIHEDRAL_KEYS, "dihedral_restraints_config entry", logger
-        )
+        label = f"{self._geom_name}_restraints_config entry"
+        warn_unknown_keys(config, self._known_keys, label, logger)
         self.atom_selection1 = config.get("atom_selection1", None)
         self.atom_selection2 = config.get("atom_selection2", None)
         self.atom_selection3 = config.get("atom_selection3", None)
@@ -300,8 +310,9 @@ class DihedralRestraintData:
             self,
             config,
             n_groups=4,
-            base="target_dihedral",
+            base=self._target_base,
             default_free=(True, False, False, True),
+            label=self._geom_name,
         )
         self.run_restr = (
             self.atom_selection1 is not None
@@ -312,7 +323,7 @@ class DihedralRestraintData:
         )
         if not self.run_restr:
             raise ValueError(
-                "dihedral restraint needs atom_selection1..4 and a type block "
+                f"{self._geom_name} restraint needs atom_selection1..4 and a type block "
                 "(harmonic / flat-bottomed / flat-bottomed1 / flat-bottomed2)"
             )
 
@@ -334,7 +345,8 @@ class DihedralRestraintData:
             ],
         )
         logger.info(
-            "dihedral restraint resolved: groups %d/%d/%d/%d atoms",
+            "%s restraint resolved: groups %d/%d/%d/%d atoms",
+            self._geom_name,
             len(self.target_sites1),
             len(self.target_sites2),
             len(self.target_sites3),
@@ -343,3 +355,17 @@ class DihedralRestraintData:
 
     def is_valid(self) -> bool:
         return self.run_restr
+
+
+class ImproperRestraintData(DihedralRestraintData):
+    """Centroid improper restraint between four ordered atom groups.
+
+    The measured value intentionally uses the same signed torsion convention as
+    :class:`DihedralRestraintData`: the angle between planes 1-2-3 and 2-3-4, about
+    the group-2--group-3 axis. It is a separate restraint type so configuration,
+    diagnostics, and custom formulas can express improper intent independently.
+    """
+
+    _geom_name = "improper"
+    _target_base = "target_improper"
+    _known_keys = _KNOWN_IMPROPER_KEYS

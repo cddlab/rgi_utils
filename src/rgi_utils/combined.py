@@ -153,6 +153,8 @@ class CombinedRestraints:
             ar.resolve_sites(adapter)
         for dr in cfg.dihedral_data:
             dr.resolve_sites(adapter)
+        for ir in cfg.improper_data:
+            ir.resolve_sites(adapter)
         for pr in cfg.plane_data:
             pr.resolve_sites(adapter)
         # merge code-added custom restraints into a LOCAL list, then resolve every custom
@@ -217,6 +219,7 @@ class CombinedRestraints:
             rmsd_restraints=cfg.rmsd_data,
             angle_restraints=cfg.angle_data,
             dihedral_restraints=cfg.dihedral_data,
+            improper_restraints=cfg.improper_data,
             custom_restraints=custom_data,
             polymer_geometry=polymer_geometry,
             plane_restraints=plane_data,
@@ -244,6 +247,8 @@ class CombinedRestraints:
             n_grp_angle = 0 if ga is None else int(ga.mask.sum())
             gd = self.spec.group_dihedral
             n_grp_dihedral = 0 if gd is None else int(gd.mask.sum())
+            gi = self.spec.group_improper
+            n_grp_improper = 0 if gi is None else int(gi.mask.sum())
             gp = self.spec.group_plane
             n_grp_plane = 0 if gp is None else int(gp.mask.sum())
             vc = self.spec.vdw_config
@@ -290,6 +295,7 @@ class CombinedRestraints:
             ref_geom_s = (
                 f" ref_distance={sum(c.geom == 'distance' for c in _rg)}"
                 f" ref_angle={sum(c.geom == 'angle' for c in _rg)}"
+                f" ref_improper={sum(c.geom == 'improper' for c in _rg)}"
                 f" ref_dihedral={sum(c.geom == 'dihedral' for c in _rg)}"
                 f" ref_plane={sum(c.geom == 'plane' for c in _rg)}"
                 if _rg
@@ -300,7 +306,8 @@ class CombinedRestraints:
                 f"n_active={self.spec.n_active} "
                 f"conformer={self.spec.has_conformer()} {conf_counts} n_distance={n_dist} "
                 f"n_rmsd={n_rmsd} n_group_angle={n_grp_angle} "
-                f"n_group_dihedral={n_grp_dihedral} n_group_plane={n_grp_plane} "
+                f"n_group_dihedral={n_grp_dihedral} "
+                f"n_group_improper={n_grp_improper} n_group_plane={n_grp_plane} "
                 f"n_custom={len(self.spec.custom)}"
                 f"{ref_geom_s} "
                 f"vdw={vdw_s} conf_start_sigma={self.spec.conf_start_sigma:g} "
@@ -418,6 +425,7 @@ class CombinedRestraints:
         for label, arr in (
             ("angle", spec.group_angle),
             ("dihedral", spec.group_dihedral),
+            ("improper", spec.group_improper),
             ("plane", spec.group_plane),
         ):
             if arr is None or arr.mask.sum() <= 0:
@@ -627,6 +635,7 @@ class CombinedRestraints:
                 + bd.get("rmsd", 0.0)
                 + bd.get("group_angle", 0.0)
                 + bd.get("group_dihedral", 0.0)
+                + bd.get("group_improper", 0.0)
                 + bd.get("group_plane", 0.0)
             )
             # custom restraints are closures (not in the array breakdown) — evaluate each
@@ -657,6 +666,7 @@ class CombinedRestraints:
                 f"distance={bd['distance']:.5f} rmsd={bd.get('rmsd', 0.0):.5f} "
                 f"group_angle={bd.get('group_angle', 0.0):.5f} "
                 f"group_dihedral={bd.get('group_dihedral', 0.0):.5f} "
+                f"group_improper={bd.get('group_improper', 0.0):.5f} "
                 f"group_plane={bd.get('group_plane', 0.0):.5f} "
                 + "".join(f"{n}={v:.5f} " for n, v in custom_bd.items())
                 + f"total={total:.5f}"
