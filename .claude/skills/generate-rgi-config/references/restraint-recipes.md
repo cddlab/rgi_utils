@@ -255,8 +255,12 @@ custom_restraints_config:
 Vocabulary (geometry on centroids; **angles here are in radians**, unlike the built-in
 configs): `centroid` `distance` `angle` `dihedral` `rg` `norm` `dot` `coords` `kabsch` `rmsd`;
 penalties `harmonic` `flat_bottomed{,1,2}`; math `sqrt exp log abs sin cos wrap clip sum minimum
-maximum where` (`wrap(x)` = `atan2(sin x, cos x)` folds a dihedral deviation into ±π). No
-`if`, no imports — it is parsed safely. The formula must reduce to a scalar. `move` is a prediction selection name or list of
+maximum where` (`wrap(x)` = `atan2(sin x, cos x)` folds a dihedral deviation into ±π). Branch with
+`where(cond, a, b)` or the conditional expression `a if cond else b` (identical — `if` lowers to
+`where`), combining conditions with `and` / `or` / `not`; branching is **elementwise and evaluates
+both branches**, so a NaN in the dead branch poisons the gradient (guard the operand:
+`log(clip(x, 1e-8, 1e8))`, not `log(x) if x > 0 else 0.0`). No imports — it is parsed safely.
+The formula must reduce to a scalar. `move` is a prediction selection name or list of
 names;
 omitted/`all`/`both` moves all prediction selections. A reference-backed selection uses
 `refN and <selection>` and works with every geometry primitive; external-reference RMSD is

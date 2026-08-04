@@ -344,6 +344,14 @@ energy `energy(ctx) -> scalar`. Two authoring paths, ONE mechanism:
   (prediction A, reference-backed B); rigid superposition is `kabsch(A,B)`; best-fit-plane flatness is
   `plane(A)` (own plane) / `plane(A,B)` (A into B's plane, either argument reference-backable).
   (There is no `ref(sel,r)` function — reference-backing is the `refN and <selection>` string form.)
+  Branching is `where(cond, a, b)` **or** the conditional expression `a if cond else b` (`dsl.py`
+  lowers `ast.IfExp` to `ctx.where`, and `and`/`or`/`not` to `&`/`|`/negation) — **elementwise, never
+  short-circuiting**, which is what keeps it traceable in `lax.scan`. Two consequences: a NaN in the
+  DEAD branch poisons the gradient (guard the operand, not the result), and the resolve pass records
+  BOTH branches' selections (`_ev` evaluates every child before dispatch, so a conditional formula
+  cannot leave the else-branch's groups unresolved). `not` is guarded (`~True == -2` on a Python
+  bool, and comparisons DO fold to Python bools on `ResolveContext`); `~` itself is NOT in the
+  whitelist.
   `move` is a prediction selection name or list of names; unlisted prediction selections are
   stop-gradient pinned for that custom term, and reference-backed selections are always fixed.
 - **code (ctx fn)**: a Python `energy(ctx)` — passed directly (`CombinedRestraints.add_custom(fn=…)`

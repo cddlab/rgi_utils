@@ -276,8 +276,10 @@ def energy(ctx): ...
 
 `ctx` / the formula expose one **vocabulary**: geometry (`distance` `angle` `dihedral` `improper` `centroid`
 `rg` `norm` `dot`), penalty (`harmonic` `flat_bottomed` `flat_bottomed1` `flat_bottomed2`), and math
-(`sqrt` `exp` `log` `abs` `sin` `cos` `clip` `minimum` `maximum` `where` `sum` + arithmetic). Use `where(cond, a, b)`,
-not `if` (keeps it jax-traceable). The energy (× `weight`) is added to the CG objective with the
+(`sqrt` `exp` `log` `abs` `sin` `cos` `clip` `minimum` `maximum` `where` `sum` + arithmetic). Branch with
+`where(cond, a, b)` or the conditional expression `a if cond else b` (the same thing — `if` is lowered to
+`where`), combining conditions with `and` / `or` / `not`; branching is elementwise and **evaluates both
+branches**, so a `NaN` in the dead branch poisons the gradient. The energy (× `weight`) is added to the CG objective with the
 usual `start_sigma` / `stop_sigma` gating. `move` accepts a prediction selection name or list
 of names; omitted/`all`/`both` moves every prediction selection, while ref-backed selections stay fixed. Formulas are parsed safely (no
 `eval`). A custom selection can use

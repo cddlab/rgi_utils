@@ -430,6 +430,8 @@ def test_dsl_rejects_unsafe():
     from rgi_utils.custom.dsl import parse_formula
 
     parse_formula("(distance(A,B) - 2.0)**2")  # ok
+    # branching + logical operators are part of the surface (they lower to where / & / |)
+    parse_formula("rg(A) if (rg(A) > 1.0) and not (rg(B) > 2.0) else rg(B)")
     for bad in [
         "__import__('os').system('x')",
         "open('f')",
@@ -437,10 +439,195 @@ def test_dsl_rejects_unsafe():
         "x[0]",
         "[i for i in y]",
         "lambda: 1",
-        "distance(A,B) and 1",  # BoolOp not allowed (use & for elementwise)
+        "f'{distance(A,B)}'",  # JoinedStr
+        "~(rg(A) > 1.0)",  # Invert: `not` is the only negation (see _logical_not)
     ]:
         with pytest.raises(ValueError):
             parse_formula(bad)
+
+
+def _energies_3backend(energy, selections, full, n=12):
+    """(numpy, torch, jax) energies of one formula, plus its spec and active coords.
+
+    ``full`` is a FULL ``(n, 3)`` coordinate array, sliced per-spec by ``active_sites``.
+    That slicing is the point: ``active_sites`` is the union of the selections the formula
+    actually REFERENCES, so two formulas mentioning different groups get different
+    ``n_active`` and a shared ``(n_active, 3)`` array would silently compare different atoms.
+    """
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    spec = _spec_from_entries([{"energy": energy, "selections": selections}], n=n)
+    pos = np.ascontiguousarray(full[spec.active_sites])
+    return (
+        float(build_terms(spec.custom, "numpy")[0][-1](pos)),
+        float(
+            build_terms(spec.custom, "torch")[0][-1](
+                torch.tensor(pos, dtype=torch.float64)
+            )
+        ),
+        float(build_terms(spec.custom, "jax")[0][-1](jnp.asarray(pos))),
+        spec,
+        pos,
+    )
+
+
+_TERNARY_SELECTIONS = {"A": "resid 1 to 3", "B": "resid 5 to 6", "C": "resid 8 to 9"}
+
+
+def _full_positions(n: int = 12, seed: int = 4) -> np.ndarray:
+    return np.random.default_rng(seed).standard_normal((n, 3)) * 2.0
+
+
+def test_dsl_ternary_matches_where():
+    """``a if cond else b`` IS ``where(cond, a, b)`` — same value on all three backends.
+
+    The ternary is lowered to ``ctx.where`` (NOT a Python branch), which is what keeps the
+    closure traceable inside ``lax.scan``. The positions put ``rg(A)`` well above the
+    switch point, so the active branch is smooth and an FD gradient is meaningful.
+    """
+    torch = pytest.importorskip("torch")
+
+    full = _full_positions()
+    ternary = "harmonic(rg(A), 1.0) if rg(A) > 1.0 else 0.0"
+    explicit = "where(rg(A) > 1.0, harmonic(rg(A), 1.0), 0.0)"
+    e_np, e_t, e_j, spec, pos = _energies_3backend(ternary, _TERNARY_SELECTIONS, full)
+    w_np, w_t, w_j, _, _ = _energies_3backend(explicit, _TERNARY_SELECTIONS, full)
+    assert e_np > 0.0, "condition must be TAKEN, else this compares 0.0 to 0.0"
+    assert abs(e_np - e_t) < 1e-9 and abs(e_np - e_j) < 1e-9
+    assert abs(e_np - w_np) < 1e-9, f"ternary={e_np} where={w_np}"
+    assert abs(e_t - w_t) < 1e-9 and abs(e_j - w_j) < 1e-9
+
+    np_clo = build_terms(spec.custom, "numpy")[0][-1]
+    g_fd = _fd_grad(
+        lambda x: float(np_clo(x.reshape(spec.n_active, 3))), pos.flatten()
+    ).reshape(spec.n_active, 3)
+    pt = torch.tensor(pos, dtype=torch.float64, requires_grad=True)
+    build_terms(spec.custom, "torch")[0][-1](pt).backward()
+    assert np.allclose(pt.grad.numpy(), g_fd, atol=1e-6)
+
+
+def test_dsl_ternary_not_taken_branch():
+    """The ELSE branch: an unsatisfiable condition must select the second value."""
+    full = _full_positions()
+    e_np, e_t, e_j, _, _ = _energies_3backend(
+        "0.0 if rg(A) > 1000.0 else harmonic(rg(A), 1.0)", _TERNARY_SELECTIONS, full
+    )
+    ref_np, _, _, _, _ = _energies_3backend(
+        "harmonic(rg(A), 1.0)", _TERNARY_SELECTIONS, full
+    )
+    assert abs(e_np - ref_np) < 1e-9, f"else branch not selected: {e_np} vs {ref_np}"
+    assert abs(e_np - e_t) < 1e-9 and abs(e_np - e_j) < 1e-9
+
+
+def test_dsl_boolop_and_not():
+    """``and`` / ``or`` / ``not`` are ELEMENTWISE (they lower to ``&`` / ``|``) and do not
+    short-circuit. Checked by construction, not just by "it ran": ``rg(B) > 1000`` is false,
+    so ``not (...)`` is true and the whole condition reduces to ``rg(A) > 1.0`` — the result
+    must therefore equal the plain single-condition form.
+    """
+    composed = (
+        "harmonic(rg(A), 1.0) if (rg(A) > 1.0) and "
+        "(not (rg(B) > 1000.0) or (rg(C) < 0.0)) else harmonic(rg(B), 1.0)"
+    )
+    # the reference formulas keep rg(C) / rg(A) alive so every spec resolves the SAME
+    # selections -> identical active_sites -> the energies are comparable at all.
+    reduced = (
+        "harmonic(rg(A), 1.0) if rg(A) > 1.0 else harmonic(rg(B), 1.0) + 0.0*rg(C)"
+    )
+    full = _full_positions()
+    e_np, e_t, e_j, _, _ = _energies_3backend(composed, _TERNARY_SELECTIONS, full)
+    r_np, _, _, _, _ = _energies_3backend(reduced, _TERNARY_SELECTIONS, full)
+    assert abs(e_np - r_np) < 1e-9, f"and/or/not mis-evaluated: {e_np} vs {r_np}"
+    assert abs(e_np - e_t) < 1e-9 and abs(e_np - e_j) < 1e-9
+
+    # ...and the same condition ANDed with a false term must flip to the else branch.
+    falsified = (
+        "harmonic(rg(A), 1.0) if (rg(A) > 1.0) and (rg(B) > 1000.0) "
+        "else harmonic(rg(B), 1.0)"
+    )
+    f_np, f_t, f_j, _, _ = _energies_3backend(falsified, _TERNARY_SELECTIONS, full)
+    b_np, _, _, _, _ = _energies_3backend(
+        "harmonic(rg(B), 1.0) + 0.0*rg(A)", _TERNARY_SELECTIONS, full
+    )
+    assert abs(f_np - b_np) < 1e-9, f"'and' with a false term not honoured: {f_np}"
+    assert abs(f_np - f_t) < 1e-9 and abs(f_np - f_j) < 1e-9
+
+
+def test_dsl_ternary_resolves_both_branches():
+    """Both branches' selections must be resolved at setup.
+
+    Non-obvious because ``ResolveContext.where`` returns only its FIRST value — what saves
+    it is that ``_ev`` evaluates every child node before dispatching, so the else-branch's
+    ``distance(C,D)`` still records C and D. Without this, a conditional formula would blow
+    up at minimize time with "selection was not resolved".
+    """
+    spec = _spec_from_entries(
+        [
+            {
+                "energy": "distance(A,B) if distance(A,B) < distance(C,D) else distance(C,D)",
+                "selections": {
+                    "A": "resid 1 to 2",
+                    "B": "resid 4 to 5",
+                    "C": "resid 7 to 8",
+                    "D": "resid 10 to 11",
+                },
+            }
+        ]
+    )
+    assert set(spec.custom[0].selections) == {"A", "B", "C", "D"}
+    # and it actually evaluates (no KeyError from the unresolved else branch)
+    assert float(build_terms(spec.custom, "numpy")[0][-1](_positions(spec))) > 0.0
+
+
+def test_dsl_ternary_jax_minimize_nearest_group():
+    """End-to-end motivation: pull a group toward whichever of two targets is nearer.
+
+    Runs under the pure-jax CG (the AF3 ``lax.scan`` closure path), so it also proves the
+    ternary traces — a Python ``if`` on the traced condition could not. PA sits 6 A away and
+    PB 20 A away, so only PA may be approached.
+    """
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.optim.jax_optim import make_minimizer
+
+    n = 12
+    selections = {"L": "resid 1 to 2", "PA": "resid 5 to 6", "PB": "resid 9 to 10"}
+    spec = _spec_from_entries(
+        [
+            {
+                "energy": "flat_bottomed2(distance(L,PA), 2.0) "
+                "if distance(L,PA) < distance(L,PB) "
+                "else flat_bottomed2(distance(L,PB), 2.0)",
+                "selections": selections,
+                "move": "L",
+            }
+        ],
+        n=n,
+    )
+    coords = np.zeros((1, n, 3))
+    coords[0, [0, 1]] = [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]]  # L   centroid (0, 0.5, 0)
+    coords[0, [4, 5]] = [[6.0, 0.0, 0.0], [6.0, 1.0, 0.0]]  # PA  centroid (6, 0.5, 0)
+    coords[0, [8, 9]] = [[20.0, 0.0, 0.0], [20.0, 1.0, 0.0]]  # PB centroid (20, 0.5, 0)
+
+    out = np.asarray(make_minimizer(spec, max_iter=300)(jnp.asarray(coords), 0.0))
+    assert np.all(np.isfinite(out)), "ternary produced NaN/Inf under the jax minimizer"
+
+    def _measure(a, b):
+        m = _spec_from_entries(
+            [{"energy": f"distance({a},{b})", "selections": selections}], n=n
+        )
+        return float(build_terms(m.custom, "numpy")[0][-1](out[0][m.active_sites]))
+
+    assert _measure("L", "PA") == pytest.approx(2.0, abs=0.2), "near target not reached"
+    assert _measure("L", "PB") > 10.0, "the FAR target was selected"
+    assert np.allclose(out[0, [4, 5, 8, 9]], coords[0, [4, 5, 8, 9]], atol=1e-8), (
+        "move: L must pin both targets"
+    )
 
 
 def test_config_whitelist():

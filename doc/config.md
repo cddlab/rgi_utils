@@ -1074,10 +1074,21 @@ Math functions are dispatched to the active backend:
 |---|---|
 | elementwise | `sqrt` `exp` `log` `abs` `sin` `cos` `clip(x, lo, hi)` `wrap(x)` = $\mathrm{atan2}(\sin x, \cos x)$, folds an angle/deviation into $[-\pi, \pi]$ (use on `dihedral` deviations — see Periodicity above) |
 | reductions | `sum` `minimum` `maximum` |
-| branching | `where(cond, a, b)` — there is **no `if`** (keeps the closure jax-traceable, since it must trace inside `lax.scan`) |
+| branching | `where(cond, a, b)`, or the conditional expression `a if cond else b` — **the same thing** (`if` is lowered to `where`) |
 
-Supported operators are `+ - * / ** %`, unary `-`, and comparisons (`<` `<=` …). Use `&` and `|`
-to combine boolean masks for `where`.
+Supported operators are `+ - * / ** %`, unary `-`, comparisons (`<` `<=` …), and the logical
+`and` / `or` / `not`. `&` and `|` also work and mean exactly the same as `and` / `or`.
+
+> ⚠️ **Branching is elementwise and never short-circuits — both branches are always evaluated.**
+> That is what keeps the closure traceable inside `lax.scan` (a real Python branch on a traced
+> value is impossible), but it has one sharp edge: if the branch that is *not* selected produces
+> a `NaN`/`inf` — `log` of a non-positive, `sqrt` of a negative, a division by zero — the **value**
+> stays correct while the **gradient** becomes `NaN`, and the CG then moves nothing. Guard the
+> operand instead of the result: write `log(clip(x, 1e-8, 1e8))`, not `log(x) if x > 0 else 0.0`.
+
+Because both branches are evaluated, a conditional formula resolves the atom selections of
+**both** of them at setup — the `built spec` selection count covers the whole formula, not just
+the branch that happens to be live.
 
 ### Examples
 
@@ -1101,6 +1112,17 @@ custom_restraints_config:
   - name: planar_dihedral
     energy: "wrap(dihedral(A, B, C, D) - 3.14159)**2"
     selections: {A: "resid 10", B: "resid 11", C: "resid 12", D: "resid 13"}
+  # nearest of two equivalent pockets: only the closer one pulls (homodimer A/B, ligand C)
+  - name: nearest_pocket
+    energy: "flat_bottomed2(distance(L, PA), 4.0) if distance(L, PA) < distance(L, PB)
+             else flat_bottomed2(distance(L, PB), 4.0)"
+    selections:
+      L:  "chain C"
+      PA: "chain A and resid 50 to 60"
+      PB: "chain B and resid 50 to 60"
+    move: L        # only the ligand moves; both pockets are pinned
+    # NOTE: the choice is re-made every step from the CURRENT coordinates — it is not
+    # latched at the moment the restraint activates.
   # NCS symmetry: drive two chains to the same shape via Kabsch superposition (|A| == |B|)
   - name: ncs
     energy: "norm(kabsch(A, B) - coords(B))"
