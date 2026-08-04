@@ -378,9 +378,14 @@ the smallest eigenvector, which is why no `eigh` was added to the ops facade): a
 compared torch-vs-jax, not against a numpy FD. In `plane(A,B)` only the normal is fixed — the plane's
 CENTRE still carries gradient, so a free `B` is pulled toward `A` unless `move` pins it.
 The closure must reduce to a **scalar** (`ops.sum` over batch dims) or `jax.value_and_grad` rejects it.
-Selections resolve at setup via a **resolve pass** (run the energy with `ResolveContext`). On CUDA the
-torch CG runs **eager** when any custom is present (the fused `gpu_cg` `_energy` bypasses `energy_fn`,
-so it can't see closures) — correct, just unfused; the built-ins keep the fused path. `import
+Selections resolve at setup via a **resolve pass** (run the energy with `ResolveContext`). On CUDA a
+custom restraint does NOT force the CG to eager: `gpu_cg`'s artifact is module-global and cannot see
+spec-specific closures, so `torch_optim._get_custom_cvg(mode)` compiles a **per-optimizer** energy that
+wraps the SAME `_torch_cg_gpu._ENERGY_BY_MODE[mode]` base and adds `gates[i] * closure_i` on top —
+so the two dynamic VdW terms (fixed background `mode&1`, active-active polymer `mode&2`) stay inside
+the compiled graph instead of dropping the whole CG to eager. Cost of the per-optimizer artifact: one
+compile per structure and per VdW gate state (the mode key), vs `gpu_cg`'s process-wide reuse. Any
+compile failure still degrades to the eager CG, which sums the identical terms. `import
 rgi_utils` stays numpy-only (torch/jax pulled lazily per backend by `get_ops`). Harness:
 `tests/test_custom.py` + `tests/test_custom_move.py` (both paths × 3-backend energy/grad
 parity + move pinning + jax-scan + torch minimize + DSL safety). Full config surface: `doc/config.md`.
