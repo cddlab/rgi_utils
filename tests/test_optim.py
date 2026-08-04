@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -1354,6 +1355,182 @@ def test_dynamic_vdw_pair_energy_matches_optimizer():
         )
     )
     assert e_method > 0.0 and abs(e_method - e_pure) < 1e-10, (e_method, e_pure)
+
+
+def _vdw_and_custom_spec(n_bg: int = 1):
+    """A spec carrying, at once: conformer terms, the dynamic fixed-background VdW
+    (``vdw_config``), the active-active polymer VdW (``active_vdw_config``) and a custom
+    restraint — i.e. every ingredient of the compiled custom-inclusive energy."""
+    from rgi_utils.config import RestraintsConfig
+    from rgi_utils.spec import ActiveVdwConfig
+
+    m = Chem.MolFromSmiles("CC")
+    m = Chem.AddHs(m)
+    AllChem.EmbedMolecule(m, randomSeed=1)
+    c = np.asarray(m.GetConformer().GetPositions())
+    n = m.GetNumAtoms()
+    lc = LigandConf(
+        mol=m, conf_coords=c, global_indices=np.arange(n), conformer_restraints=True
+    )
+    n_atom = n + n_bg
+    elements = np.zeros(n_atom, dtype=np.int64)
+    for i, atom in enumerate(m.GetAtoms()):
+        elements[i] = atom.GetAtomicNum()
+    elements[n:] = 6  # heavy "protein" background atoms
+
+    cfg = RestraintsConfig.from_dict(
+        {
+            "custom_restraints_config": [
+                {
+                    "name": "c",
+                    "energy": "(distance(A, B) - 3.0)**2",
+                    "selections": {"A": "index 0", "B": "index 1"},
+                }
+            ]
+        }
+    )
+    records = [
+        SimpleNamespace(
+            chain="A",
+            resid=i + 1,
+            index=i,
+            name="C",
+            mol_type="ligand",
+            resname="LIG",
+        )
+        for i in range(n_atom)
+    ]
+    adapter = SimpleNamespace(iter_atoms=lambda: iter(records))
+    for cd in cfg.custom_data:
+        cd.resolve_sites(adapter)
+
+    spec = build_spec(
+        [lc],
+        [],
+        {"bond": {"weight": 1.0}, "vdw": {"weight": 1.0, "scale": 0.9}},
+        elements=elements,
+        custom_restraints=cfg.custom_data,
+    )
+    assert spec.vdw_config is not None and spec.has_custom()
+    # active-active polymer VdW is only built from a polymer geometry, which this synthetic
+    # ligand-only spec has none of -- attach it directly so mode 2/3 are exercised.
+    n_active = spec.n_active
+    spec.active_vdw_config = ActiveVdwConfig(
+        weight=1.0,
+        radii=np.full(n_active, 1.7),
+        polymer_mask=np.ones(n_active, dtype=bool),
+        excluded_codes=np.zeros(0, dtype=np.int64),
+        scale=0.9,
+        dmax=5.0,
+        max_neighbors=4,
+    )
+
+    coords = np.zeros((1, n_atom, 3))
+    coords[0, :n, :] = c
+    for j in range(n_bg):
+        coords[0, n + j, :] = c[j] + np.array([0.5, 0.0, 0.0])  # a clash
+    return spec, coords
+
+
+def _mode_args(opt, coords):
+    """``{mode: extra-args tuple}`` for ``_ENERGY_BY_MODE``, built from an ``_ensure``d
+    optimizer the same way ``minimize`` builds them."""
+    from rgi_utils.optim._torch_cg_gpu import build_active_vdw_pairs
+
+    active = coords[0, opt._active_idx, :]
+    bg_pos = coords[0, opt._vdw["bg_global"], :]
+    v, av = opt._vdw, opt._active_vdw
+    vdw = (bg_pos, v["lig_local"], v["lig_r"], v["bg_r"], v["scale"], v["weight"])
+    neighbours, pair_factor = build_active_vdw_pairs(
+        active,
+        av["radii"],
+        av["polymer_mask"],
+        av["excluded_codes"],
+        av["dmax"],
+        av["max_neighbors"],
+    )
+    active_vdw = (neighbours, pair_factor, av["radii"], av["scale"], av["weight"])
+    return (
+        active,
+        bg_pos,
+        {
+            0: (),
+            1: vdw,
+            2: active_vdw,
+            3: vdw + active_vdw,
+        },
+    )
+
+
+@pytest.mark.parametrize("mode", [1, 2, 3])
+def test_compiled_vdw_energy_matches_eager(mode):
+    """Every ``_ENERGY_BY_MODE`` variant must compile to the same maths as eager — not
+    just mode 0 (``test_compiled_energy_matches_eager``). Modes 1/2/3 fold in the DYNAMIC
+    VdW terms (fixed background / active-active neighbour list), which the CPU suite
+    otherwise never runs through inductor at all. Skips where no compile toolchain."""
+    torch = pytest.importorskip("torch")
+    from rgi_utils.optim import _torch_cg_gpu as g
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+
+    spec, coords_np = _vdw_and_custom_spec()
+    coords = torch.tensor(coords_np, dtype=torch.float64)
+    opt = TorchRestraintOptimizer(spec, max_iter=10)
+    opt._ensure(coords.device, coords.dtype)
+    active, _bg, extras = _mode_args(opt, coords)
+    prepared = opt._gated_prepared(None, None)
+
+    base = g._ENERGY_BY_MODE[mode]
+    extra = extras[mode]
+    ge, ve = torch.func.grad_and_value(base, argnums=0)(active, prepared, *extra)
+    try:
+        comp = torch.compile(torch.func.grad_and_value(base, argnums=0))
+        gc, vc = comp(active, prepared, *extra)
+    except Exception as exc:  # no C++ toolchain / unsupported inductor env
+        pytest.skip(f"torch.compile unavailable: {exc}")
+    assert float(ve) > 0.0, "degenerate fixture: the VdW term contributes nothing"
+    assert torch.allclose(ge, gc, atol=1e-8), (ge - gc).abs().max()
+    assert abs(float(ve) - float(vc)) < 1e-8
+
+
+@pytest.mark.parametrize("mode", [0, 1, 2, 3])
+def test_custom_compiled_energy_includes_vdw(mode):
+    """The per-optimizer custom-inclusive compiled energy must equal the eager CG's own
+    objective (``total_energy`` + ``_vdw_energy`` + ``active_vdw_pair_energy`` +
+    ``_custom_energy``) for EVERY VdW mode. Before this, custom + dynamic VdW had no
+    compiled artifact at all and the whole CG dropped to eager on CUDA; the risk of the
+    fix is a mis-assembled argument tuple, which this cross-check catches."""
+    torch = pytest.importorskip("torch")
+    from rgi_utils.energy import torch_energy
+    from rgi_utils.optim._torch_cg_gpu import active_vdw_pair_energy
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+
+    spec, coords_np = _vdw_and_custom_spec()
+    coords = torch.tensor(coords_np, dtype=torch.float64)
+    opt = TorchRestraintOptimizer(spec, max_iter=10)
+    opt._ensure(coords.device, coords.dtype)
+    active, bg_pos, extras = _mode_args(opt, coords)
+    prepared = opt._gated_prepared(None, None)
+    gates = torch.ones(len(opt._custom_terms), dtype=coords.dtype)
+
+    cvg = opt._get_custom_cvg(mode)
+    if cvg is None:
+        pytest.skip("torch.compile unavailable")
+    try:
+        _grad, value = cvg(active, prepared, gates, *extras[mode])
+    except Exception as exc:
+        pytest.skip(f"torch.compile unavailable: {exc}")
+
+    # independent reference: exactly what the eager `energy_fn` in minimize() sums
+    ref = torch_energy.total_energy(active, prepared, None, None)
+    ref = ref + opt._custom_energy(active, None, None)
+    if mode & 1:
+        ref = ref + opt._vdw_energy(active, bg_pos)
+    if mode & 2:
+        neighbours, pair_factor, radii, scale, weight = extras[2]
+        ref = ref + active_vdw_pair_energy(
+            active, neighbours, pair_factor, radii, scale, weight
+        )
+    assert abs(float(value) - float(ref)) < 1e-8, (float(value), float(ref))
 
 
 def test_sync_free_cg_nonfinite_guard():

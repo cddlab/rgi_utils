@@ -27,11 +27,16 @@ NB: the default (inductor) compile mode is deliberate -- ``mode="reduce-overhead
 every line-search step, which makes the CUDA-graph tree re-record each call; plain
 inductor fusion has no such static-input requirement.
 
-The dynamic fixed-background VdW term (default boltz/protenix conformer) is folded into a
-second compiled energy (``_energy_vdw``) so that path is JIT-compiled too. Used only for
-CUDA coords; CPU keeps ``_minimize_cg``. Shared ``_cg_config`` constants keep the
-convergence contract identical to CPU/jax. Any compile failure degrades to the eager
-functional CG -- still the correct early-exit algorithm.
+The two DYNAMIC VdW terms -- the fixed background (default boltz/protenix conformer) and the
+active-active polymer neighbour list -- are folded into further compiled energies, one per
+combination, so those paths are JIT-compiled too: ``_ENERGY_BY_MODE`` maps the 2-bit mode
+(bit 0 = fixed background, bit 1 = active-active) onto ``_energy`` / ``_energy_vdw`` /
+``_energy_active_vdw`` / ``_energy_both_vdw``. ``torch_optim._get_custom_cvg`` wraps the SAME
+table and adds the custom-restraint closures on top (its artifact must be per-optimizer,
+since the closures are spec-specific), so the with- and without-custom compiled paths cannot
+drift apart. Used only for CUDA coords; CPU keeps ``_minimize_cg``. Shared ``_cg_config``
+constants keep the convergence contract identical to CPU/jax. Any compile failure degrades
+to the eager functional CG -- still the correct early-exit algorithm.
 """
 
 from __future__ import annotations
@@ -216,6 +221,17 @@ def _energy_both_vdw(
     )
 
 
+# VdW mode -> energy fn, keyed by the same bits as ``_compile_failed`` (0=fixed-background,
+# 1=active-active). Shared with ``torch_optim._get_custom_cvg``, which wraps the SAME base
+# energy and adds the custom closures on top, so the two compiled paths cannot drift.
+_ENERGY_BY_MODE = {
+    0: _energy,
+    1: _energy_vdw,
+    2: _energy_active_vdw,
+    3: _energy_both_vdw,
+}
+
+
 def _get_cvg(mode=0):
     """Return the compiled grad/value artifact for the requested VdW mode."""
 
@@ -223,14 +239,9 @@ def _get_cvg(mode=0):
         return None
     try:
         if mode not in _CVG_BY_MODE:
-            fn = {
-                0: _energy,
-                1: _energy_vdw,
-                2: _energy_active_vdw,
-                3: _energy_both_vdw,
-            }[mode]
             _CVG_BY_MODE[mode] = torch.compile(
-                torch.func.grad_and_value(fn, argnums=0), fullgraph=False
+                torch.func.grad_and_value(_ENERGY_BY_MODE[mode], argnums=0),
+                fullgraph=False,
             )
         return _CVG_BY_MODE[mode]
     except Exception as exc:
@@ -331,9 +342,7 @@ def gpu_cg(prepared, x0, max_iter, vdw=None, active_vdw=None):
 
     # eager fallback (CPU coords, compile disabled, or compiled artifact failed): the same
     # correct early-exit CG on the same (vdw-augmented) energy used by the compiled path.
-    base = {0: _energy, 1: _energy_vdw, 2: _energy_active_vdw, 3: _energy_both_vdw}[
-        mode
-    ]
+    base = _ENERGY_BY_MODE[mode]
     extra = (vdw or ()) + (active_vdw or ())
 
     def e_of(a):

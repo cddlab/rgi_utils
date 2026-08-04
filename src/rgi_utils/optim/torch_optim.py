@@ -56,8 +56,10 @@ class TorchRestraintOptimizer:
         # can't be saved for backward -- boltz/Lightning run under inference_mode).
         self._custom_terms = None
         # per-optimizer torch.compile'd energy+grad INCLUDING the custom closures (the
-        # module-global gpu_cg energy can't see them). None=unbuilt, False=disabled/failed.
-        self._custom_cvg = None
+        # module-global gpu_cg energy can't see them), keyed by the same VdW mode bits as
+        # _torch_cg_gpu._CVG_BY_MODE. Missing=unbuilt, False=disabled/failed for THAT mode
+        # (one artifact failing must not disable the others).
+        self._custom_cvg = {}
 
     def _custom_energy(self, active, sigma, step):
         """Per-entry gated sum of the custom-restraint closure energies at ``active``
@@ -78,49 +80,61 @@ class TorchRestraintOptimizer:
             total = e if total is None else total + e
         return total
 
-    def _get_custom_cvg(self):
-        """The compiled ``grad_and_value`` of ``total_energy + sum(gate_i * closure_i)``,
-        built ONCE per optimizer (the custom closures are spec-specific, so this can't
-        reuse gpu_cg's module-global artifact). The per-entry sigma gates are passed as a
-        tensor argument (``gates``) — NOT a python-float — so one artifact serves every
-        noise level without a dynamo recompile. ``None`` -> compile disabled / failed
-        (caller runs eager). The AST/closures are static, so dynamo traces them to a fixed
-        graph; ``fullgraph=False`` tolerates any residual break."""
-        if self._custom_cvg is False:
+    def _get_custom_cvg(self, mode=0):
+        """The compiled ``grad_and_value`` of ``<mode's base energy> + sum(gate_i *
+        closure_i)``, built ONCE per optimizer and VdW ``mode`` (the custom closures are
+        spec-specific, so this can't reuse gpu_cg's module-global artifact). The base is
+        ``_torch_cg_gpu._ENERGY_BY_MODE[mode]``, i.e. the SAME function gpu_cg compiles for
+        the no-custom path, so the dynamic fixed-background / active-active VdW terms are
+        JIT-compiled here too instead of dropping the whole CG to eager. The per-entry sigma
+        gates are passed as a tensor argument (``gates``) — NOT a python-float — so one
+        artifact serves every noise level without a dynamo recompile. ``None`` -> compile
+        disabled / failed (caller runs eager). The AST/closures are static, so dynamo traces
+        them to a fixed graph; ``fullgraph=False`` tolerates any residual break."""
+        cached = self._custom_cvg.get(mode)
+        if cached is False:
             return None
-        if self._custom_cvg is not None:
-            return self._custom_cvg
+        if cached is not None:
+            return cached
         if os.environ.get("RGI_DISABLE_COMPILE", "") not in ("", "0", "false"):
-            self._custom_cvg = False
+            self._custom_cvg[mode] = False
             return None
+        from rgi_utils.optim._torch_cg_gpu import _ENERGY_BY_MODE
+
+        base = _ENERGY_BY_MODE[mode]
         closures = [c for *_meta, c in self._custom_terms]
 
-        def energy(a, prepared, gates):
-            e = torch_energy.total_energy(a, prepared, sigma=None)
+        def energy(a, prepared, gates, *vdw_args):
+            e = base(a, prepared, *vdw_args)
             for i in range(len(closures)):
                 e = e + gates[i] * closures[i](a)
             return e
 
         try:
-            self._custom_cvg = torch.compile(
+            self._custom_cvg[mode] = torch.compile(
                 torch.func.grad_and_value(energy, argnums=0), fullgraph=False
             )
         except Exception as exc:
             logger.warning(
                 "torch.compile of the custom GPU energy failed (%s); eager", exc
             )
-            self._custom_cvg = False
+            self._custom_cvg[mode] = False
             return None
-        return self._custom_cvg
+        return self._custom_cvg[mode]
 
-    def _minimize_custom_gpu(self, active, sigma, step, mi) -> bool:
-        """GPU CG with the torch.compile'd custom-inclusive energy. Returns False (caller
-        falls back to the eager CG) when compile is unavailable or the artifact fails."""
-        cvg = self._get_custom_cvg()
+    def _minimize_custom_gpu(self, active, sigma, step, mi, vdw, active_vdw) -> bool:
+        """GPU CG with the torch.compile'd custom-inclusive energy. ``vdw`` /
+        ``active_vdw`` are the same optional argument tuples ``gpu_cg`` takes; they select
+        the base energy so the dynamic VdW terms stay inside the compiled graph. Returns
+        False (caller falls back to the eager CG) when compile is unavailable or the
+        artifact fails."""
+        mode = (1 if vdw is not None else 0) | (2 if active_vdw is not None else 0)
+        cvg = self._get_custom_cvg(mode)
         if cvg is None:
             return False
         from rgi_utils.optim._torch_cg_gpu import _cg_minimize_torch
 
+        vdw_args = (vdw or ()) + (active_vdw or ())
         prepared_g = self._gated_prepared(sigma, step)
         # per-custom gate: active sigma window AND active step window (one or the other).
         gates = torch.tensor(
@@ -136,7 +150,7 @@ class TorchRestraintOptimizer:
         )
         try:
             opt = _cg_minimize_torch(
-                lambda x: cvg(x, prepared_g, gates), active.detach(), mi
+                lambda x: cvg(x, prepared_g, gates, *vdw_args), active.detach(), mi
             )
             with torch.no_grad():
                 active.copy_(opt)
@@ -147,7 +161,7 @@ class TorchRestraintOptimizer:
             logger.warning(
                 "custom GPU CG (compiled) failed at runtime (%s); eager", exc
             )
-            self._custom_cvg = False
+            self._custom_cvg[mode] = False
             return False
 
     def _ensure(self, device, dtype) -> None:
@@ -167,6 +181,9 @@ class TorchRestraintOptimizer:
             from rgi_utils.custom.closure import build_terms
 
             self._custom_terms = build_terms(self.spec.custom, "torch", device=device)
+            # the compiled artifacts CLOSE OVER the terms rebuilt above (and their
+            # device-resident index tensors), so they must not survive a device change
+            self._custom_cvg = {}
         self._device = device
         if self._custom_terms:
             logger.info(
@@ -436,20 +453,41 @@ class TorchRestraintOptimizer:
                         e = e + ce
                     return e
 
-                if (
-                    self._is_cg()
-                    and active.is_cuda
-                    and has_custom
-                    and bg_pos is None
-                    and active_vdw is None
-                ):
-                    # GPU + custom (no dynamic fixed-background VdW): a per-optimizer
-                    # torch.compile'd energy that INCLUDES the custom closures (gpu_cg's
-                    # module-global energy can't see them). Falls back to the eager CG if
-                    # compile is disabled / fails. (custom + dynamic VdW stays eager below.)
-                    if not self._minimize_custom_gpu(active, sigma, step, mi):
+                # Argument tuples for the two DYNAMIC VdW terms, shared by both compiled
+                # paths (gpu_cg's module-global artifact and the custom-inclusive
+                # per-optimizer one) so they always fold in the same terms.
+                vdw = None
+                if bg_pos is not None:
+                    v = self._vdw
+                    vdw = (
+                        bg_pos,
+                        v["lig_local"],
+                        v["lig_r"],
+                        v["bg_r"],
+                        v["scale"],
+                        v["weight"],
+                    )
+                active_vdw_args = None
+                if active_vdw is not None:
+                    av = self._active_vdw
+                    active_vdw_args = (
+                        active_vdw[0],
+                        active_vdw[1],
+                        av["radii"],
+                        av["scale"],
+                        av["weight"],
+                    )
+
+                if self._is_cg() and active.is_cuda and has_custom:
+                    # GPU + custom: a per-optimizer torch.compile'd energy that INCLUDES the
+                    # custom closures (gpu_cg's module-global energy can't see them) on top
+                    # of the same _ENERGY_BY_MODE base, so the dynamic VdW terms stay
+                    # compiled too. Falls back to the eager CG if compile is disabled/fails.
+                    if not self._minimize_custom_gpu(
+                        active, sigma, step, mi, vdw, active_vdw_args
+                    ):
                         self._minimize_cg(active, energy_fn, mi)
-                elif self._is_cg() and active.is_cuda and not has_custom:
+                elif self._is_cg() and active.is_cuda:
                     # GPU: the same early-exit CG as the CPU path, but with an
                     # inductor-fused (NOT CUDA-graph) torch.compile'd energy+grad so the
                     # launch-bound eval stops dominating (the eager _minimize_cg below is
@@ -461,27 +499,6 @@ class TorchRestraintOptimizer:
                     # leaf, which would make dynamo recompile per value) and caches a
                     # stable dict per gate state for compile reuse. dynamic fixed-background
                     # VdW is folded in via gpu_cg's `vdw` tuple (bg_pos + radii/consts).
-                    vdw = None
-                    if bg_pos is not None:
-                        v = self._vdw
-                        vdw = (
-                            bg_pos,
-                            v["lig_local"],
-                            v["lig_r"],
-                            v["bg_r"],
-                            v["scale"],
-                            v["weight"],
-                        )
-                    active_vdw_args = None
-                    if active_vdw is not None:
-                        av = self._active_vdw
-                        active_vdw_args = (
-                            active_vdw[0],
-                            active_vdw[1],
-                            av["radii"],
-                            av["scale"],
-                            av["weight"],
-                        )
                     prepared_g = self._gated_prepared(sigma, step)
                     opt = gpu_cg(
                         prepared_g,
