@@ -48,6 +48,11 @@ import os
 import torch
 
 from rgi_utils.energy import torch_energy
+from rgi_utils.optim._cell_list import (
+    CELL_CHUNK_SIZE,
+    CELL_HASH_PRIMES,
+    CELL_OFFSETS,
+)
 from rgi_utils.optim._cg_config import (
     ARMIJO_C1,
     BACKTRACK,
@@ -108,6 +113,33 @@ def _vdw_pair_energy(active, bg_pos, lig_local, lig_r, bg_r, scale, weight):
     return weight * torch.sum(delta**2)
 
 
+def _cell_hash_torch(cells):
+    """Return an int32 spatial hash; callers verify cells after hash lookup."""
+    return (
+        cells[..., 0] * CELL_HASH_PRIMES[0]
+        ^ cells[..., 1] * CELL_HASH_PRIMES[1]
+        ^ cells[..., 2] * CELL_HASH_PRIMES[2]
+    )
+
+
+def _merge_cell_candidates_torch(best_dist2, best_idx, dist2, candidate, k):
+    """Keep the lexicographically smallest ``(distance squared, atom index)`` rows."""
+    merged_dist2 = torch.cat((best_dist2, dist2), dim=-1)
+    merged_idx = torch.cat((best_idx, candidate), dim=-1)
+
+    # Two stable sorts implement a deterministic lexicographic key without perturbing
+    # distances: index is the secondary key and squared distance the primary key.
+    by_index = torch.argsort(merged_idx, dim=-1, stable=True)
+    merged_dist2 = torch.gather(merged_dist2, -1, by_index)
+    merged_idx = torch.gather(merged_idx, -1, by_index)
+    by_distance = torch.argsort(merged_dist2, dim=-1, stable=True)
+    by_distance = by_distance[..., :k]
+    return (
+        torch.gather(merged_dist2, -1, by_distance),
+        torch.gather(merged_idx, -1, by_distance),
+    )
+
+
 def build_active_vdw_pairs(
     active,
     radii,
@@ -116,10 +148,13 @@ def build_active_vdw_pairs(
     dmax,
     max_neighbors,
 ):
-    """Build a fixed-width directed neighbour list from detached step coordinates.
+    """Build a fixed-width directed neighbour list with a sorted spatial cell list.
 
     Mutual directed rows receive weight 1/2 and one-sided KNN rows weight 1, so every
-    physical pair contributes once.  The list is held fixed during the subsequent CG.
+    physical pair contributes once. The list is held fixed during the subsequent CG.
+    Sorting is O(N log N); the 27 neighbouring hash buckets are traversed in bounded
+    chunks without a capacity cutoff. Normal molecular density is therefore O(N log N)
+    time and O(N*K) memory, while a fully collapsed cell correctly degrades to O(N^2).
     """
 
     n_atom = active.shape[-2]
@@ -130,15 +165,70 @@ def build_active_vdw_pairs(
         )
         return empty_idx, empty_idx.to(active.dtype)
     k = min(int(max_neighbors), n_atom - 1)
-    dist = torch.cdist(batch, batch)
-    eye = torch.eye(n_atom, dtype=torch.bool, device=active.device).unsqueeze(0)
-    dist = dist.masked_fill(eye, float("inf"))
-    values, neighbours = torch.topk(dist, k, dim=-1, largest=False, sorted=False)
+    n_batch = batch.shape[0]
+    device = batch.device
+
+    dmax_value = torch.as_tensor(dmax, dtype=batch.dtype, device=device)
+    cell_width = torch.where(dmax_value > 0, dmax_value, dmax_value.new_tensor(1.0))
+    hash_coords = torch.nan_to_num(batch, nan=0.0, posinf=0.0, neginf=0.0)
+    cells = torch.floor(hash_coords / cell_width).to(torch.int32)
+    hashes = _cell_hash_torch(cells)
+    order = torch.argsort(hashes, dim=-1, stable=True)
+    sorted_hashes = torch.gather(hashes, -1, order)
+
+    own_start = torch.searchsorted(sorted_hashes, hashes.contiguous(), right=False)
+    own_end = torch.searchsorted(sorted_hashes, hashes.contiguous(), right=True)
+    max_bucket = int(torch.max(own_end - own_start).item())
+
+    best_dist2 = torch.full(
+        (n_batch, n_atom, k), float("inf"), dtype=batch.dtype, device=device
+    )
+    best_idx = torch.zeros((n_batch, n_atom, k), dtype=torch.long, device=device)
+    source = torch.arange(n_atom, device=device).view(1, n_atom, 1)
+    batch_idx = torch.arange(n_batch, device=device).view(-1, 1, 1)
+    offsets = torch.tensor(CELL_OFFSETS, dtype=torch.int32, device=device)
+    chunk_offsets = torch.arange(CELL_CHUNK_SIZE, device=device).view(1, 1, -1)
+    cutoff2 = dmax_value * dmax_value
+
+    for offset in offsets:
+        query_cells = cells + offset
+        query_hashes = _cell_hash_torch(query_cells).contiguous()
+        starts = torch.searchsorted(sorted_hashes, query_hashes, right=False)
+        ends = torch.searchsorted(sorted_hashes, query_hashes, right=True)
+        for base in range(0, max_bucket, CELL_CHUNK_SIZE):
+            positions = starts[..., None] + base + chunk_offsets
+            position_valid = positions < ends[..., None]
+            safe_positions = torch.clamp(positions, max=n_atom - 1)
+            candidate = order[batch_idx, safe_positions]
+            candidate_cells = cells[batch_idx, candidate]
+            same_cell = torch.all(candidate_cells == query_cells[..., None, :], dim=-1)
+            candidate_coords = batch[batch_idx, candidate]
+            delta = batch[:, :, None, :] - candidate_coords
+            dist2 = torch.sum(delta * delta, dim=-1)
+            valid_candidate = (
+                position_valid
+                & same_cell
+                & (candidate != source)
+                & torch.isfinite(dist2)
+                & (dmax_value > 0)
+                & (dist2 <= cutoff2)
+            )
+            dist2 = torch.where(
+                valid_candidate, dist2, torch.full_like(dist2, float("inf"))
+            )
+            candidate = torch.where(
+                valid_candidate, candidate, torch.zeros_like(candidate)
+            )
+            best_dist2, best_idx = _merge_cell_candidates_torch(
+                best_dist2, best_idx, dist2, candidate, k
+            )
+
+    neighbours = best_idx
     source = torch.arange(n_atom, device=active.device).view(1, n_atom, 1)
     lo = torch.minimum(source, neighbours)
     hi = torch.maximum(source, neighbours)
     codes = lo * n_atom + hi
-    valid = values <= dmax
+    valid = torch.isfinite(best_dist2)
     valid = valid & (polymer_mask[source] | polymer_mask[neighbours])
     valid = valid & (radii[source] > 0) & (radii[neighbours] > 0)
     if excluded_codes.numel() > 0:
@@ -146,7 +236,6 @@ def build_active_vdw_pairs(
         positions = torch.clamp(positions, max=excluded_codes.numel() - 1)
         valid = valid & (excluded_codes[positions] != codes)
 
-    batch_idx = torch.arange(batch.shape[0], device=active.device).view(-1, 1, 1)
     reverse_neighbours = neighbours[batch_idx, neighbours]
     reverse_valid = valid[batch_idx, neighbours]
     reverse = ((reverse_neighbours == source.unsqueeze(-1)) & reverse_valid).any(-1)

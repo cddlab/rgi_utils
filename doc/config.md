@@ -844,6 +844,14 @@ checked against non-active fixed-background atoms on torch and JAX. Omit `start_
 `+inf`) to keep VdW active from the first denoising step; setting `start_sigma` delays all conformer
 terms together.
 
+The neighbor-list build uses a sorted spatial cell list with cell width `dmax`: atoms are sorted
+by an int32 cell hash, and only the same or 26 adjacent cells are searched. Hash collisions are
+checked against the full cell coordinate, and each bucket is traversed completely in fixed-width
+chunks, so there is no occupancy cap that can silently drop a clash. At ordinary molecular density
+the build is `O(N log N)` time with `O(N * max_neighbors)` working memory. A pathologically
+collapsed structure correctly degrades to `O(N^2)` time, but still avoids an `N x N` distance
+matrix.
+
 `max_neighbors` (default 32) caps each atom's neighbor list: a buried atom with more than
 `max_neighbors` partners within `dmax` keeps only its nearest `max_neighbors`. The nearest are the
 most clash-relevant, so this is a deliberate approximation — raise it for very dense cores. Under

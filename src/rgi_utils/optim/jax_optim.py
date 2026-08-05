@@ -22,6 +22,11 @@ import jax
 import jax.numpy as jnp
 
 from rgi_utils.energy import jax_energy
+from rgi_utils.optim._cell_list import (
+    CELL_CHUNK_SIZE,
+    CELL_HASH_PRIMES,
+    CELL_OFFSETS,
+)
 from rgi_utils.optim._cg_config import (
     ARMIJO_C1,
     BACKTRACK,
@@ -121,6 +126,35 @@ def _vdw_pair_energy(active, bg_pos, lig_local, lig_r, bg_r, scale, weight):
     return weight * jnp.sum(delta**2)
 
 
+def _cell_hash_jax(cells):
+    """Return an int32 spatial hash; callers verify cells after hash lookup."""
+    return (
+        cells[..., 0] * jnp.int32(CELL_HASH_PRIMES[0])
+        ^ cells[..., 1] * jnp.int32(CELL_HASH_PRIMES[1])
+        ^ cells[..., 2] * jnp.int32(CELL_HASH_PRIMES[2])
+    )
+
+
+def _batched_searchsorted_jax(sorted_values, queries, side):
+    return jax.vmap(lambda values, query: jnp.searchsorted(values, query, side=side))(
+        sorted_values, queries
+    ).astype(jnp.int32)
+
+
+def _merge_cell_candidates_jax(best_dist2, best_idx, dist2, candidate, k):
+    """Keep the lexicographically smallest ``(distance squared, atom index)`` rows."""
+    candidate = candidate.astype(best_idx.dtype)
+    merged_dist2 = jnp.concatenate((best_dist2, dist2), axis=-1)
+    merged_idx = jnp.concatenate((best_idx, candidate), axis=-1)
+    merged_dist2, merged_idx = jax.lax.sort(
+        (merged_dist2, merged_idx),
+        dimension=-1,
+        is_stable=True,
+        num_keys=2,
+    )
+    return merged_dist2[..., :k], merged_idx[..., :k].astype(best_idx.dtype)
+
+
 def _build_active_vdw_pairs(
     active,
     radii,
@@ -129,24 +163,90 @@ def _build_active_vdw_pairs(
     dmax,
     max_neighbors,
 ):
-    """Pure-jax fixed-width neighbour builder matching the torch implementation."""
+    """Pure-jax sorted-cell neighbour builder matching the torch implementation.
+
+    It is static-shape and JIT/scan compatible. Hash buckets are traversed completely in
+    fixed-width chunks, so no dense or hash-colliding cell silently loses candidates.
+    """
 
     n_atom = active.shape[-2]
-    batch = active.reshape((-1, n_atom, 3))
+    batch = jax.lax.stop_gradient(active.reshape((-1, n_atom, 3)))
     if n_atom < 2:  # nothing to pair (mirrors the torch builder's guard)
         empty = jnp.zeros((batch.shape[0], n_atom, 0), dtype=jnp.int32)
         return empty, empty.astype(active.dtype)
     k = min(int(max_neighbors), n_atom - 1)
-    diff = batch[:, :, None, :] - batch[:, None, :, :]
-    dist = jnp.sqrt(jnp.sum(diff**2, axis=-1) + EPS)
-    dist = jnp.where(jnp.eye(n_atom, dtype=bool)[None, :, :], jnp.inf, dist)
-    neg_values, neighbours = jax.lax.top_k(-dist, k)
-    values = -neg_values
+    n_batch = batch.shape[0]
+    dmax_value = jnp.asarray(dmax, dtype=batch.dtype)
+    cell_width = jnp.where(dmax_value > 0, dmax_value, jnp.asarray(1.0, batch.dtype))
+    hash_coords = jnp.nan_to_num(batch, nan=0.0, posinf=0.0, neginf=0.0)
+    cells = jnp.floor(hash_coords / cell_width).astype(jnp.int32)
+    hashes = _cell_hash_jax(cells)
+    order = jnp.argsort(hashes, axis=-1, stable=True).astype(jnp.int32)
+    sorted_hashes = jnp.take_along_axis(hashes, order, axis=-1)
+    own_start = _batched_searchsorted_jax(sorted_hashes, hashes, "left")
+    own_end = _batched_searchsorted_jax(sorted_hashes, hashes, "right")
+    max_bucket = jnp.max(own_end - own_start)
+
+    best_dist2 = jnp.full((n_batch, n_atom, k), jnp.inf, dtype=batch.dtype)
+    best_idx = jnp.zeros((n_batch, n_atom, k), dtype=jnp.int32)
+    source = jnp.arange(n_atom, dtype=jnp.int32).reshape((1, n_atom, 1))
+    batch_idx = jnp.arange(n_batch, dtype=jnp.int32).reshape((-1, 1, 1))
+    offsets = jnp.asarray(CELL_OFFSETS, dtype=jnp.int32)
+    chunk_offsets = jnp.arange(CELL_CHUNK_SIZE, dtype=jnp.int32).reshape((1, 1, -1))
+    cutoff2 = dmax_value * dmax_value
+
+    def offset_body(offset_index, state):
+        best_dist2, best_idx = state
+        query_cells = cells + offsets[offset_index]
+        query_hashes = _cell_hash_jax(query_cells)
+        starts = _batched_searchsorted_jax(sorted_hashes, query_hashes, "left")
+        ends = _batched_searchsorted_jax(sorted_hashes, query_hashes, "right")
+
+        def chunk_cond(chunk_state):
+            base, _best_dist2, _best_idx = chunk_state
+            return base < max_bucket
+
+        def chunk_body(chunk_state):
+            base, best_dist2, best_idx = chunk_state
+            positions = starts[..., None] + base + chunk_offsets
+            position_valid = positions < ends[..., None]
+            safe_positions = jnp.minimum(positions, n_atom - 1)
+            candidate = order[batch_idx, safe_positions]
+            candidate_cells = cells[batch_idx, candidate]
+            same_cell = jnp.all(candidate_cells == query_cells[..., None, :], axis=-1)
+            candidate_coords = batch[batch_idx, candidate]
+            delta = batch[:, :, None, :] - candidate_coords
+            dist2 = jnp.sum(delta * delta, axis=-1)
+            valid_candidate = (
+                position_valid
+                & same_cell
+                & (candidate != source)
+                & jnp.isfinite(dist2)
+                & (dmax_value > 0)
+                & (dist2 <= cutoff2)
+            )
+            dist2 = jnp.where(valid_candidate, dist2, jnp.inf)
+            candidate = jnp.where(valid_candidate, candidate, 0)
+            best_dist2, best_idx = _merge_cell_candidates_jax(
+                best_dist2, best_idx, dist2, candidate, k
+            )
+            return base + CELL_CHUNK_SIZE, best_dist2, best_idx
+
+        _base, best_dist2, best_idx = jax.lax.while_loop(
+            chunk_cond,
+            chunk_body,
+            (jnp.int32(0), best_dist2, best_idx),
+        )
+        return best_dist2, best_idx
+
+    best_dist2, neighbours = jax.lax.fori_loop(
+        0, len(CELL_OFFSETS), offset_body, (best_dist2, best_idx)
+    )
     source = jnp.arange(n_atom, dtype=jnp.int32).reshape((1, n_atom, 1))
     lo = jnp.minimum(source, neighbours)
     hi = jnp.maximum(source, neighbours)
     codes = lo * n_atom + hi
-    valid = values <= dmax
+    valid = jnp.isfinite(best_dist2)
     valid = valid & (polymer_mask[source] | polymer_mask[neighbours])
     valid = valid & (radii[source] > 0) & (radii[neighbours] > 0)
     if excluded_codes.shape[0] > 0:

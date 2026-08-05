@@ -283,6 +283,133 @@ def test_active_vdw_exclusion_gradient_and_backend_parity():
     np.testing.assert_allclose(np.asarray(grad_j), coords_t.grad.numpy(), atol=1e-5)
 
 
+def _dense_active_vdw_reference(
+    coords, radii, polymer_mask, excluded_codes, dmax, max_neighbors
+):
+    """Deterministic all-pairs oracle for the production sorted-cell builders."""
+    batch = np.asarray(coords, dtype=np.float32).reshape(-1, coords.shape[-2], 3)
+    radii = np.asarray(radii)
+    polymer_mask = np.asarray(polymer_mask)
+    excluded = {int(code) for code in np.asarray(excluded_codes)}
+    n_batch, n_atom, _ = batch.shape
+    k = min(int(max_neighbors), n_atom - 1)
+    neighbours = np.zeros((n_batch, n_atom, k), dtype=np.int64)
+    valid = np.zeros((n_batch, n_atom, k), dtype=bool)
+    atom_indices = np.arange(n_atom)
+    cutoff2 = float(dmax) ** 2
+
+    for bi in range(n_batch):
+        delta = batch[bi, :, None, :] - batch[bi, None, :, :]
+        dist2 = np.sum(delta * delta, axis=-1)
+        np.fill_diagonal(dist2, np.inf)
+        for source in range(n_atom):
+            order = np.lexsort((atom_indices, dist2[source]))[:k]
+            in_range = (
+                np.isfinite(dist2[source, order])
+                & (float(dmax) > 0)
+                & (dist2[source, order] <= cutoff2)
+            )
+            neighbours[bi, source] = np.where(in_range, order, 0)
+            for slot, target in enumerate(order):
+                if not in_range[slot]:
+                    continue
+                code = min(source, int(target)) * n_atom + max(source, int(target))
+                valid[bi, source, slot] = (
+                    (polymer_mask[source] or polymer_mask[target])
+                    and radii[source] > 0
+                    and radii[target] > 0
+                    and code not in excluded
+                )
+
+    factor = valid.astype(np.float32)
+    for bi in range(n_batch):
+        for source in range(n_atom):
+            for slot, target in enumerate(neighbours[bi, source]):
+                if not valid[bi, source, slot]:
+                    continue
+                reverse = (neighbours[bi, target] == source) & valid[bi, target]
+                factor[bi, source, slot] /= 1.0 + float(np.any(reverse))
+    return neighbours, factor
+
+
+def test_active_vdw_cell_list_matches_dense_reference():
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jnp = pytest.importorskip("jax.numpy")
+    from rgi_utils.optim._torch_cg_gpu import build_active_vdw_pairs
+    from rgi_utils.optim.jax_optim import _build_active_vdw_pairs
+
+    rng = np.random.default_rng(7)
+    n_atom = 70
+    coords = np.empty((3, n_atom, 3), dtype=np.float32)
+
+    # Sparse, signed coordinates plus six equidistant neighbours around atom zero.
+    coords[0] = rng.uniform(-20.0, 20.0, size=(n_atom, 3))
+    coords[0, :7] = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.5, 0.0, 0.0],
+            [-0.5, 0.0, 0.0],
+            [0.0, 0.5, 0.0],
+            [0.0, -0.5, 0.0],
+            [0.0, 0.0, 0.5],
+            [0.0, 0.0, -0.5],
+        ]
+    )
+    # More than CELL_CHUNK_SIZE atoms in one cell exercises complete chunk traversal.
+    coords[1] = rng.uniform(0.05, 0.85, size=(n_atom, 3))
+    # These distant cells have the same int32 spatial hash. Exact cell verification must
+    # stop either 35-atom group from leaking candidates into the other.
+    collision_cells = np.array(
+        [[69842, 37865, -86462], [-79440, 97865, -96724]], dtype=np.float32
+    )
+    local = np.linspace(0.05, 0.75, n_atom // 2, dtype=np.float32)
+    coords[2, : n_atom // 2] = collision_cells[0] + np.stack(
+        (local, local * 0.25, local * 0.5), axis=-1
+    )
+    coords[2, n_atom // 2 :] = collision_cells[1] + np.stack(
+        (local, local * 0.25, local * 0.5), axis=-1
+    )
+
+    radii = np.full(n_atom, 1.7, dtype=np.float32)
+    radii[9] = 0.0
+    polymer = np.arange(n_atom) % 3 == 0
+    excluded = np.array([1, 3 * n_atom + 7], dtype=np.int64)
+    dmax, max_neighbors = 1.0, 11
+    ref_neighbours, ref_factor = _dense_active_vdw_reference(
+        coords, radii, polymer, excluded, dmax, max_neighbors
+    )
+
+    neighbours_t, factor_t = build_active_vdw_pairs(
+        torch.tensor(coords),
+        torch.tensor(radii),
+        torch.tensor(polymer),
+        torch.tensor(excluded),
+        torch.tensor(dmax),
+        max_neighbors,
+    )
+    np.testing.assert_array_equal(neighbours_t.numpy(), ref_neighbours)
+    np.testing.assert_array_equal(factor_t.numpy(), ref_factor)
+
+    build_jax = jax.jit(
+        lambda x, cutoff: _build_active_vdw_pairs(
+            x,
+            jnp.asarray(radii),
+            jnp.asarray(polymer),
+            jnp.asarray(excluded, dtype=jnp.int32),
+            cutoff,
+            max_neighbors,
+        )
+    )
+    neighbours_j, factor_j = build_jax(jnp.asarray(coords), jnp.asarray(dmax))
+    np.testing.assert_array_equal(np.asarray(neighbours_j), ref_neighbours)
+    np.testing.assert_array_equal(np.asarray(factor_j), ref_factor)
+
+    # Non-positive dmax keeps the historical no-pair behaviour without unsafe division.
+    _neighbours_zero, factor_zero = build_jax(jnp.asarray(coords), jnp.asarray(0.0))
+    assert not bool(jnp.any(factor_zero))
+
+
 def test_polymer_restraint_runs_in_jitted_jax_minimizer():
     jax = pytest.importorskip("jax")
     jnp = pytest.importorskip("jax.numpy")

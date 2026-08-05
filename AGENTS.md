@@ -331,6 +331,13 @@ vdw=Iintra+Jinter+Llig/Mbg` log breaks the counts down: `intra` = intramolecular
 + `lig/bg` together = intermolecular (`inter` = restrained-ligand pairs, `lig/bg` =
 fixed background) — confirm `Jinter>0` when you expect ligand-ligand repulsion.
 
+For restrained polymers, the active-active half rebuilds a fixed-width neighbor list once
+per diffusion step and holds it fixed during CG. The builder is a sort-based spatial cell
+list: normal-density build time is `O(N log N)`, energy evaluation is
+`O(N * max_neighbors)`, and working memory is linear rather than a dense `N x N`
+distance matrix. Cell buckets are fully traversed and hash collisions are verified, so a
+collapsed structure loses no clashes; it degrades to `O(N^2)` time in that worst case.
+
 ### Custom restraints (the extension point — `rgi_utils/custom/`)
 
 Beyond the eight built-ins, a user can define an **original** restraint as a backend-agnostic
