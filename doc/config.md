@@ -20,6 +20,7 @@ check their spelling against this page. Source of truth:
 ## Quick navigation
 
 - [Config shape](#shape) and [top-level keys](#top-level-keys)
+- [Computational cost](#computational-cost-current-implementation)
 - [Activation windows](#sigma-gating-start_sigma--stop_sigma) and [step gating](#step-gating-start_step--stop_step-alternative-to-sigma)
 - [Atom-selection DSL](#atom-selection-dsl) and [penalty shapes](#penalty-shapes-shared)
 - [Distance](#distance_restraints_config-list), [group angle](#angle_restraints_config-list),
@@ -75,6 +76,74 @@ torch *device*.) There is no numpy optimizer (numpy is the energy reference only
 
 **There is no top-level `start_sigma` / `stop_sigma`** — setting one at the top level raises. They
 are per-restraint (see below).
+
+## Computational cost (current implementation)
+
+The orders below describe the tensors actually evaluated by the current torch/JAX kernels, not
+only the underlying geometry formula. In particular, variable-length groups are padded to the
+widest group in the same restraint category, so the maximum padded width appears in the cost.
+Coordinates are three-dimensional: the covariance eigendecomposition used by `plane` and the SVD
+used by RMSD/Kabsch are always on a **3 x 3** matrix and are therefore constant work per entry; the
+atom gather, centring, and covariance construction remain linear in the number of selected atoms.
+
+Let `Q` be the number of objective/gradient evaluations made by the optimizer in one diffusion
+step, and let `N_active` be the number of optimized atoms. `Q` is usually a multiple of the
+CG/L-BFGS iteration count because line search may evaluate the objective more than once. Apart from
+the dynamic VdW neighbour-list build, the repeated cost of one diffusion step is
+
+```text
+O(Q * (N_active + sum(active restraint-kernel costs below))).
+```
+
+The common `N_active` term covers gradient-vector production and optimizer vector algebra; it is
+not attributable to one restraint. Reverse-mode autodiff changes constant factors and retained
+working storage, but not these asymptotic time orders. A batch dimension multiplies every listed
+time and transient working-tensor cost by the batch size; the prepared restraint/spec arrays
+themselves are shared across the batch.
+
+| config path / term | notation | one objective + gradient evaluation | stored term arrays | implementation detail |
+|---|---|---:|---:|---|
+| `distance_restraints_config` | `R` entries, padded group width `G` | `O(RG)` | `O(RG)` | Two centroids per entry; the factor 2 is constant. |
+| `angle_restraints_config` | `R` entries, padded group width `G` | `O(RG)` | `O(RG)` | Three group centroids plus one constant-size angle. |
+| `dihedral_restraints_config` | `R` entries, padded group width `G` | `O(RG)` | `O(RG)` | Four group centroids plus one constant-size torsion. |
+| `improper_restraints_config` | `R` entries, padded group width `G` | `O(RG)` | `O(RG)` | Same four-group kernel shape as group dihedral. |
+| `plane_restraints_config` | `R` entries, maximum pooled atoms per entry `G` | `O(RG)` | `O(RG)` | One 3 x 3 covariance eigendecomposition per entry is `O(R)` in addition to the linear atom work. |
+| `base_pair_restraints_config` | `H` generated H-bond distances, `P` generated coplanarity planes of padded width `G` | `O(H + PG)` | `O(H + PG)` | A config-time macro only: it expands to ordinary one-atom distance and pooled-plane rows. |
+| conformer `bond` | `B` bond tuples | `O(B)` | `O(B)` | Each tuple gathers two atoms. |
+| conformer `angle` | `A` angle tuples | `O(A)` | `O(A)` | Each tuple gathers three atoms. |
+| conformer `chiral` | `C` chiral tuples | `O(C)` | `O(C)` | Each tuple gathers four atoms and evaluates one scalar triple product. |
+| conformer `cistrans` | `T` torsion tuples | `O(T)` | `O(T)` | Each tuple gathers four atoms. |
+| conformer `plane` | `P` plane groups, padded width `G` | `O(PG)` | `O(PG)` | One constant-size 3 x 3 eigendecomposition per plane group. |
+| `rmsd_restraints_config` | `R` entries, maximum padded fit/calc widths `F` / `C` | `O(R(F + C))` | `O(R(F + C))` | One 3 x 3 Kabsch SVD per entry; it is not `O(F^3)` or `O(C^3)`. |
+| built-in `refN and ...` variant | total prediction/reference group atoms `G`, reference-fit atoms `F` | `O(G + F)` per reference access | `O(G + F)` | These entries use a closure. A configured fit recomputes a 3 x 3 Kabsch transform; without a fit the `F` term is absent. |
+| `custom_restraints_config` | `C_expr` = sum of the executed primitive/array costs | `O(C_expr)` | expression-dependent | Centroid geometry is linear in the selected group sizes; `kabsch`, `rmsd`, and `plane` are also linear because their matrix decomposition is 3 x 3. Repeated calls are recomputed, and `where`/conditional expressions evaluate **both** branches. |
+
+The table starts after atom selections and reference pairings have been resolved. That one-time
+setup scans the target atom records once per selection (`O(S * N_target)` for `S` selections).
+Sequence-aligned references additionally have worst-case `O(UV)` dynamic-programming work for
+target/reference polymer lengths `U` and `V`. Ligand conformer setup may also run the selected
+RDKit force field for at most 200 iterations; that library-dependent cost does not recur inside CG.
+
+### VdW cost breakdown
+
+VdW has four current execution paths. Let `n_l` be the atom count of restrained ligand `l`, `L`
+the number of moving atoms queried against a fixed background of `B` atoms, `N` the number of
+active atoms in the active-active list, and `K = max_neighbors` (capped by the number of possible
+partners). `P_intra` and `P_ll` are the explicit static pair counts defined below.
+
+| VdW path | pair-list construction | one objective + gradient evaluation | pair-list / working storage | worst case |
+|---|---:|---:|---:|---|
+| Intramolecular ligand | setup pair scan `O(sum_l n_l^2)` | `O(P_intra)` | `O(P_intra)` | `P_intra = O(sum_l n_l^2)`; RDKit's topological-distance calculation is additional setup-only library work. |
+| Restrained ligand-ligand | setup `O(P_ll)`, where `P_ll = sum_(i<j) n_i n_j` | `O(P_ll)` | `O(P_ll)` | `O((sum_l n_l)^2)`; this remains an explicit all-cross-pairs list. |
+| Moving atoms vs fixed background | ordinary density: `O(B log B + L log B)` once per diffusion step | `O(LK)` | `O(B + LK)` | A collapsed/hash-colliding cell population degrades to `O(LB)` build time, without allocating an `L x B` distance matrix. |
+| Active-active pairs involving restrained polymer | ordinary density: `O(N log N)` once per diffusion step | `O(NK)` | `O(NK)` for fixed `K` | A collapsed cell degrades to `O(N^2)` build time, without allocating an `N x N` distance matrix. |
+
+The cell-list orders treat the 27 adjacent cells, traversal chunk width 32, and configured `K` as
+bounded constants, which is the intended use (`K=32` by default). If `K` itself is scaled with the
+system, active-active exclusion/reciprocal bookkeeping adds `O(NK log X + NK^2)` work for `X`
+sorted covalent exclusions and can transiently retain `O(NK^2)` values. Sigma/step gating makes an
+inactive row contribute only its already-vectorized mask work; when **all** restraints are outside
+their activation windows, the optimizer skips the whole step.
 
 ## Sigma gating: `start_sigma` & `stop_sigma`
 
