@@ -1,4 +1,4 @@
-"""Framework-independent constants for active-active VdW cell lists."""
+"""Framework-independent constants for dynamic VdW cell lists."""
 
 from __future__ import annotations
 

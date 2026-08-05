@@ -145,7 +145,9 @@ def test_vdw_config_fixed_background():
     elements[n + 1] = 7  # protein heavy atom
     # elements[n + 2] stays 0 -> padding, excluded from the VdW background
 
-    spec = build_spec([lc], [], {"vdw": {"weight": 1.0}}, elements=elements)
+    spec = build_spec(
+        [lc], [], {"vdw": {"weight": 1.0, "max_neighbors": 7}}, elements=elements
+    )
     assert spec.vdw_config is not None
     # every ligand atom is optimisable and addressed by a local index
     assert len(spec.vdw_config.ligand_local) == n
@@ -153,6 +155,12 @@ def test_vdw_config_fixed_background():
     # fixed background = non-padding atoms NOT in active_sites; padding (n+2) excluded
     assert {int(x) for x in spec.vdw_config.background_global} == {n, n + 1}
     assert spec.vdw_config.background_radii.shape == (2,)
+    assert spec.vdw_config.max_neighbors == 7
+
+    with pytest.raises(ValueError, match="max_neighbors must be >= 1"):
+        build_spec(
+            [lc], [], {"vdw": {"weight": 1.0, "max_neighbors": 0}}, elements=elements
+        )
 
     # disabled when weight <= 0
     spec0 = build_spec([lc], [], {"vdw": {"weight": 0.0}}, elements=elements)

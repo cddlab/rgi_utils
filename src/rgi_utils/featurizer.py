@@ -516,6 +516,9 @@ def _build_vdw_config(
     background_radii = np.array(
         [_vdw_radius(int(elements[a])) for a in background_global], dtype=np.float64
     )
+    max_neighbors = int(vcfg.get("max_neighbors", 32))
+    if max_neighbors < 1:
+        raise ValueError("conformer vdw max_neighbors must be >= 1")
 
     return VdwConfig(
         weight=weight,
@@ -525,6 +528,7 @@ def _build_vdw_config(
         background_radii=background_radii,
         scale=float(vcfg.get("scale", 0.75)),
         dmax=float(vcfg.get("dmax", 5.0)),
+        max_neighbors=max_neighbors,
     )
 
 
@@ -1214,7 +1218,8 @@ def build_spec(
         vdw_parts.append(f"{len(vdw_inter.idx)}inter")
     if vdw_config is not None:
         vdw_parts.append(
-            f"{len(vdw_config.ligand_local)}lig/{len(vdw_config.background_global)}bg"
+            f"{len(vdw_config.ligand_local)}lig/"
+            f"{len(vdw_config.background_global)}bg/{vdw_config.max_neighbors}nn"
         )
     if active_vdw_config is not None:
         vdw_parts.append(

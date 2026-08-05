@@ -1341,13 +1341,16 @@ def test_dynamic_vdw_pair_energy_matches_optimizer():
     active = coords[0, opt._active_idx, :]
     bg_pos = coords[0, opt._vdw["bg_global"], :]
     v = opt._vdw
+    fixed_pairs = opt._fixed_vdw_pairs(active, bg_pos)
 
-    e_method = float(opt._vdw_energy(active, bg_pos))
+    e_method = float(opt._vdw_energy(active, bg_pos, fixed_pairs))
     e_pure = float(
         _vdw_pair_energy(
             active,
             bg_pos,
             v["lig_local"],
+            fixed_pairs[0],
+            fixed_pairs[1],
             v["lig_r"],
             v["bg_r"],
             v["scale"],
@@ -1440,7 +1443,17 @@ def _mode_args(opt, coords):
     active = coords[0, opt._active_idx, :]
     bg_pos = coords[0, opt._vdw["bg_global"], :]
     v, av = opt._vdw, opt._active_vdw
-    vdw = (bg_pos, v["lig_local"], v["lig_r"], v["bg_r"], v["scale"], v["weight"])
+    fixed_neighbours, fixed_pair_mask = opt._fixed_vdw_pairs(active, bg_pos)
+    vdw = (
+        bg_pos,
+        v["lig_local"],
+        fixed_neighbours,
+        fixed_pair_mask,
+        v["lig_r"],
+        v["bg_r"],
+        v["scale"],
+        v["weight"],
+    )
     neighbours, pair_factor = build_active_vdw_pairs(
         active,
         av["radii"],
@@ -1524,7 +1537,7 @@ def test_custom_compiled_energy_includes_vdw(mode):
     ref = torch_energy.total_energy(active, prepared, None, None)
     ref = ref + opt._custom_energy(active, None, None)
     if mode & 1:
-        ref = ref + opt._vdw_energy(active, bg_pos)
+        ref = ref + opt._vdw_energy(active, bg_pos, extras[1][2:4])
     if mode & 2:
         neighbours, pair_factor, radii, scale, weight = extras[2]
         ref = ref + active_vdw_pair_energy(

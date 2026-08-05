@@ -11,9 +11,9 @@ entirely on GPU.
 The fixed-background VdW term (``spec.vdw_config``) is handled here rather than in
 the static energy layer: the ligand atoms come from the optimised ``active`` set
 while the background atoms (protein / DNA/RNA / non-restrained ligand) are a *fixed
-background* read from the full coordinate tensor. The clash penalty is recomputed
-every closure call, so it tracks the moving ligand (only the ligand is pushed; the
-background is held fixed).
+background* read from the full coordinate tensor. A fixed-width neighbour list is
+rebuilt once per diffusion step and held fixed during CG (only the ligand is pushed;
+the background is held fixed).
 """
 
 from __future__ import annotations
@@ -277,6 +277,8 @@ class TorchRestraintOptimizer:
                 ),
                 "weight": torch.as_tensor(float(vc.weight), dtype=dtype, device=device),
                 "scale": torch.as_tensor(float(vc.scale), dtype=dtype, device=device),
+                "dmax": torch.as_tensor(float(vc.dmax), dtype=dtype, device=device),
+                "max_neighbors": int(vc.max_neighbors),
             }
 
         ac = getattr(self.spec, "active_vdw_config", None)
@@ -297,18 +299,32 @@ class TorchRestraintOptimizer:
                 "max_neighbors": int(ac.max_neighbors),
             }
 
-    def _vdw_energy(self, active, bg_pos):
-        """Fixed-background VdW repulsion (delegates to the pure ``_vdw_pair_energy`` so the
-        all-pairs ``weight*sum(clamp(d - scale*(r_i+r_j), max=0)**2)`` maths lives once —
-        the compiled GPU energy folds in the same function). ``active`` (..., n_active, 3)
-        is the optimised tensor; ``bg_pos`` (..., n_bg, 3) the fixed background."""
+    def _fixed_vdw_pairs(self, active, bg_pos):
+        """Build the fixed-background neighbour list for the current diffusion step."""
+        from rgi_utils.optim._torch_cg_gpu import build_fixed_vdw_pairs
+
+        v = self._vdw
+        return build_fixed_vdw_pairs(
+            active,
+            bg_pos,
+            v["lig_local"],
+            v["dmax"],
+            v["max_neighbors"],
+        )
+
+    def _vdw_energy(self, active, bg_pos, pairs=None):
+        """Fixed-background VdW repulsion over a fixed-width neighbour list."""
         from rgi_utils.optim._torch_cg_gpu import _vdw_pair_energy
 
         v = self._vdw
+        if pairs is None:
+            pairs = self._fixed_vdw_pairs(active, bg_pos)
         return _vdw_pair_energy(
             active,
             bg_pos,
             v["lig_local"],
+            pairs[0],
+            pairs[1],
             v["lig_r"],
             v["bg_r"],
             v["scale"],
@@ -417,6 +433,11 @@ class TorchRestraintOptimizer:
                         device=coords.device,
                     )
                     bg_pos.copy_(coords[..., self._vdw["bg_global"], :])
+                fixed_vdw = (
+                    self._fixed_vdw_pairs(active, bg_pos)
+                    if bg_pos is not None
+                    else None
+                )
                 active_vdw = None
                 if active_vdw_active:
                     from rgi_utils.optim._torch_cg_gpu import build_active_vdw_pairs
@@ -435,7 +456,7 @@ class TorchRestraintOptimizer:
                 def energy_fn():
                     e = torch_energy.total_energy(active, prepared, sigma, step)
                     if bg_pos is not None:
-                        e = e + self._vdw_energy(active, bg_pos)
+                        e = e + self._vdw_energy(active, bg_pos, fixed_vdw)
                     if active_vdw is not None:
                         from rgi_utils.optim._torch_cg_gpu import active_vdw_pair_energy
 
@@ -462,6 +483,8 @@ class TorchRestraintOptimizer:
                     vdw = (
                         bg_pos,
                         v["lig_local"],
+                        fixed_vdw[0],
+                        fixed_vdw[1],
                         v["lig_r"],
                         v["bg_r"],
                         v["scale"],

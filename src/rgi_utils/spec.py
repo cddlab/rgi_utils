@@ -147,9 +147,10 @@ class VdwConfig:
     move (they live in ``active_sites``, addressed by ``ligand_local``); the
     background atoms (every non-padding atom not optimised — protein, DNA/RNA, any
     non-restrained ligand) are read from the full coordinate tensor via
-    ``background_global`` and held *fixed*. Each optimization step recomputes the clash
-    penalty against the moving ligand, so only the ligand is pushed out of contacts,
-    keeping the optimised variable set limited to ``active_sites``. The penalty is
+    ``background_global`` and held *fixed*. Each optimization step rebuilds a fixed-width
+    neighbour list and holds it fixed during CG, so only the ligand is pushed out of
+    contacts while the optimised variable set stays limited to ``active_sites``. The
+    penalty is
     ``clamp(d - scale*(r_i+r_j), max=0)**2`` summed over pairs within ``dmax`` —
     identical maths to ``vdw_energy``, only the pair list is dynamic.
     """
@@ -161,6 +162,7 @@ class VdwConfig:
     background_radii: np.ndarray  # (n_bg,) VdW radius per background atom
     scale: float = 0.75
     dmax: float = 5.0
+    max_neighbors: int = 32
 
 
 @dataclass

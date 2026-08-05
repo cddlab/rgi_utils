@@ -306,9 +306,12 @@ plane/cistrans/vdw). `mode` picks **two categories** (default `both` = both):
   - *Fixed background* (`_build_vdw_config` → `VdwConfig` → optimizers): the partner is
     every non-padding atom NOT in `active_sites` (protein / DNA/RNA / **non-restrained** ligand),
     read from the full coordinate tensor at minimize time and held fixed (it needs no
-    gradient). Lives in `optim/torch_optim.py` AND `optim/jax_optim.py` (`_vdw_pair_energy`
-    is the shared formula, ported to jnp). **torch + jax** (numpy is the energy reference
-    only, so it does not run this optimizer term).
+    gradient). A two-set sorted cell list is rebuilt once per diffusion step and held
+    fixed during CG: background build/query is normally `O(B log B + L log B)`, each
+    energy evaluation is `O(L * max_neighbors)`, and working memory is linear rather
+    than `L * B`. Lives in `optim/torch_optim.py` AND `optim/jax_optim.py`
+    (`_vdw_pair_energy` is the shared fixed-width formula, ported to jnp). **torch + jax**
+    (numpy is the energy reference only, so it does not run this optimizer term).
   - *Other restrained ligands* (`_build_interligand_vdw` → `VdwArrays`): two ligands that
     each opted into conformer restraints both sit in `active_sites`, so neither is in the
     other's fixed background — this half repels A↔B. Both endpoints move, so autodiff
@@ -319,24 +322,27 @@ plane/cistrans/vdw). `mode` picks **two categories** (default `both` = both):
     cross pairs are listed and the clamp contributes zero beyond contact. Only built when
     ≥2 ligands opted in.
 
-Both halves share `weight * clamp(d - scale*(r_i+r_j), max=0)**2` (all-pairs, zero gradient
-beyond contact — same maths as boltz's radius search). `mode` defaults to **`both`**
+Both halves share `weight * clamp(d - scale*(r_i+r_j), max=0)**2` (zero gradient beyond
+contact — same maths as boltz's radius search). The fixed-background half scores its
+per-step neighbor list; restrained-ligand pairs remain statically enumerated. `mode` defaults to **`both`**
 (intramolecular + intermolecular); the explicit values pick one category. **The old
 `mode: ligand_protein` is REMOVED** — it was only the fixed-background half; it now raises a
 migration hint pointing to `intermolecular` (which additionally repels other restrained
 ligands), mirroring the rejected `backend:` key. An unknown mode raises. VdW is **off unless
 a `vdw:` block is present** (then `weight` defaults to 1.0, like every conformer term — see
 `featurizer._conf_weight`); omit the block to leave it off. The `built spec: ...
-vdw=Iintra+Jinter+Llig/Mbg` log breaks the counts down: `intra` = intramolecular, `inter`
+vdw=Iintra+Jinter+Llig/Mbg/Knn` log breaks the counts down: `intra` = intramolecular, `inter`
 + `lig/bg` together = intermolecular (`inter` = restrained-ligand pairs, `lig/bg` =
 fixed background) — confirm `Jinter>0` when you expect ligand-ligand repulsion.
 
-For restrained polymers, the active-active half rebuilds a fixed-width neighbor list once
-per diffusion step and holds it fixed during CG. The builder is a sort-based spatial cell
-list: normal-density build time is `O(N log N)`, energy evaluation is
-`O(N * max_neighbors)`, and working memory is linear rather than a dense `N x N`
-distance matrix. Cell buckets are fully traversed and hash collisions are verified, so a
-collapsed structure loses no clashes; it degrades to `O(N^2)` time in that worst case.
+The fixed-background and restrained-polymer active-active halves rebuild fixed-width
+neighbor lists once per diffusion step and hold them fixed during CG. Both use the same
+sort-based spatial cell-list primitive. Normal-density build time is `O(B log B + L log B)`
+for moving ligand/polymer atoms `L` against fixed background `B`, and `O(N log N)` for
+active-active atoms; energy evaluation is `O(L * max_neighbors)` / `O(N * max_neighbors)`.
+Cell buckets are fully traversed and hash collisions are verified, so a collapsed structure
+loses no candidates; it degrades to `O(LB)` / `O(N^2)` time in that worst case without
+materializing a dense distance matrix.
 
 ### Custom restraints (the extension point — `rgi_utils/custom/`)
 

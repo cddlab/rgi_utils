@@ -1240,8 +1240,18 @@ def test_vdw_fixed_background_torch_jax_parity():
     jax.config.update("jax_enable_x64", True)
     import jax.numpy as jnp
 
-    from rgi_utils.optim._torch_cg_gpu import _vdw_pair_energy as t_vdw
-    from rgi_utils.optim.jax_optim import _vdw_pair_energy as j_vdw
+    from rgi_utils.optim._torch_cg_gpu import (
+        _vdw_pair_energy as t_vdw,
+    )
+    from rgi_utils.optim._torch_cg_gpu import (
+        build_fixed_vdw_pairs as t_build,
+    )
+    from rgi_utils.optim.jax_optim import (
+        _build_fixed_vdw_pairs as j_build,
+    )
+    from rgi_utils.optim.jax_optim import (
+        _vdw_pair_energy as j_vdw,
+    )
 
     rng = np.random.default_rng(0)
     n_active, n_bg = 6, 5
@@ -1253,10 +1263,15 @@ def test_vdw_fixed_background_torch_jax_parity():
     scale, weight = 0.9, 2.0
 
     at = torch.tensor(active, requires_grad=True)
+    neighbours_t, pair_mask_t = t_build(
+        at.detach(), torch.tensor(bg), torch.tensor(lig_local), 10.0, n_bg
+    )
     e_t = t_vdw(
         at,
         torch.tensor(bg),
         torch.tensor(lig_local),
+        neighbours_t,
+        pair_mask_t,
         torch.tensor(lig_r),
         torch.tensor(bg_r),
         scale,
@@ -1265,11 +1280,23 @@ def test_vdw_fixed_background_torch_jax_parity():
     e_t.backward()
     g_t = at.grad.numpy()
 
+    neighbours_j, pair_mask_j = j_build(
+        jnp.asarray(active),
+        jnp.asarray(bg),
+        jnp.asarray(lig_local),
+        10.0,
+        n_bg,
+    )
+    np.testing.assert_array_equal(np.asarray(neighbours_j), neighbours_t.numpy())
+    np.testing.assert_array_equal(np.asarray(pair_mask_j), pair_mask_t.numpy())
+
     def jf(a):
         return j_vdw(
             a,
             jnp.asarray(bg),
             jnp.asarray(lig_local),
+            neighbours_j,
+            pair_mask_j,
             jnp.asarray(lig_r),
             jnp.asarray(bg_r),
             scale,
@@ -1282,3 +1309,121 @@ def test_vdw_fixed_background_torch_jax_parity():
     assert np.allclose(g_t, np.asarray(g_j), atol=1e-8), (
         f"max|d|={np.abs(g_t - np.asarray(g_j)).max()}"
     )
+
+
+def _dense_fixed_vdw_reference(active, background, ligand_local, dmax, max_neighbors):
+    """Deterministic all-pairs oracle for fixed-background cell-list builders."""
+    active = np.asarray(active, dtype=np.float32)
+    background = np.asarray(background, dtype=np.float32)
+    n_batch, n_bg = background.shape[0], background.shape[-2]
+    ligand = active[:, ligand_local, :]
+    n_lig = ligand.shape[-2]
+    k = min(int(max_neighbors), n_bg)
+    neighbours = np.zeros((n_batch, n_lig, k), dtype=np.int64)
+    pair_mask = np.zeros((n_batch, n_lig, k), dtype=np.float32)
+    bg_indices = np.arange(n_bg)
+    cutoff2 = float(dmax) ** 2
+
+    for bi in range(n_batch):
+        delta = ligand[bi, :, None, :] - background[bi, None, :, :]
+        dist2 = np.sum(delta * delta, axis=-1)
+        for li in range(n_lig):
+            order = np.lexsort((bg_indices, dist2[li]))[:k]
+            valid = (
+                np.isfinite(dist2[li, order])
+                & (float(dmax) > 0)
+                & (dist2[li, order] <= cutoff2)
+            )
+            neighbours[bi, li] = np.where(valid, order, 0)
+            pair_mask[bi, li] = valid
+    return neighbours, pair_mask
+
+
+def test_fixed_background_cell_list_matches_dense_reference():
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    from rgi_utils.optim._torch_cg_gpu import build_fixed_vdw_pairs as t_build
+    from rgi_utils.optim.jax_optim import _build_fixed_vdw_pairs as j_build
+
+    rng = np.random.default_rng(11)
+    n_active, n_bg = 8, 70
+    ligand_local = np.array([0, 2, 4, 6], dtype=np.int64)
+    active = rng.uniform(-20.0, 20.0, size=(3, n_active, 3)).astype(np.float32)
+    background = rng.uniform(-20.0, 20.0, size=(3, n_bg, 3)).astype(np.float32)
+
+    # Signed cells and deterministic equal-distance ordering around the first ligand atom.
+    active[0, ligand_local[0]] = 0.0
+    background[0, :6] = np.array(
+        [
+            [0.5, 0.0, 0.0],
+            [-0.5, 0.0, 0.0],
+            [0.0, 0.5, 0.0],
+            [0.0, -0.5, 0.0],
+            [0.0, 0.0, 0.5],
+            [0.0, 0.0, -0.5],
+        ],
+        dtype=np.float32,
+    )
+    # More than CELL_CHUNK_SIZE targets in one cell exercises full bucket traversal.
+    background[1] = rng.uniform(0.05, 0.85, size=(n_bg, 3))
+    active[1, ligand_local] = rng.uniform(0.1, 0.8, size=(len(ligand_local), 3))
+    # Both distant cells share an int32 hash. Full cell coordinates must disambiguate them.
+    collision_cells = np.array(
+        [[69842, 37865, -86462], [-79440, 97865, -96724]], dtype=np.float32
+    )
+    local = np.linspace(0.05, 0.75, n_bg // 2, dtype=np.float32)
+    background[2, : n_bg // 2] = collision_cells[0] + np.stack(
+        (local, local * 0.25, local * 0.5), axis=-1
+    )
+    background[2, n_bg // 2 :] = collision_cells[1] + np.stack(
+        (local, local * 0.25, local * 0.5), axis=-1
+    )
+    active[2, ligand_local[:2]] = collision_cells[0] + 0.4
+    active[2, ligand_local[2:]] = collision_cells[1] + 0.4
+
+    dmax, max_neighbors = 1.0, 11
+    ref_neighbours, ref_mask = _dense_fixed_vdw_reference(
+        active, background, ligand_local, dmax, max_neighbors
+    )
+    neighbours_t, mask_t = t_build(
+        torch.tensor(active),
+        torch.tensor(background),
+        torch.tensor(ligand_local),
+        torch.tensor(dmax),
+        max_neighbors,
+    )
+    np.testing.assert_array_equal(neighbours_t.numpy(), ref_neighbours)
+    np.testing.assert_array_equal(mask_t.numpy(), ref_mask)
+
+    build_jax = jax.jit(
+        lambda moving, fixed, cutoff: j_build(
+            moving,
+            fixed,
+            jnp.asarray(ligand_local, dtype=jnp.int32),
+            cutoff,
+            max_neighbors,
+        )
+    )
+    neighbours_j, mask_j = build_jax(
+        jnp.asarray(active), jnp.asarray(background), jnp.asarray(dmax)
+    )
+    assert neighbours_j.dtype == jnp.int32
+    np.testing.assert_array_equal(np.asarray(neighbours_j), ref_neighbours)
+    np.testing.assert_array_equal(np.asarray(mask_j), ref_mask)
+
+    _neighbours_zero, mask_zero = build_jax(
+        jnp.asarray(active), jnp.asarray(background), jnp.asarray(0.0)
+    )
+    assert not bool(jnp.any(mask_zero))
+
+    # A one-atom background has a direct O(L) path and must remain valid under JIT.
+    single_ref, single_mask_ref = _dense_fixed_vdw_reference(
+        active, background[:, :1], ligand_local, dmax, max_neighbors
+    )
+    single_neighbours, single_mask = build_jax(
+        jnp.asarray(active), jnp.asarray(background[:, :1]), jnp.asarray(dmax)
+    )
+    np.testing.assert_array_equal(np.asarray(single_neighbours), single_ref)
+    np.testing.assert_array_equal(np.asarray(single_mask), single_mask_ref)

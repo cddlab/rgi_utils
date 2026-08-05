@@ -834,25 +834,26 @@ present (then `weight` defaults to 1.0); omit the block to leave it off. **The o
 `mode: ligand_protein` was removed** (it was only the fixed-background half) — it now raises a
 migration error pointing to `intermolecular`.
 
-### Polymer neighbor lists
+### Dynamic intermolecular neighbor lists
 
-For selected polymers, a fixed-width active-active neighbor list is rebuilt once from the current
-coordinates at each diffusion step and held fixed during CG. Energy evaluation is therefore
-`O(N * max_neighbors)` rather than all-pairs on every CG iteration. Covalent 1-2, 1-3, and 1-4
-pairs, including paths across peptide and phosphodiester links, are excluded. Polymer atoms are also
-checked against non-active fixed-background atoms on torch and JAX. Omit `start_sigma` (the default
-`+inf`) to keep VdW active from the first denoising step; setting `start_sigma` delays all conformer
-terms together.
+Two fixed-width neighbor lists are rebuilt from the current coordinates at each diffusion step and
+held fixed during CG: moving ligand/polymer atoms against the fixed background, and restrained
+polymer active-active pairs. Energy evaluation is therefore `O(L * max_neighbors)` and
+`O(N * max_neighbors)` respectively, rather than rebuilding all-pairs distances on every CG
+iteration. Covalent active-active 1-2, 1-3, and 1-4 pairs, including paths across peptide and
+phosphodiester links, are excluded. Omit `start_sigma` (the default `+inf`) to keep VdW active from
+the first denoising step; setting `start_sigma` delays all conformer terms together.
 
 The neighbor-list build uses a sorted spatial cell list with cell width `dmax`: atoms are sorted
 by an int32 cell hash, and only the same or 26 adjacent cells are searched. Hash collisions are
 checked against the full cell coordinate, and each bucket is traversed completely in fixed-width
 chunks, so there is no occupancy cap that can silently drop a clash. At ordinary molecular density
-the build is `O(N log N)` time with `O(N * max_neighbors)` working memory. A pathologically
-collapsed structure correctly degrades to `O(N^2)` time, but still avoids an `N x N` distance
-matrix.
+the fixed-background build is `O(B log B + L log B)` time and the active-active build is
+`O(N log N)`, with `O(B + L * max_neighbors)` / `O(N * max_neighbors)` working memory. A
+pathologically collapsed structure correctly degrades to `O(LB)` / `O(N^2)` time, but still avoids
+a dense distance matrix.
 
-`max_neighbors` (default 32) caps each atom's neighbor list: a buried atom with more than
+`max_neighbors` (default 32) caps both neighbor lists for each moving atom: an atom with more than
 `max_neighbors` partners within `dmax` keeps only its nearest `max_neighbors`. The nearest are the
 most clash-relevant, so this is a deliberate approximation — raise it for very dense cores. Under
 JAX the pair codes are int32 (JAX runs with x64 disabled by default), so a **single restrained
