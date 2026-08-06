@@ -13,7 +13,7 @@ distance, angle, dihedral, improper, plane, RMSD, base-pair, and custom restrain
 git clone git@github.com:cddlab/OpenDDE_restr.git
 cd OpenDDE_restr
 git switch rgi-integration
-uv venv --python 3.11
+uv venv --python 3.12
 uv pip install --python .venv --torch-backend cu126 -e ".[gpu]"
 ```
 
