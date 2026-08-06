@@ -1,9 +1,10 @@
 # rgi_utils RGI examples
 
-Minimal, ready-to-run Restraint-Guided Inference (RGI) samples: **4 restraint types x 6
+Minimal, ready-to-run Restraint-Guided Inference (RGI) samples: **4 restraint types x 7
 predictors**. Each `<type>/<tool>/` (and `custom/dist-diff/<tool>/`) is one representative
 restraint with a `run.sh`. Restraint blocks are the bench-rgi minimal configs; the runners
-fetch the MSA from a server so the examples are self-contained (AlphaFold3 excepted, below).
+fetch the MSA from a server where supported; OpenDDE disables external feature searches and
+AlphaFold3 uses its local data pipeline, as detailed below.
 
 | type | system | restraint |
 |---|---|---|
@@ -12,7 +13,8 @@ fetch the MSA from a server so the examples are self-contained (AlphaFold3 excep
 | `rmsd/` | QBP | dual-ref morph to the midpoint of 1GGG (open) / 1WDN (closed), target 3.0 A, with a protein conformer restraint holding backbone geometry |
 | `custom/dist-diff/` | DgoT transporter (419 aa) | custom energy `(d(A,B) - d(C,D)) -> 0` (a difference of two centroid distances) |
 
-Tools: `boltz-2`, `protenix-v2`, `alphafold3`, `openfold-3`, `chai`, `esmfold2`.
+Tools: `boltz-2`, `protenix-v2`, `opendde`, `alphafold3`, `openfold-3`, `chai`,
+`esmfold2`.
 
 ## Run
 
@@ -31,6 +33,8 @@ Each `run.sh` locates the workspace root, activates/uses the matching fork's env
   and Blackwell (sm_120).
 - **protenix runs on sm_89 only** (Blackwell emits silent all-NaN). The default esm/chai torch
   is cu124 (sm_89) too.
+- **OpenDDE examples disable MSA, template, and RNA-MSA searches**. Install its checkpoint and
+  common runtime files first; the large search databases are unnecessary for these examples.
 - **AlphaFold3 is the one non-self-contained example**: it has no ColabFold MSA server, so its
   `run.sh` runs the genetic-search data pipeline, requiring external `MODEL_DIR` (weights) and
   `DB_DIR` (sequence databases, hundreds of GB). A local no-DB fallback is documented inline in
@@ -41,9 +45,10 @@ Each `run.sh` locates the workspace root, activates/uses the matching fork's env
 - The `rmsd/` reference structures (`1GGG.cif`, `1WDN.cif`) are **not stored in the repo** --
   each `rmsd/*/run.sh` `wget`s them from RCSB into its own directory at run time (needs network
   on the compute node). They are byte-identical to the RCSB deposits.
-- Selections use bare `resid N to M` (no `chain A and`) because QBP / ADK / DgoT are all
-  single-chain, ligand-free. **On a system with a ligand or multiple chains, qualify each group
-  with `chain A and (...)`** or the bare `resid` range will also sweep in the ligand's atoms.
+- Most selections use bare `resid N to M` because QBP / ADK / DgoT are single-chain and
+  ligand-free; OpenDDE examples use explicit `chain A` as a safer template. **On a system with a
+  ligand or multiple chains, qualify each group with `chain A and (...)`** or the bare `resid`
+  range will also sweep in the ligand's atoms.
 - `resid` is the per-chain 1-based ordinal (not the author residue number). Full schema:
   `../doc/config.md`.
 - Set `verbose: true` (already on) and check the `setup` log line `built spec: ... distances=..

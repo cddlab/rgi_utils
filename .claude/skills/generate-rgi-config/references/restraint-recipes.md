@@ -3,7 +3,7 @@
 This is the interview's hardest step: turn a plain-language goal into the right restraint
 type, penalty shape, and a concrete config block. Each recipe below is a *starting point* —
 copy it, swap the selections/targets, and confirm against `doc/config.md` for any key you
-change. Blocks are shown in YAML; for JSON tools (protenix/AF3/openfold) it is the same
+change. Blocks are shown in YAML; for JSON tools (protenix/OpenDDE/AF3/openfold) it is the same
 structure in JSON.
 
 Recurring decisions, in plain terms:

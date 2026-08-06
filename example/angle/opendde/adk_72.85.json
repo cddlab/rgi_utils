@@ -1,0 +1,32 @@
+[
+  {
+    "name": "adk_72.85",
+    "modelSeeds": [0],
+    "sequences": [
+      {
+        "proteinChain": {
+          "id": ["A"],
+          "sequence": "MRIILLGAPGAGKGTQAQFIMEKYGIPQISTGDMLRAAVKSGSELGKQAKDIMDAGKLVTDELVIALVKERIAQEDCRNGFLLDGFPRTIPQADAMKEAGINVDYVLEFDVPDELIVDRIVGRRVHAPSGRVYHVKFNPPKVEGKDDVTGEELTTRKDDQEETVRKRLVEYHQMTAPLIGYYSKEAEAGNTKYAKVDGTKPVAEVRADLEKILG",
+          "count": 1
+        }
+      }
+    ],
+    "restraints_config": {
+      "verbose": true,
+      "gpu": true,
+      "max_iter": 100,
+      "method": "CG",
+      "angle_restraints_config": [
+        {
+          "atom_selection1": "chain A and (resid 30 to 59)",
+          "atom_selection2": "chain A and ((resid 1 to 29) or (resid 60 to 121) or (resid 160 to 214))",
+          "atom_selection3": "chain A and (resid 122 to 159)",
+          "start_sigma": 99999999,
+          "harmonic": {
+            "target_angle": 72.85
+          }
+        }
+      ]
+    }
+  }
+]

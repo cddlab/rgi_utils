@@ -13,7 +13,7 @@ What this checks (everything resolvable without a real structure):
      ``AtomSelector`` (which parses eagerly), so a malformed selection (bad keyword,
      unbalanced parens) fails here instead of at run time.
   3. **Conformer opt-in** — if a ``conformer_restraints_config`` block is present, warns
-     when no ligand opts in (``conformer_restraints: true`` on the ligand, or a chai
+     when no sequence entity opts in (``conformer_restraints: true`` on the entity, or a chai
      sidecar ``conformer_restraints: {B: true}`` map). Without the opt-in the conformer
      block is a SILENT no-op.
 
@@ -30,8 +30,8 @@ Usage:
     uv run --project <rgi-utils-dir> --frozen --with pyyaml \\
         python validate_config.py <input-file ...>  # .yaml / .yml / .json
 
-Handles every tool's layout: boltz YAML (``restraints_config:`` nested), protenix JSON
-(a list of jobs), AF3 fold-input JSON, openfold ``queries.<name>.restraints_config``,
+Handles every tool's layout: boltz YAML (``restraints_config:`` nested), protenix/OpenDDE
+JSON (a list of jobs), AF3 fold-input JSON, openfold ``queries.<name>.restraints_config``,
 the chai top-level sidecar, or a bare ``restraints_config`` dict.
 
 Needs only numpy and pyyaml. Run it through the rgi_utils uv project as shown above. If
@@ -193,7 +193,7 @@ def _has_conformer_optin(enclosing: dict, cfg: dict) -> bool:
     cmap = cfg.get("conformer_restraints")
     if isinstance(cmap, dict) and any(bool(v) for v in cmap.values()):
         return True
-    # boltz/protenix/AF3/openfold: conformer_restraints:true on a ligand object somewhere
+    # Nested-input tools: conformer_restraints:true on a sequence entity somewhere
     found = [False]
 
     def _walk(o):
@@ -255,8 +255,8 @@ def _validate_one(location: str, cfg: dict, enclosing: dict) -> int:
     # 3. conformer opt-in (the #1 silent no-op)
     if conf_terms and not _has_conformer_optin(enclosing, cfg):
         print(
-            "  ⚠ conformer_restraints_config is present but NO ligand opts in "
-            "(no `conformer_restraints: true` on a ligand, no chai `conformer_restraints` "
+            "  ⚠ conformer_restraints_config is present but NO sequence entity opts in "
+            "(no `conformer_restraints: true` on an entity, no chai `conformer_restraints` "
             "map). The conformer block will be a SILENT no-op — add the opt-in flag."
         )
 

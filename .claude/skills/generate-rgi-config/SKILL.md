@@ -2,7 +2,7 @@
 name: generate-rgi-config
 description: >-
   Create and validate a ready-to-run restraints_config for Restraint-Guided
-  Inference (RGI), placing it correctly for boltz, protenix, chai-lab,
+  Inference (RGI), placing it correctly for boltz, protenix, OpenDDE, chai-lab,
   alphafold3, openfold-3, or esmfold2. Use when a user wants to run RGI, write
   a restraint file, constrain a distance, angle, dihedral, ligand conformer,
   RMSD, or custom energy, or translate a plain-language structural goal into
@@ -16,7 +16,7 @@ description: >-
 ## What you are producing
 
 Every RGI tool is driven by **one `restraints_config` dict** (YAML for boltz/chai, JSON
-for protenix/AF3/openfold, a Python dict for esmfold2). Your job is to turn a user's
+for protenix/OpenDDE/AF3/openfold, a Python dict for esmfold2). Your job is to turn a user's
 plain-language goal into that dict, place it where the tool reads it, and **validate it
 before they spend a GPU run on it**. The engine (`rgi_utils`) does all the maths — you
 only write config.
@@ -62,11 +62,12 @@ selection with `chain A` because `resid` numbering restarts on every chain, so a
 
 If the user hasn't said, ask. The tool decides three things that are **easy to get wrong**
 — file format, where the `restraints_config` sits, and how a ligand opts into conformer
-restraints. The per-tool table is in **`references/tools.md`**; the essentials:
+restraints. OpenDDE can also opt polymer entities in. The per-tool table is in
+**`references/tools.md`**; the essentials:
 
-- **boltz / protenix / alphafold3 / openfold-3** — the config is **nested under a
+- **boltz / protenix / OpenDDE / alphafold3 / openfold-3** — the config is **nested under a
   `restraints_config` key** inside the tool's own input file (the same file that lists the
-  sequences). protenix's input is a JSON *list* of jobs; openfold nests it under
+  sequences). protenix and OpenDDE inputs are JSON *lists* of jobs; openfold nests it under
   `queries.<name>`.
 - **chai-lab** — the **odd one out**: a **separate sidecar YAML** whose top level **IS**
   the `restraints_config` (do **not** nest it). Sequences live in a separate FASTA.
@@ -109,26 +110,29 @@ silent failures:
 ### 5. Write the config in the right place
 
 - If the user **already has an input file**, inject the `restraints_config` (and the
-  per-ligand opt-in flag if conformer is used) into it.
+  per-entity opt-in flag if conformer is used) into it.
 - If they **don't**, scaffold a minimal runnable input from the closest example in the
-  repo root (`bench_in_<tool>_*` / the `doc/<tool>.md` "Full config" example) and fill in
+  repo (`example/<type>/<tool>/`, `bench_in_<tool>_*`, or the `doc/<tool>.md` "Full config"
+  example) and fill in
   their sequences/ligand. Tell them which fields are theirs to replace.
 - For **chai**, write the sidecar YAML *and* remind them it pairs with a FASTA.
 - For **esmfold2**, write the Python dict + the `.fold(..., restraints_config=...)` call.
 
 ### 6. CONFORMER OPT-IN — the #1 silent no-op
 
-A `conformer_restraints_config` block does **nothing** unless the ligand is *also* flagged
-to opt in. This flag lives **outside** the config block and its placement differs per tool:
+A `conformer_restraints_config` block does **nothing** unless the intended sequence entity is
+*also* flagged to opt in. This flag lives **outside** the config block and its placement differs
+per tool:
 
-| tool | how the ligand opts in |
+| tool | how the entity opts in |
 |---|---|
 | boltz / protenix / alphafold3 / openfold-3 | `conformer_restraints: true` on the ligand object |
+| OpenDDE | `conformer_restraints: true` on the sequence entity |
 | chai-lab | a `conformer_restraints: {<chain_id>: true}` map in the sidecar |
 | esmfold2 | `conformer_restraints=True` on the `LigandInput` |
 
 If you write a conformer block, you **must** also write the matching opt-in, or the run
-looks fine but applies no ligand restraint.
+looks fine but applies no conformer restraint.
 
 ### 7. Validate before running
 
@@ -162,7 +166,7 @@ plainly what validation does **not** prove:
 - [ ] Tool identified; config placed correctly (nested vs chai sidecar vs esmfold2 dict).
 - [ ] Every protein selection is qualified with `chain ...`.
 - [ ] Angles/dihedrals in **degrees**; distances/RMSD in **Å**.
-- [ ] If a conformer block exists, the per-ligand opt-in flag exists too.
+- [ ] If a conformer block exists, the intended sequence entity has its opt-in flag.
 - [ ] `verbose: true` is set (so the user can confirm the spec counts at run time).
 - [ ] The validator passes.
 - [ ] You told the user the run command and the "validation ≠ correct selection" caveat.

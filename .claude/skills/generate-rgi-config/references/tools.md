@@ -1,8 +1,8 @@
 # Per-tool placement, format, opt-in, and run command
 
-The `restraints_config` **contents** are identical across all six tools — the distance /
+The `restraints_config` **contents** are identical across all seven tools — the distance /
 angle / dihedral / conformer / rmsd / base_pair / custom blocks are the same. What differs per tool is
-only **(a) the file format, (b) where the config sits, (c) how a ligand opts into conformer
+only **(a) the file format, (b) where the config sits, (c) how an entity opts into conformer
 restraints, and (d) the run command**. Get (b) and (c) right or the restraint silently does
 nothing.
 
@@ -13,10 +13,11 @@ config"), and known-good fixtures at the repo root (`bench_in_<tool>_*`, `bench_
 
 ## Placement + opt-in summary
 
-| tool | format | where the config goes | ligand conformer opt-in |
+| tool | format | where the config goes | conformer opt-in |
 |---|---|---|---|
 | **boltz** (1/2) | YAML | `restraints_config:` nested in the input YAML (beside `sequences:`) | `conformer_restraints: true` next to the ligand's `ccd`/`smiles` |
 | **protenix** | JSON | `restraints_config` nested in each job of the input **JSON list** (beside `name`/`sequences`) | `conformer_restraints: true` on the ligand object |
+| **OpenDDE** | JSON | `restraints_config` nested in each job of the input **JSON list** (beside `name`/`modelSeeds`/`sequences`) | `conformer_restraints: true` on the sequence entity |
 | **chai-lab** | YAML sidecar | the **whole sidecar file IS** the `restraints_config` (NOT nested); sequences in a separate FASTA | a `conformer_restraints: {<chain_id>: true}` map **in the sidecar** |
 | **alphafold3** | JSON | `restraints_config` key in the fold-input JSON (beside `sequences`/`modelSeeds`) | `conformer_restraints: true` on the ligand object |
 | **openfold-3** | JSON | `restraints_config` per query: `queries.<name>.restraints_config` | `conformer_restraints: true` on the ligand chain |
@@ -40,6 +41,15 @@ restraints_config:
 [{"name": "job1", "sequences": [
     {"proteinChain": {"sequence": "ADKK...", "count": 1}},
     {"ligand": {"ligand": "CCD_ATP", "count": 1, "conformer_restraints": true}}],
+  "restraints_config": {"verbose": true, "distance_restraints_config": [ ... ]}}]
+```
+
+**OpenDDE** (`input.json`, a list):
+```json
+[{"name": "job1", "modelSeeds": [0], "sequences": [
+    {"proteinChain": {"id": ["A"], "sequence": "ADKK...", "count": 1}},
+    {"ligand": {"id": ["B"], "ligand": "CCD_ATP", "count": 1,
+                 "conformer_restraints": true}}],
   "restraints_config": {"verbose": true, "distance_restraints_config": [ ... ]}}]
 ```
 
@@ -74,6 +84,7 @@ in the config is inert (run the process on the JAX CPU platform to use CPU).
 |---|---|
 | boltz | `boltz predict input.yaml --seed 0 --out_dir out --model boltz2 --use_msa_server` |
 | protenix | the tool's `sbatch_*.sh` / `protenix predict`. **Run on sm_89 (RTX 4090), NOT Blackwell (sm_120)** — its fused kernels silently emit all-NaN coords there |
+| OpenDDE | `opendde pred -i input.json -o out -n opendde_v1 --use_msa false --use_template false --use_rna_msa false --sample 1 --step 200 --cycle 4` |
 | chai | `python -m chai_lab.main fold input.fasta out --restraints-config-path sidecar.yaml --num-diffn-timesteps 200 --num-diffn-samples 2 --seed 0 --use-msa-server --use-templates-server --no-use-esm-embeddings` (FASTA + out_dir are **positional**) |
 | alphafold3 | AF3's `run_alphafold.py` with `--json_path input.json` (+ `--model_dir`); MSA via local genetic search, no server |
 | openfold-3 | `pixi run -e openfold3-cuda12 run_openfold predict --query-json query.json --output-dir out --num-diffusion-samples 2 --use-msa-server false --use-templates false` |
