@@ -210,3 +210,30 @@ def test_esmfold2_token_padding_guard_raises():
     feats["token_attention_mask"] = np.array([[1, 1, 0]], dtype=np.int64)  # a pad token
     with pytest.raises(ValueError, match="token_attention_mask has padding"):
         ESMFold2Adapter(feats)
+
+
+def test_vdw_nested_config_validation():
+    cfg = RestraintsConfig.from_dict(
+        {
+            "conformer_restraints_config": {
+                "vdw": {
+                    "max_atom_step": 0.2,
+                    "neighbor_rebuild_interval": 4,
+                }
+            }
+        }
+    )
+    assert cfg.conformer_config["vdw"]["max_atom_step"] == 0.2
+    assert cfg.conformer_config["vdw"]["neighbor_rebuild_interval"] == 4
+
+    invalid = (
+        ({"max_atom_step": 0.0}, "max_atom_step must be > 0"),
+        ({"neighbor_rebuild_interval": 0}, "neighbor_rebuild_interval must be >= 1"),
+        ({"neighbor_rebuild_interval": 1.5}, "must be an integer"),
+        ({"dmax": float("nan")}, "dmax must be finite"),
+        ({"scale": 0.0}, "scale must be > 0"),
+        ({"typo": 1}, "unknown key"),
+    )
+    for vdw, message in invalid:
+        with pytest.raises(ValueError, match=message):
+            RestraintsConfig.from_dict({"conformer_restraints_config": {"vdw": vdw}})

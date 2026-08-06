@@ -111,7 +111,11 @@ restraints_config = {
         "chiral": {"weight": 1.0},
         "cistrans": {"weight": 1.0},         # ligand cis/trans (acyclic C=C only)
         "plane": {"weight": 1.0},            # best-fit plane: rings + sp2 groups (off by default)
-        "vdw": {"weight": 1.0, "max_neighbors": 32},  # mode defaults to "both"
+        "vdw": {
+            "weight": 1.0, "max_neighbors": 32,  # mode defaults to "both"
+            "max_atom_step": 0.1,
+            "neighbor_rebuild_interval": 10,
+        },
     },
     "custom_restraints_config": [            # define your OWN restraint as a formula (DSL)
         {"name": "symmetric",               # keep two inter-domain distances equal

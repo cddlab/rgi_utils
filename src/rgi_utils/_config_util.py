@@ -8,9 +8,82 @@ must never import them back.
 from __future__ import annotations
 
 import logging
+import math
+from numbers import Integral, Real
 from typing import Iterable
 
 _TRUE_STRINGS = ("1", "true", "yes", "on")
+
+
+VDW_MAX_ATOM_STEP_DEFAULT = 0.1
+VDW_NEIGHBOR_REBUILD_INTERVAL_DEFAULT = 10
+
+
+def validate_vdw_config(conformer_config: dict | None) -> None:
+    """Validate the nested conformer ``vdw`` block without importing array libraries."""
+    cfg = conformer_config or {}
+    if "vdw" not in cfg:
+        return
+    raw = cfg.get("vdw")
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ValueError("conformer vdw must be a mapping")
+
+    known = {
+        "weight",
+        "mode",
+        "scale",
+        "dmax",
+        "max_neighbors",
+        "max_atom_step",
+        "neighbor_rebuild_interval",
+    }
+    unknown = set(raw) - known
+    if unknown:
+        raise ValueError(
+            f"conformer vdw: unknown key(s) {sorted(unknown)}. "
+            f"Known keys: {sorted(known)}"
+        )
+
+    mode = raw.get("mode", "both")
+    if mode == "ligand_protein":
+        raise ValueError(
+            "conformer vdw mode 'ligand_protein' was renamed to 'intermolecular'"
+        )
+    if mode not in ("intramolecular", "intermolecular", "both"):
+        raise ValueError(
+            "conformer vdw mode must be 'intramolecular', 'intermolecular', or "
+            f"'both', got {mode!r}"
+        )
+
+    def finite_real(key: str, default, *, positive: bool = False) -> float:
+        value = raw.get(key, default)
+        if value is None and key == "weight":
+            return 0.0
+        if isinstance(value, bool) or not isinstance(value, Real):
+            raise ValueError(f"conformer vdw {key} must be a finite number")
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            raise ValueError(f"conformer vdw {key} must be finite")
+        if positive and parsed <= 0.0:
+            raise ValueError(f"conformer vdw {key} must be > 0")
+        return parsed
+
+    finite_real("weight", 1.0)
+    finite_real("scale", 0.75, positive=True)
+    finite_real("dmax", 5.0, positive=True)
+    finite_real("max_atom_step", VDW_MAX_ATOM_STEP_DEFAULT, positive=True)
+
+    for key, default in (
+        ("max_neighbors", 32),
+        ("neighbor_rebuild_interval", VDW_NEIGHBOR_REBUILD_INTERVAL_DEFAULT),
+    ):
+        value = raw.get(key, default)
+        if isinstance(value, bool) or not isinstance(value, Integral):
+            raise ValueError(f"conformer vdw {key} must be an integer >= 1")
+        if int(value) < 1:
+            raise ValueError(f"conformer vdw {key} must be >= 1")
 
 
 def coerce_bool(value, default: bool = False) -> bool:

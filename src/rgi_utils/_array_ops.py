@@ -8,6 +8,7 @@ still requires NumPy only.
 from __future__ import annotations
 
 EPS = 1e-12
+VDW_OVERLAP_EPS = 1e-3
 
 
 class _AxisOps:

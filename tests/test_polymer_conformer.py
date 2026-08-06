@@ -303,24 +303,24 @@ def _dense_active_vdw_reference(
         dist2 = np.sum(delta * delta, axis=-1)
         np.fill_diagonal(dist2, np.inf)
         for source in range(n_atom):
-            order = np.lexsort((atom_indices, dist2[source]))[:k]
-            in_range = (
-                np.isfinite(dist2[source, order])
+            candidate_valid = (
+                np.isfinite(dist2[source])
                 & (float(dmax) > 0)
-                & (dist2[source, order] <= cutoff2)
+                & (dist2[source] <= cutoff2)
+                & (polymer_mask[source] | polymer_mask)
+                & (radii[source] > 0)
+                & (radii > 0)
             )
-            neighbours[bi, source] = np.where(in_range, order, 0)
-            for slot, target in enumerate(order):
-                if not in_range[slot]:
-                    continue
-                code = min(source, int(target)) * n_atom + max(source, int(target))
-                valid[bi, source, slot] = (
-                    (polymer_mask[source] or polymer_mask[target])
-                    and radii[source] > 0
-                    and radii[target] > 0
-                    and code not in excluded
-                )
+            for target in range(n_atom):
+                code = min(source, target) * n_atom + max(source, target)
+                candidate_valid[target] &= code not in excluded
+            clearance = np.sqrt(dist2[source] + 1e-12) - 0.75 * (radii[source] + radii)
+            score = np.where(candidate_valid, clearance, np.inf)
+            order = np.lexsort((atom_indices, score))[:k]
+            selected_valid = candidate_valid[order]
+            neighbours[bi, source] = np.where(selected_valid, order, 0)
 
+            valid[bi, source] = selected_valid
     factor = valid.astype(np.float32)
     for bi in range(n_batch):
         for source in range(n_atom):

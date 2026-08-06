@@ -21,6 +21,7 @@ import logging
 import jax
 import jax.numpy as jnp
 
+from rgi_utils._array_ops import VDW_OVERLAP_EPS
 from rgi_utils.energy import jax_energy
 from rgi_utils.optim._cell_list import (
     CELL_CHUNK_SIZE,
@@ -41,7 +42,9 @@ from rgi_utils.spec import check_active_vdw_int32_safe
 logger = logging.getLogger(__name__)
 
 
-def _cg_minimize(energy_fn, x0, max_iter, max_ls=MAX_LS, gtol=GTOL, ftol=FTOL):
+def _cg_minimize(
+    energy_fn, x0, max_iter, max_ls=MAX_LS, gtol=GTOL, ftol=FTOL, max_atom_step=None
+):
     """Pure-jax nonlinear conjugate gradient (Polak-Ribiere+, backtracking Armijo line
     search, restart on non-descent) — a port of the torch ``TorchRestraintOptimizer.
     _minimize_cg`` built from ``jax.lax.while_loop`` so it stays JIT/scan/vmap-able.
@@ -59,9 +62,18 @@ def _cg_minimize(energy_fn, x0, max_iter, max_ls=MAX_LS, gtol=GTOL, ftol=FTOL):
 
         def body(s):
             step, _acc, _x, _f, _g, i = s
-            xt = x_base + step * d
+            delta = step * d
+            if max_atom_step is not None:
+                atom_norm = jnp.sqrt(
+                    jnp.sum(delta * delta, axis=-1, keepdims=True) + EPS
+                )
+                delta = delta * jnp.minimum(1.0, max_atom_step / atom_norm)
+            xt = x_base + delta
             ft, gt = vg(xt)
-            ok = ft <= f + ARMIJO_C1 * step * slope  # Armijo sufficient decrease
+            predicted = (
+                step * slope if max_atom_step is None else jnp.sum(g_proto * delta)
+            )
+            ok = ft <= f + ARMIJO_C1 * predicted
             return (jnp.where(ok, step, step * BACKTRACK), ok, xt, ft, gt, i + 1)
 
         init = (
@@ -141,14 +153,31 @@ def _merge_cell_candidates_jax(best_dist2, best_idx, dist2, candidate, k):
     return merged_dist2[..., :k], merged_idx[..., :k].astype(best_idx.dtype)
 
 
-def _build_cell_pairs_jax(query, target, dmax, max_neighbors, exclude_self=False):
-    """Return nearest target indices and squared distances from a sorted cell list."""
+def _build_cell_pairs_jax(
+    query,
+    target,
+    dmax,
+    max_neighbors,
+    exclude_self=False,
+    query_radii=None,
+    target_radii=None,
+    pair_scale=None,
+    query_polymer=None,
+    target_polymer=None,
+    excluded_codes=None,
+    pair_code_size=None,
+):
+    """Return target indices and ranking scores from a sorted cell list."""
 
     n_query, n_target = query.shape[-2], target.shape[-2]
     query_batch = jax.lax.stop_gradient(query.reshape((-1, n_query, 3)))
     target_batch = jax.lax.stop_gradient(target.reshape((-1, n_target, 3)))
     if query_batch.shape[0] != target_batch.shape[0]:
         raise ValueError("query and target VdW batch dimensions must match")
+    if query_radii is not None:
+        query_radii = jnp.asarray(query_radii, dtype=query_batch.dtype)
+        target_radii = jnp.asarray(target_radii, dtype=query_batch.dtype)
+        pair_scale = jnp.asarray(pair_scale, dtype=query_batch.dtype)
     max_candidates = n_target - int(exclude_self)
     if n_query == 0 or max_candidates <= 0:
         empty_idx = jnp.zeros((query_batch.shape[0], n_query, 0), dtype=jnp.int32)
@@ -161,8 +190,24 @@ def _build_cell_pairs_jax(query, target, dmax, max_neighbors, exclude_self=False
         valid = (
             jnp.isfinite(dist2) & (dmax_value > 0) & (dist2 <= dmax_value * dmax_value)
         )
+        score = dist2
+        source = jnp.arange(n_query, dtype=jnp.int32).reshape((1, n_query, 1))
         neighbours = jnp.zeros(dist2.shape, dtype=jnp.int32)
-        return neighbours, jnp.where(valid, dist2, jnp.inf)
+        if query_radii is not None:
+            source_r = query_radii[source]
+            target_r = target_radii[neighbours]
+            valid = valid & (source_r > 0) & (target_r > 0)
+            score = jnp.sqrt(dist2 + EPS) - pair_scale * (source_r + target_r)
+        if query_polymer is not None:
+            valid = valid & (query_polymer[source] | target_polymer[neighbours])
+        if excluded_codes is not None and excluded_codes.shape[0] > 0:
+            lo = jnp.minimum(source, neighbours)
+            hi = jnp.maximum(source, neighbours)
+            codes = lo * pair_code_size + hi
+            positions = jnp.searchsorted(excluded_codes, codes)
+            positions = jnp.minimum(positions, excluded_codes.shape[0] - 1)
+            valid = valid & (excluded_codes[positions] != codes)
+        return neighbours, jnp.where(valid, score, jnp.inf)
     k = min(int(max_neighbors), max_candidates)
     n_batch = query_batch.shape[0]
     dmax_value = jnp.asarray(dmax, dtype=query_batch.dtype)
@@ -221,10 +266,27 @@ def _build_cell_pairs_jax(query, target, dmax, max_neighbors, exclude_self=False
             )
             if exclude_self:
                 valid_candidate = valid_candidate & (candidate != source)
-            dist2 = jnp.where(valid_candidate, dist2, jnp.inf)
+            score = dist2
+            if query_radii is not None:
+                source_r = query_radii[source]
+                target_r = target_radii[candidate]
+                valid_candidate = valid_candidate & (source_r > 0) & (target_r > 0)
+                score = jnp.sqrt(dist2 + EPS) - pair_scale * (source_r + target_r)
+            if query_polymer is not None:
+                valid_candidate = valid_candidate & (
+                    query_polymer[source] | target_polymer[candidate]
+                )
+            if excluded_codes is not None and excluded_codes.shape[0] > 0:
+                lo = jnp.minimum(source, candidate)
+                hi = jnp.maximum(source, candidate)
+                codes = lo * pair_code_size + hi
+                positions = jnp.searchsorted(excluded_codes, codes)
+                positions = jnp.minimum(positions, excluded_codes.shape[0] - 1)
+                valid_candidate = valid_candidate & (excluded_codes[positions] != codes)
+            score = jnp.where(valid_candidate, score, jnp.inf)
             candidate = jnp.where(valid_candidate, candidate, 0)
             best_dist2, best_idx = _merge_cell_candidates_jax(
-                best_dist2, best_idx, dist2, candidate, k
+                best_dist2, best_idx, score, candidate, k
             )
             return base + CELL_CHUNK_SIZE, best_dist2, best_idx
 
@@ -248,31 +310,35 @@ def _build_active_vdw_pairs(
     excluded_codes,
     dmax,
     max_neighbors,
+    scale=0.75,
 ):
     """Pure-jax sorted-cell neighbour builder matching the torch implementation.
 
-    It is static-shape and JIT/scan compatible. Hash buckets are traversed completely in
+    It is static-shape and JIT/scan compatible; exclusions are applied before K
+    candidates are selected by smallest VdW clearance. Hash buckets are traversed completely in
     fixed-width chunks, so no dense or hash-colliding cell silently loses candidates.
     """
 
     n_atom = active.shape[-2]
     batch = jax.lax.stop_gradient(active.reshape((-1, n_atom, 3)))
     neighbours, best_dist2 = _build_cell_pairs_jax(
-        batch, batch, dmax, max_neighbors, exclude_self=True
+        batch,
+        batch,
+        dmax,
+        max_neighbors,
+        exclude_self=True,
+        query_radii=radii,
+        target_radii=radii,
+        pair_scale=scale,
+        query_polymer=polymer_mask,
+        target_polymer=polymer_mask,
+        excluded_codes=excluded_codes,
+        pair_code_size=n_atom,
     )
     if neighbours.shape[-1] == 0:
         return neighbours, neighbours.astype(active.dtype)
     source = jnp.arange(n_atom, dtype=jnp.int32).reshape((1, n_atom, 1))
-    lo = jnp.minimum(source, neighbours)
-    hi = jnp.maximum(source, neighbours)
-    codes = lo * n_atom + hi
     valid = jnp.isfinite(best_dist2)
-    valid = valid & (polymer_mask[source] | polymer_mask[neighbours])
-    valid = valid & (radii[source] > 0) & (radii[neighbours] > 0)
-    if excluded_codes.shape[0] > 0:
-        positions = jnp.searchsorted(excluded_codes, codes)
-        positions = jnp.minimum(positions, excluded_codes.shape[0] - 1)
-        valid = valid & (excluded_codes[positions] != codes)
 
     batch_idx = jnp.arange(batch.shape[0], dtype=jnp.int32).reshape((-1, 1, 1))
     reverse_neighbours = neighbours[batch_idx, neighbours]
@@ -284,14 +350,42 @@ def _build_active_vdw_pairs(
     return neighbours, pair_factor
 
 
-def _build_fixed_vdw_pairs(active, bg_pos, lig_local, dmax, max_neighbors):
-    """Build moving-ligand to fixed-background neighbours once per diffusion step."""
+def _build_fixed_vdw_pairs(
+    active, bg_pos, lig_local, dmax, max_neighbors, lig_r=None, bg_r=None, scale=None
+):
+    """Build moving-ligand to fixed-background neighbours for the current CG block."""
 
     n_active = active.shape[-2]
     batch = jax.lax.stop_gradient(active.reshape((-1, n_active, 3)))
     lig = batch[:, lig_local, :]
-    neighbours, best_dist2 = _build_cell_pairs_jax(lig, bg_pos, dmax, max_neighbors)
+    neighbours, best_dist2 = _build_cell_pairs_jax(
+        lig,
+        bg_pos,
+        dmax,
+        max_neighbors,
+        query_radii=lig_r,
+        target_radii=bg_r,
+        pair_scale=scale,
+    )
     return neighbours, jnp.isfinite(best_dist2).astype(active.dtype)
+
+
+def _safe_vdw_diff_jax(diff, source, target, canonical):
+    if canonical:
+        lo = jnp.minimum(source, target)
+        hi = jnp.maximum(source, target)
+        code = lo * 31 + hi
+        orientation = jnp.where(source <= target, 1.0, -1.0)
+    else:
+        code = source * 31 + target
+        orientation = 1.0
+    axis = code % 3
+    base_sign = jnp.where((code // 3) % 2 == 0, 1.0, -1.0)
+    unit = jnp.stack((axis == 0, axis == 1, axis == 2), axis=-1).astype(diff.dtype)
+    fallback = VDW_OVERLAP_EPS * (base_sign * orientation)[..., None] * unit
+    effective = diff + jax.lax.stop_gradient(fallback - diff)
+    norm2 = jnp.sum(diff * diff, axis=-1)
+    return jnp.where((norm2 < VDW_OVERLAP_EPS**2)[..., None], effective, diff)
 
 
 def _vdw_pair_energy(
@@ -314,6 +408,8 @@ def _vdw_pair_energy(
     batch_idx = jnp.arange(batch.shape[0], dtype=jnp.int32).reshape((-1, 1, 1))
     other = background[batch_idx, neighbours]
     diff = lig[:, :, None, :] - other
+    source = lig_local.reshape((1, -1, 1))
+    diff = _safe_vdw_diff_jax(diff, source, neighbours, canonical=False)
     dist = jnp.sqrt(jnp.sum(diff**2, axis=-1) + EPS)
     r_min = scale * (lig_r[None, :, None] + bg_r[neighbours])
     delta = jnp.minimum(dist - r_min, 0.0)
@@ -328,6 +424,8 @@ def _active_vdw_pair_energy(active, neighbours, pair_factor, radii, scale, weigh
     batch_idx = jnp.arange(batch.shape[0], dtype=jnp.int32).reshape((-1, 1, 1))
     other = batch[batch_idx, neighbours]
     diff = batch[:, :, None, :] - other
+    source = jnp.arange(n_atom, dtype=jnp.int32).reshape((1, n_atom, 1))
+    diff = _safe_vdw_diff_jax(diff, source, neighbours, canonical=True)
     dist = jnp.sqrt(jnp.sum(diff**2, axis=-1) + EPS)
     r_min = scale * (radii[None, :, None] + radii[neighbours])
     delta = jnp.minimum(dist - r_min, 0.0)
@@ -389,7 +487,11 @@ def make_minimizer(
         active_vdw_weight = jnp.asarray(float(_ac.weight))
         active_vdw_dmax = jnp.asarray(float(_ac.dmax))
         active_vdw_max_neighbors = int(_ac.max_neighbors)
-    if has_vdw or has_active_vdw:
+    has_static_vdw = spec.has_array_term("vdw")
+    has_any_vdw = has_static_vdw or has_vdw or has_active_vdw
+    vdw_step_limit = float(getattr(spec, "vdw_max_atom_step", 0.1))
+    vdw_rebuild_interval = int(getattr(spec, "vdw_neighbor_rebuild_interval", 10))
+    if has_any_vdw:
         conf_ss = jnp.asarray(float(spec.conf_start_sigma))
         conf_stop = jnp.asarray(float(getattr(spec, "conf_stop_sigma", -1.0)))
         # conformer STEP window (the alternative gate axis; ANDed with the sigma window).
@@ -405,10 +507,7 @@ def make_minimizer(
         # the `jnp.where` zeroes its weight AND gradient above the gate). has_conf is already
         # True when vdw_config is set.
         if has_builtin or has_vdw or has_active_vdw or has_custom:
-            if has_vdw or has_active_vdw:
-                # conformer window: active sigma window (conf_stop <= sigma <= conf_start)
-                # AND active step window (conf_sstep <= step <= conf_estep). NOT a TERM_DEFS
-                # entry, so this gate is maintained by hand (mirrors torch_optim).
+            if has_any_vdw:
                 _s = jnp.asarray(sigma)
                 _st = jnp.asarray(step)
                 in_win = (
@@ -417,36 +516,61 @@ def make_minimizer(
                     & (_st >= conf_sstep)
                     & (_st <= conf_estep)
                 )
+                step_cap = jnp.where(in_win, vdw_step_limit, jnp.inf)
+            else:
+                step_cap = None
             if has_vdw:
                 bg_pos = coords[..., vdw_bg_global, :]
                 vdw_w = jnp.where(in_win, vdw_weight, 0.0)
-                vdw_neighbours, vdw_pair_mask = _build_fixed_vdw_pairs(
-                    active,
-                    bg_pos,
-                    vdw_lig_local,
-                    vdw_dmax,
-                    vdw_max_neighbors,
-                )
             if has_active_vdw:
                 active_vdw_w = jnp.where(in_win, active_vdw_weight, 0.0)
-                neighbours, pair_factor = _build_active_vdw_pairs(
-                    jax.lax.stop_gradient(active),
-                    active_vdw_radii,
-                    active_vdw_polymer,
-                    active_vdw_excluded,
-                    active_vdw_dmax,
-                    active_vdw_max_neighbors,
+
+            def build_dynamic_pairs(a, fixed_cutoff, active_cutoff):
+                fixed_neighbours = fixed_mask = None
+                active_neighbours = active_factor = None
+                if has_vdw:
+                    fixed_neighbours, fixed_mask = _build_fixed_vdw_pairs(
+                        a,
+                        bg_pos,
+                        vdw_lig_local,
+                        fixed_cutoff,
+                        vdw_max_neighbors,
+                        vdw_lig_r,
+                        vdw_bg_r,
+                        vdw_scale,
+                    )
+                if has_active_vdw:
+                    active_neighbours, active_factor = _build_active_vdw_pairs(
+                        a,
+                        active_vdw_radii,
+                        active_vdw_polymer,
+                        active_vdw_excluded,
+                        active_cutoff,
+                        active_vdw_max_neighbors,
+                        active_vdw_scale,
+                    )
+                return (
+                    fixed_neighbours,
+                    fixed_mask,
+                    active_neighbours,
+                    active_factor,
                 )
 
-            def energy_fn(a):
+            def energy_fn(
+                a,
+                fixed_neighbours,
+                fixed_mask,
+                active_neighbours,
+                active_factor,
+            ):
                 e = jax_energy.total_energy(a, prepared, sigma, step)
                 if has_vdw:
                     e = e + _vdw_pair_energy(
                         a,
                         bg_pos,
                         vdw_lig_local,
-                        vdw_neighbours,
-                        vdw_pair_mask,
+                        fixed_neighbours,
+                        fixed_mask,
                         vdw_lig_r,
                         vdw_bg_r,
                         vdw_scale,
@@ -455,13 +579,12 @@ def make_minimizer(
                 if has_active_vdw:
                     e = e + _active_vdw_pair_energy(
                         a,
-                        neighbours,
-                        pair_factor,
+                        active_neighbours,
+                        active_factor,
                         active_vdw_radii,
                         active_vdw_scale,
                         active_vdw_w,
                     )
-                # per-custom gate: active sigma window AND active step window.
                 for _name, start, stop, start_step, stop_step, closure in custom_terms:
                     _sc = jnp.asarray(sigma)
                     _stc = jnp.asarray(step)
@@ -476,16 +599,66 @@ def make_minimizer(
                     e = e + gate * closure(a)
                 return e
 
-            if is_cg:
-                # the custom CG matches torch and converges the RMSD energy (jaxopt's
-                # NonlinearCG + backtracking stalls on its fixed-rotation gradient)
-                opt = _cg_minimize(energy_fn, active, max_iter)
+            if is_cg and (has_vdw or has_active_vdw):
+                n_blocks = (max_iter + vdw_rebuild_interval - 1) // vdw_rebuild_interval
+
+                def block_body(block_index, state):
+                    current, stopped = state
+
+                    def run_block(a):
+                        block_iters = jnp.minimum(
+                            vdw_rebuild_interval,
+                            max_iter - block_index * vdw_rebuild_interval,
+                        )
+                        movement = vdw_step_limit * block_iters
+                        fixed_cutoff = None
+                        active_cutoff = None
+                        if has_vdw:
+                            max_r_min = vdw_scale * (
+                                jnp.max(vdw_lig_r) + jnp.max(vdw_bg_r)
+                            )
+                            fixed_cutoff = jnp.maximum(vdw_dmax, max_r_min + movement)
+                        if has_active_vdw:
+                            max_r_min = (
+                                active_vdw_scale * 2.0 * jnp.max(active_vdw_radii)
+                            )
+                            active_cutoff = jnp.maximum(
+                                active_vdw_dmax, max_r_min + 2.0 * movement
+                            )
+                        pairs = build_dynamic_pairs(a, fixed_cutoff, active_cutoff)
+                        updated = _cg_minimize(
+                            lambda x: energy_fn(x, *pairs),
+                            a,
+                            block_iters,
+                            max_atom_step=step_cap,
+                        )
+                        return updated, jnp.all(updated == a)
+
+                    return jax.lax.cond(
+                        stopped, lambda a: (a, stopped), run_block, current
+                    )
+
+                opt, _stopped = jax.lax.fori_loop(
+                    0, n_blocks, block_body, (active, jnp.asarray(False))
+                )
+            elif is_cg:
+                opt = _cg_minimize(
+                    lambda a: energy_fn(a, None, None, None, None),
+                    active,
+                    max_iter,
+                    max_atom_step=step_cap,
+                )
             else:
+                pairs = build_dynamic_pairs(
+                    active,
+                    vdw_dmax if has_vdw else None,
+                    active_vdw_dmax if has_active_vdw else None,
+                )
                 import jaxopt  # only the non-default l-bfgs method needs jaxopt
 
                 opt = (
                     jaxopt.LBFGS(
-                        fun=energy_fn,
+                        fun=lambda a: energy_fn(a, *pairs),
                         maxiter=max_iter,
                         linesearch="backtracking",
                         implicit_diff=False,
@@ -493,7 +666,6 @@ def make_minimizer(
                     .run(active)
                     .params
                 )
-            # keep the input coordinates if the solver diverged to non-finite
             active = jnp.where(jnp.all(jnp.isfinite(opt)), opt, active)
         return coords.at[..., active_idx, :].set(active)
 

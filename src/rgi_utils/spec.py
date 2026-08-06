@@ -147,9 +147,9 @@ class VdwConfig:
     move (they live in ``active_sites``, addressed by ``ligand_local``); the
     background atoms (every non-padding atom not optimised — protein, DNA/RNA, any
     non-restrained ligand) are read from the full coordinate tensor via
-    ``background_global`` and held *fixed*. Each optimization step rebuilds a fixed-width
-    neighbour list and holds it fixed during CG, so only the ligand is pushed out of
-    contacts while the optimised variable set stays limited to ``active_sites``. The
+    ``background_global`` and held *fixed*. CG rebuilds a fixed-width Verlet-style
+    neighbour list between bounded iteration blocks, so only the ligand is pushed out
+    of contacts while the optimised variable set stays limited to ``active_sites``. The
     penalty is
     ``clamp(d - scale*(r_i+r_j), max=0)**2`` summed over pairs within ``dmax`` —
     identical maths to ``vdw_energy``, only the pair list is dynamic.
@@ -169,10 +169,9 @@ class VdwConfig:
 class ActiveVdwConfig:
     """Dynamic active-active VdW neighbours involving restrained polymer atoms.
 
-    A fixed-width nearest-neighbour list is rebuilt from the current coordinates once
-    per diffusion step and held fixed during CG.  This keeps each energy evaluation
-    O(N*K), while 1-2/1-3/1-4 covalent pairs are removed through
-    ``excluded_codes``.
+    A fixed-width Verlet-style neighbour list is rebuilt between bounded CG blocks.
+    This keeps each energy evaluation O(N*K), while 1-2/1-3/1-4 covalent pairs are
+    removed through ``excluded_codes`` before the K-neighbour cap is applied.
     """
 
     weight: float
@@ -418,6 +417,11 @@ class RestraintSpec:
     vdw: VdwArrays | None = None
     vdw_config: VdwConfig | None = None
     active_vdw_config: ActiveVdwConfig | None = None
+    # CG safety controls shared by static and dynamic VdW. The step cap prevents the
+    # quadratic one-sided penalty from accepting a large overshooting Armijo step; the
+    # interval bounds how long dynamic Verlet-style neighbour lists stay fixed.
+    vdw_max_atom_step: float = 0.1
+    vdw_neighbor_rebuild_interval: int = 10
     distance: DistanceArrays | None = None
     rmsd: RmsdArrays | None = None
     # centroid angle/dihedral restraints between atom GROUPS (distinct from the conformer

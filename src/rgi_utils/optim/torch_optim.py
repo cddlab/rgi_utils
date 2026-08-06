@@ -12,8 +12,8 @@ The fixed-background VdW term (``spec.vdw_config``) is handled here rather than 
 the static energy layer: the ligand atoms come from the optimised ``active`` set
 while the background atoms (protein / DNA/RNA / non-restrained ligand) are a *fixed
 background* read from the full coordinate tensor. A fixed-width neighbour list is
-rebuilt once per diffusion step and held fixed during CG (only the ligand is pushed;
-the background is held fixed).
+rebuilt between bounded CG blocks (only the ligand is pushed; the background is held
+fixed).
 """
 
 from __future__ import annotations
@@ -122,7 +122,9 @@ class TorchRestraintOptimizer:
             return None
         return self._custom_cvg[mode]
 
-    def _minimize_custom_gpu(self, active, sigma, step, mi, vdw, active_vdw) -> bool:
+    def _minimize_custom_gpu(
+        self, active, sigma, step, mi, vdw, active_vdw, max_atom_step=None
+    ) -> bool:
         """GPU CG with the torch.compile'd custom-inclusive energy. ``vdw`` /
         ``active_vdw`` are the same optional argument tuples ``gpu_cg`` takes; they select
         the base energy so the dynamic VdW terms stay inside the compiled graph. Returns
@@ -150,7 +152,10 @@ class TorchRestraintOptimizer:
         )
         try:
             opt = _cg_minimize_torch(
-                lambda x: cvg(x, prepared_g, gates, *vdw_args), active.detach(), mi
+                lambda x: cvg(x, prepared_g, gates, *vdw_args),
+                active.detach(),
+                mi,
+                max_atom_step=max_atom_step,
             )
             with torch.no_grad():
                 active.copy_(opt)
@@ -299,8 +304,8 @@ class TorchRestraintOptimizer:
                 "max_neighbors": int(ac.max_neighbors),
             }
 
-    def _fixed_vdw_pairs(self, active, bg_pos):
-        """Build the fixed-background neighbour list for the current diffusion step."""
+    def _fixed_vdw_pairs(self, active, bg_pos, dmax=None):
+        """Build the fixed-background neighbour list for the current CG block."""
         from rgi_utils.optim._torch_cg_gpu import build_fixed_vdw_pairs
 
         v = self._vdw
@@ -308,8 +313,11 @@ class TorchRestraintOptimizer:
             active,
             bg_pos,
             v["lig_local"],
-            v["dmax"],
+            v["dmax"] if dmax is None else dmax,
             v["max_neighbors"],
+            v["lig_r"],
+            v["bg_r"],
+            v["scale"],
         )
 
     def _vdw_energy(self, active, bg_pos, pairs=None):
@@ -363,43 +371,28 @@ class TorchRestraintOptimizer:
         )
         self._ensure(coords.device, work_dtype)
         mi = max_iter if max_iter is not None else self.max_iter
-        # VdW is a conformer restraint -> gated by the conformer window: active sigma
-        # window (conf_stop <= sigma <= conf_start) AND active step window
-        # (conf_start_step <= step <= conf_stop_step). NOT a TERM_DEFS entry, so this gate is
-        # maintained by hand (the PER_ENTRY/CONF_KEYS safety net does not cover it).
-        vdw_active = (
-            self._vdw is not None
-            and (
-                sigma is None
-                or (
-                    sigma <= float(self.spec.conf_start_sigma)
-                    and sigma >= float(self.spec.conf_stop_sigma)
-                )
+        # Dynamic and static VdW share the conformer gate and CG safety controls.
+        conformer_in_window = (
+            sigma is None
+            or (
+                sigma <= float(self.spec.conf_start_sigma)
+                and sigma >= float(self.spec.conf_stop_sigma)
             )
-            and (
-                step is None
-                or (
-                    step >= float(self.spec.conf_start_step)
-                    and step <= float(self.spec.conf_stop_step)
-                )
+        ) and (
+            step is None
+            or (
+                step >= float(self.spec.conf_start_step)
+                and step <= float(self.spec.conf_stop_step)
             )
         )
-        active_vdw_active = (
-            self._active_vdw is not None
-            and (
-                sigma is None
-                or (
-                    sigma <= float(self.spec.conf_start_sigma)
-                    and sigma >= float(self.spec.conf_stop_sigma)
-                )
-            )
-            and (
-                step is None
-                or (
-                    step >= float(self.spec.conf_start_step)
-                    and step <= float(self.spec.conf_stop_step)
-                )
-            )
+        vdw_active = self._vdw is not None and conformer_in_window
+        active_vdw_active = self._active_vdw is not None and conformer_in_window
+        static_vdw_active = self.spec.has_array_term("vdw") and conformer_in_window
+        any_vdw_active = vdw_active or active_vdw_active or static_vdw_active
+        max_atom_step = (
+            float(getattr(self.spec, "vdw_max_atom_step", 0.1))
+            if self._is_cg() and any_vdw_active
+            else None
         )
 
         has_builtin = self.spec.has_conformer() or self.spec.has_per_entry()
@@ -433,25 +426,47 @@ class TorchRestraintOptimizer:
                         device=coords.device,
                     )
                     bg_pos.copy_(coords[..., self._vdw["bg_global"], :])
-                fixed_vdw = (
-                    self._fixed_vdw_pairs(active, bg_pos)
-                    if bg_pos is not None
-                    else None
-                )
+                fixed_vdw = None
                 active_vdw = None
-                if active_vdw_active:
-                    from rgi_utils.optim._torch_cg_gpu import build_active_vdw_pairs
 
-                    av = self._active_vdw
-                    neighbours, pair_factor = build_active_vdw_pairs(
-                        active,
-                        av["radii"],
-                        av["polymer_mask"],
-                        av["excluded_codes"],
-                        av["dmax"],
-                        av["max_neighbors"],
+                def rebuild_dynamic_pairs(block_iters=None):
+                    nonlocal fixed_vdw, active_vdw
+                    movement = (
+                        None
+                        if block_iters is None or max_atom_step is None
+                        else max_atom_step * int(block_iters)
                     )
-                    active_vdw = (neighbours, pair_factor)
+                    if bg_pos is not None:
+                        v = self._vdw
+                        cutoff = v["dmax"]
+                        if movement is not None:
+                            max_r_min = v["scale"] * (
+                                torch.max(v["lig_r"]) + torch.max(v["bg_r"])
+                            )
+                            cutoff = torch.maximum(cutoff, max_r_min + float(movement))
+                        fixed_vdw = self._fixed_vdw_pairs(active, bg_pos, cutoff)
+                    if active_vdw_active:
+                        from rgi_utils.optim._torch_cg_gpu import (
+                            build_active_vdw_pairs,
+                        )
+
+                        av = self._active_vdw
+                        cutoff = av["dmax"]
+                        if movement is not None:
+                            max_r_min = av["scale"] * 2.0 * torch.max(av["radii"])
+                            cutoff = torch.maximum(
+                                cutoff, max_r_min + 2.0 * float(movement)
+                            )
+                        neighbours, pair_factor = build_active_vdw_pairs(
+                            active,
+                            av["radii"],
+                            av["polymer_mask"],
+                            av["excluded_codes"],
+                            cutoff,
+                            av["max_neighbors"],
+                            av["scale"],
+                        )
+                        active_vdw = (neighbours, pair_factor)
 
                 def energy_fn():
                     e = torch_energy.total_energy(active, prepared, sigma, step)
@@ -474,67 +489,90 @@ class TorchRestraintOptimizer:
                         e = e + ce
                     return e
 
-                # Argument tuples for the two DYNAMIC VdW terms, shared by both compiled
-                # paths (gpu_cg's module-global artifact and the custom-inclusive
-                # per-optimizer one) so they always fold in the same terms.
-                vdw = None
-                if bg_pos is not None:
-                    v = self._vdw
-                    vdw = (
-                        bg_pos,
-                        v["lig_local"],
-                        fixed_vdw[0],
-                        fixed_vdw[1],
-                        v["lig_r"],
-                        v["bg_r"],
-                        v["scale"],
-                        v["weight"],
-                    )
-                active_vdw_args = None
-                if active_vdw is not None:
-                    av = self._active_vdw
-                    active_vdw_args = (
-                        active_vdw[0],
-                        active_vdw[1],
-                        av["radii"],
-                        av["scale"],
-                        av["weight"],
-                    )
+                def dynamic_args():
+                    vdw = None
+                    if bg_pos is not None:
+                        v = self._vdw
+                        vdw = (
+                            bg_pos,
+                            v["lig_local"],
+                            fixed_vdw[0],
+                            fixed_vdw[1],
+                            v["lig_r"],
+                            v["bg_r"],
+                            v["scale"],
+                            v["weight"],
+                        )
+                    active_args = None
+                    if active_vdw is not None:
+                        av = self._active_vdw
+                        active_args = (
+                            active_vdw[0],
+                            active_vdw[1],
+                            av["radii"],
+                            av["scale"],
+                            av["weight"],
+                        )
+                    return vdw, active_args
 
-                if self._is_cg() and active.is_cuda and has_custom:
-                    # GPU + custom: a per-optimizer torch.compile'd energy that INCLUDES the
-                    # custom closures (gpu_cg's module-global energy can't see them) on top
-                    # of the same _ENERGY_BY_MODE base, so the dynamic VdW terms stay
-                    # compiled too. Falls back to the eager CG if compile is disabled/fails.
-                    if not self._minimize_custom_gpu(
-                        active, sigma, step, mi, vdw, active_vdw_args
-                    ):
-                        self._minimize_cg(active, energy_fn, mi)
-                elif self._is_cg() and active.is_cuda:
-                    # GPU: the same early-exit CG as the CPU path, but with an
-                    # inductor-fused (NOT CUDA-graph) torch.compile'd energy+grad so the
-                    # launch-bound eval stops dominating (the eager _minimize_cg below is
-                    # launch/sync-bound on GPU). CPU keeps _minimize_cg (already optimal).
-                    from rgi_utils.optim._torch_cg_gpu import gpu_cg
+                def run_cg(block_iters):
+                    rebuild_dynamic_pairs(block_iters)
+                    vdw, active_args = dynamic_args()
+                    if active.is_cuda and has_custom:
+                        if not self._minimize_custom_gpu(
+                            active,
+                            sigma,
+                            step,
+                            block_iters,
+                            vdw,
+                            active_args,
+                            max_atom_step,
+                        ):
+                            self._minimize_cg(
+                                active,
+                                energy_fn,
+                                block_iters,
+                                max_atom_step=max_atom_step,
+                            )
+                    elif active.is_cuda:
+                        from rgi_utils.optim._torch_cg_gpu import gpu_cg
 
-                    # _gated_prepared pre-folds the noise gate into the masks (so the
-                    # compiled energy takes sigma=None and carries NO python-float scalar
-                    # leaf, which would make dynamo recompile per value) and caches a
-                    # stable dict per gate state for compile reuse. dynamic fixed-background
-                    # VdW is folded in via gpu_cg's `vdw` tuple (bg_pos + radii/consts).
-                    prepared_g = self._gated_prepared(sigma, step)
-                    opt = gpu_cg(
-                        prepared_g,
-                        active.detach(),
-                        mi,
-                        vdw=vdw,
-                        active_vdw=active_vdw_args,
+                        opt = gpu_cg(
+                            self._gated_prepared(sigma, step),
+                            active.detach(),
+                            block_iters,
+                            vdw=vdw,
+                            active_vdw=active_args,
+                            max_atom_step=max_atom_step,
+                        )
+                        with torch.no_grad():
+                            active.copy_(opt)
+                    else:
+                        self._minimize_cg(
+                            active,
+                            energy_fn,
+                            block_iters,
+                            max_atom_step=max_atom_step,
+                        )
+
+                if self._is_cg():
+                    remaining = int(mi)
+                    dynamic_vdw = bg_pos is not None or active_vdw_active
+                    interval = (
+                        int(getattr(self.spec, "vdw_neighbor_rebuild_interval", 10))
+                        if dynamic_vdw
+                        else max(remaining, 1)
                     )
-                    with torch.no_grad():
-                        active.copy_(opt)
-                elif self._is_cg():
-                    self._minimize_cg(active, energy_fn, mi)
+                    while remaining > 0:
+                        block_iters = min(interval, remaining)
+                        before_block = active.detach().clone()
+                        run_cg(block_iters)
+                        remaining -= block_iters
+                        if torch.equal(active.detach(), before_block):
+                            break
                 else:
+                    # L-BFGS keeps its previous one-list-per-diffusion-step behavior.
+                    rebuild_dynamic_pairs()
                     opt = torch.optim.LBFGS(
                         [active], max_iter=mi, line_search_fn="strong_wolfe"
                     )
@@ -542,7 +580,6 @@ class TorchRestraintOptimizer:
                     def closure():
                         opt.zero_grad()
                         e = energy_fn()
-                        # all terms gated off -> no-op (see _minimize_cg's value_grad)
                         if e.requires_grad:
                             e.backward()
                         return e
@@ -584,6 +621,7 @@ class TorchRestraintOptimizer:
         max_ls: int = MAX_LS,
         gtol: float = GTOL,
         ftol: float = FTOL,
+        max_atom_step=None,
     ) -> None:
         """In-place nonlinear conjugate gradient (Polak-Ribiere+, backtracking
         Armijo line search). Matches the jax backend's pure-jax CG (a port of this
@@ -639,10 +677,19 @@ class TorchRestraintOptimizer:
             step, accepted = 1.0, False
             for _ in range(max_ls):
                 with torch.no_grad():
-                    active.copy_(x0 + step * d)
+                    delta = step * d
+                    if max_atom_step is not None:
+                        atom_norm = torch.sqrt(
+                            torch.sum(delta * delta, dim=-1, keepdim=True) + EPS
+                        )
+                        delta = delta * torch.clamp(max_atom_step / atom_norm, max=1.0)
+                    active.copy_(x0 + delta)
                 e_t, g_new = value_grad()
-                f_new = float(e_t)  # 1 sync/trial (Armijo needs the value)
-                if f_new <= f + ARMIJO_C1 * step * slope:  # Armijo sufficient decrease
+                if max_atom_step is None:
+                    f_new, predicted = float(e_t), step * slope
+                else:
+                    f_new, predicted = torch.stack((e_t, torch.sum(g * delta))).tolist()
+                if f_new <= f + ARMIJO_C1 * predicted:
                     accepted = True
                     break
                 step *= BACKTRACK

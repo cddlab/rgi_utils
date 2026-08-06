@@ -1584,3 +1584,194 @@ def test_gpu_cg_matches_cpu_minimum():
 
     assert e1c < 0.5 * e0c and e1g < 0.5 * e0g
     assert abs(e1c - e1g) < 1e-3 + 0.1 * abs(e1c), f"cpu {e1c} vs gpu {e1g}"
+
+
+@pytest.mark.parametrize("weight", [1.0, 32.0])
+def test_torch_vdw_cg_step_cap_prevents_overshoot(weight):
+    torch = pytest.importorskip("torch")
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+    from rgi_utils.spec import RestraintSpec, VdwArrays
+
+    spec = RestraintSpec(
+        n_active=2,
+        active_sites=np.arange(2),
+        vdw=VdwArrays(
+            idx=np.array([[0, 1]], dtype=np.int64),
+            r_min=np.array([2.55]),
+            weight=np.array([weight]),
+            mask=np.ones(1),
+        ),
+        conf_start_sigma=float("inf"),
+        vdw_max_atom_step=0.1,
+    )
+    coords = torch.tensor([[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]], dtype=torch.float64)
+
+    TorchRestraintOptimizer(spec, max_iter=100, method="CG").minimize(coords)
+    distance = float(torch.linalg.norm(coords[0] - coords[1]))
+
+    assert 2.5 <= distance <= 2.75
+
+
+@pytest.mark.parametrize("weight", [1.0, 32.0])
+def test_jax_vdw_cg_step_cap_prevents_overshoot(weight):
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.optim.jax_optim import make_minimizer
+    from rgi_utils.spec import RestraintSpec, VdwArrays
+
+    spec = RestraintSpec(
+        n_active=2,
+        active_sites=np.arange(2),
+        vdw=VdwArrays(
+            idx=np.array([[0, 1]], dtype=np.int64),
+            r_min=np.array([2.55]),
+            weight=np.array([weight]),
+            mask=np.ones(1),
+        ),
+        conf_start_sigma=float("inf"),
+        vdw_max_atom_step=0.1,
+    )
+    coords = jnp.asarray([[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]])
+
+    coords = make_minimizer(spec, max_iter=100, method="CG")(coords, 0.0)
+    distance = float(jnp.linalg.norm(coords[0] - coords[1]))
+
+    assert 2.5 <= distance <= 2.75
+
+
+def test_torch_dynamic_vdw_rebuilds_before_new_contact():
+    torch = pytest.importorskip("torch")
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+    from rgi_utils.spec import DistanceArrays, RestraintSpec, VdwConfig
+
+    spec = RestraintSpec(
+        n_active=2,
+        active_sites=np.array([0, 1]),
+        distance=DistanceArrays(
+            grp1_idx=np.array([[0]], dtype=np.int64),
+            grp2_idx=np.array([[1]], dtype=np.int64),
+            grp1_mask=np.ones((1, 1)),
+            grp2_mask=np.ones((1, 1)),
+            target1=np.zeros(1),
+            target2=np.zeros(1),
+            dist_type=np.zeros(1, dtype=np.int64),
+            move_mode=np.ones(1, dtype=np.int64),
+            weight=np.ones(1),
+            mask=np.ones(1),
+            start_sigma=np.array([float("inf")]),
+            stop_sigma=np.array([-1.0]),
+            start_step=np.array([float("-inf")]),
+            stop_step=np.array([float("inf")]),
+        ),
+        vdw_config=VdwConfig(
+            weight=1.0,
+            ligand_local=np.array([0]),
+            ligand_radii=np.array([1.7]),
+            background_global=np.array([2]),
+            background_radii=np.array([1.7]),
+            scale=0.75,
+            dmax=5.0,
+            max_neighbors=4,
+        ),
+        conf_start_sigma=float("inf"),
+        vdw_max_atom_step=0.1,
+        vdw_neighbor_rebuild_interval=4,
+    )
+    coords = torch.tensor(
+        [[5.3, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+        dtype=torch.float64,
+    )
+
+    TorchRestraintOptimizer(spec, max_iter=100, method="CG").minimize(coords)
+    fresh_distance = float(torch.linalg.norm(coords[0] - coords[2]))
+    assert 0.8 < fresh_distance < 2.55
+
+
+def test_jax_dynamic_vdw_rebuilds_before_new_contact():
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.optim.jax_optim import make_minimizer
+    from rgi_utils.spec import DistanceArrays, RestraintSpec, VdwConfig
+
+    spec = RestraintSpec(
+        n_active=2,
+        active_sites=np.array([0, 1]),
+        distance=DistanceArrays(
+            grp1_idx=np.array([[0]], dtype=np.int64),
+            grp2_idx=np.array([[1]], dtype=np.int64),
+            grp1_mask=np.ones((1, 1)),
+            grp2_mask=np.ones((1, 1)),
+            target1=np.zeros(1),
+            target2=np.zeros(1),
+            dist_type=np.zeros(1, dtype=np.int64),
+            move_mode=np.ones(1, dtype=np.int64),
+            weight=np.ones(1),
+            mask=np.ones(1),
+            start_sigma=np.array([float("inf")]),
+            stop_sigma=np.array([-1.0]),
+            start_step=np.array([float("-inf")]),
+            stop_step=np.array([float("inf")]),
+        ),
+        vdw_config=VdwConfig(
+            weight=1.0,
+            ligand_local=np.array([0]),
+            ligand_radii=np.array([1.7]),
+            background_global=np.array([2]),
+            background_radii=np.array([1.7]),
+            scale=0.75,
+            dmax=5.0,
+            max_neighbors=4,
+        ),
+        conf_start_sigma=float("inf"),
+        vdw_max_atom_step=0.1,
+        vdw_neighbor_rebuild_interval=4,
+    )
+    coords = jnp.asarray([[5.3, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+
+    coords = make_minimizer(spec, max_iter=100, method="CG")(coords, 0.0)
+    fresh_distance = float(jnp.linalg.norm(coords[0] - coords[2]))
+
+    assert 0.8 < fresh_distance < 2.55
+
+
+def test_torch_dynamic_vdw_stops_rebuilding_after_convergence(monkeypatch):
+    torch = pytest.importorskip("torch")
+    from rgi_utils.optim import _torch_cg_gpu
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+    from rgi_utils.spec import RestraintSpec, VdwConfig
+
+    calls = 0
+    original = _torch_cg_gpu.build_fixed_vdw_pairs
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(_torch_cg_gpu, "build_fixed_vdw_pairs", counted)
+    spec = RestraintSpec(
+        n_active=1,
+        active_sites=np.array([0]),
+        vdw_config=VdwConfig(
+            weight=1.0,
+            ligand_local=np.array([0]),
+            ligand_radii=np.array([1.7]),
+            background_global=np.array([1]),
+            background_radii=np.array([1.7]),
+            scale=0.75,
+            dmax=5.0,
+            max_neighbors=4,
+        ),
+        conf_start_sigma=float("inf"),
+        vdw_max_atom_step=0.1,
+        vdw_neighbor_rebuild_interval=1,
+    )
+    coords = torch.tensor([[3.0, 0.0, 0.0], [0.0, 0.0, 0.0]], dtype=torch.float64)
+
+    TorchRestraintOptimizer(spec, max_iter=20, method="CG").minimize(coords)
+
+    assert calls == 1

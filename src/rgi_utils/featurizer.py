@@ -22,6 +22,11 @@ import logging
 import numpy as np
 from rdkit import Chem
 
+from rgi_utils._config_util import (
+    VDW_MAX_ATOM_STEP_DEFAULT,
+    VDW_NEIGHBOR_REBUILD_INTERVAL_DEFAULT,
+    validate_vdw_config,
+)
 from rgi_utils._mol_build import ff_relax, parse_relax_force_field
 from rgi_utils.atom_context import LigandConf
 from rgi_utils.spec import (
@@ -617,9 +622,9 @@ def _build_intramolecular_vdw(
 ) -> VdwArrays | None:
     """Static intramolecular VdW repulsion within each ligand (all backends).
 
-    Penalizes non-bonded atom pairs within one ligand — topological distance > 3
-    (so 1-2 bonds, 1-3 angles, and 1-4 dihedrals are skipped) and reference-conformer
-    distance < ``dmax`` — with a lower bound ``scale * (r_i + r_j)``. Unlike the
+    Penalizes every atom pair within one ligand whose topological distance is > 3
+    (so 1-2 bonds, 1-3 angles, and 1-4 dihedrals are skipped), with a lower bound
+    ``scale * (r_i + r_j)``. Reference distance is deliberately not a build filter. Unlike the
     dynamic fixed-background ``VdwConfig``, the pair list is fixed, so this term also
     works in the jax/numpy backends via ``VdwArrays``. Enabled when
     ``conformer_config['vdw']['mode']`` is ``'intramolecular'`` or ``'both'`` (the
@@ -632,12 +637,10 @@ def _build_intramolecular_vdw(
     from rdkit.Chem import rdmolops
 
     scale = float(vcfg.get("scale", 0.75))
-    dmax = float(vcfg.get("dmax", 5.0))
     idx_pairs: list[list[int]] = []
     r_min_list: list[float] = []
     for lc in ligand_confs:
         mol = lc.mol
-        crds = np.asarray(lc.conf_coords, dtype=np.float64)
         gidx = np.asarray(lc.global_indices, dtype=np.int64)
         n = mol.GetNumAtoms()
         if n < 2:
@@ -647,8 +650,6 @@ def _build_intramolecular_vdw(
         for i in range(n):
             for j in range(i + 1, n):
                 if topo[i, j] <= 3:  # skip 1-2, 1-3, and 1-4 pairs
-                    continue
-                if _bond_length(crds, i, j) >= dmax:
                     continue
                 idx_pairs.append([g2l[int(gidx[i])], g2l[int(gidx[j])]])
                 r_min_list.append(scale * (radii[i] + radii[j]))
@@ -771,6 +772,7 @@ def build_spec(
     back-door into the conformer plane arrays."""
     ligand_confs = ligand_confs or []
     cfg = conformer_config or {}
+    validate_vdw_config(cfg)
     # Conformer restraints are OPT-IN -- this is the single enforcement point for every
     # tool: (1) with no conformer_restraints_config (e.g. a distance-only run) build no
     # conformer at all; (2) otherwise restrain only ligand conformers whose chain opted
@@ -1205,6 +1207,14 @@ def build_spec(
         vdw_config=vdw_config,
         group_improper=group_improper,
         active_vdw_config=active_vdw_config,
+        vdw_max_atom_step=float(
+            (cfg.get("vdw", {}) or {}).get("max_atom_step", VDW_MAX_ATOM_STEP_DEFAULT)
+        ),
+        vdw_neighbor_rebuild_interval=int(
+            (cfg.get("vdw", {}) or {}).get(
+                "neighbor_rebuild_interval", VDW_NEIGHBOR_REBUILD_INTERVAL_DEFAULT
+            )
+        ),
         conf_start_sigma=conf_start_sigma,
         conf_stop_sigma=conf_stop_sigma,
         conf_start_step=conf_start_step,

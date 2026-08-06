@@ -1427,3 +1427,160 @@ def test_fixed_background_cell_list_matches_dense_reference():
     )
     np.testing.assert_array_equal(np.asarray(single_neighbours), single_ref)
     np.testing.assert_array_equal(np.asarray(single_mask), single_mask_ref)
+
+
+def test_active_vdw_filters_exclusions_before_knn():
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    from rgi_utils.optim._torch_cg_gpu import build_active_vdw_pairs
+    from rgi_utils.optim.jax_optim import _build_active_vdw_pairs
+
+    n_atom = 34
+    positions = np.zeros((1, n_atom, 3), dtype=np.float32)
+    positions[0, 1:33, 0] = np.arange(1, 33) * 0.01
+    positions[0, 33, 0] = 0.5
+    radii = np.ones(n_atom, dtype=np.float32)
+    polymer = np.zeros(n_atom, dtype=bool)
+    polymer[0] = True
+    excluded = np.arange(1, 33, dtype=np.int64)
+
+    neighbours_t, factor_t = build_active_vdw_pairs(
+        torch.tensor(positions),
+        torch.tensor(radii),
+        torch.tensor(polymer),
+        torch.tensor(excluded),
+        torch.tensor(1.0),
+        32,
+        0.75,
+    )
+    selected_t = neighbours_t[0, 0][factor_t[0, 0] > 0]
+    assert 33 in selected_t.tolist()
+
+    neighbours_j, factor_j = _build_active_vdw_pairs(
+        jnp.asarray(positions),
+        jnp.asarray(radii),
+        jnp.asarray(polymer),
+        jnp.asarray(excluded, dtype=jnp.int32),
+        jnp.asarray(1.0),
+        32,
+        jnp.asarray(0.75),
+    )
+    selected_j = np.asarray(neighbours_j[0, 0])[np.asarray(factor_j[0, 0]) > 0]
+    assert 33 in selected_j.tolist()
+
+
+def test_exact_overlap_vdw_gradient_torch_jax_parity():
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.energy import jax_energy, numpy_energy, torch_energy
+
+    spec = RestraintSpec(
+        n_active=2,
+        active_sites=np.arange(2),
+        vdw=VdwArrays(
+            idx=np.array([[0, 1]], dtype=np.int64),
+            r_min=np.array([2.55]),
+            weight=np.ones(1),
+            mask=np.ones(1),
+        ),
+        conf_start_sigma=float("inf"),
+    )
+    positions = np.zeros((2, 3), dtype=np.float64)
+
+    tpos = torch.tensor(positions, requires_grad=True)
+    te = torch_energy.total_energy(tpos, torch_energy.prepare_spec(spec), sigma=0.0)
+    te.backward()
+    tg = tpos.grad.detach().numpy()
+
+    prepared_j = jax_energy.prepare_spec(spec)
+    je, jg = jax.value_and_grad(
+        lambda p: jax_energy.total_energy(p, prepared_j, sigma=0.0)
+    )(jnp.asarray(positions))
+
+    ne = numpy_energy.total_energy(
+        positions, numpy_energy.prepare_spec(spec), sigma=0.0
+    )
+    assert float(te.detach()) == pytest.approx(float(ne), rel=1e-6)
+    assert float(te.detach()) == pytest.approx(float(je), rel=1e-6)
+    assert np.linalg.norm(tg) > 1.0
+    np.testing.assert_allclose(tg[0], -tg[1], atol=1e-10)
+    np.testing.assert_allclose(tg, np.asarray(jg), atol=1e-5)
+
+
+def test_dynamic_exact_overlap_vdw_gradient_torch_jax_parity():
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.optim._torch_cg_gpu import (
+        _vdw_pair_energy as torch_fixed_energy,
+    )
+    from rgi_utils.optim._torch_cg_gpu import (
+        active_vdw_pair_energy as torch_active_energy,
+    )
+    from rgi_utils.optim.jax_optim import (
+        _active_vdw_pair_energy as jax_active_energy,
+    )
+    from rgi_utils.optim.jax_optim import _vdw_pair_energy as jax_fixed_energy
+
+    lig_local_t = torch.tensor([0])
+    fixed_neighbours_t = torch.zeros((1, 1, 1), dtype=torch.long)
+    fixed_mask_t = torch.ones((1, 1, 1), dtype=torch.float64)
+    radius_t = torch.tensor([1.7], dtype=torch.float64)
+    fixed_t = torch.zeros((1, 1, 3), dtype=torch.float64, requires_grad=True)
+    background_t = torch.zeros_like(fixed_t)
+    fixed_value_t = torch_fixed_energy(
+        fixed_t,
+        background_t,
+        lig_local_t,
+        fixed_neighbours_t,
+        fixed_mask_t,
+        radius_t,
+        radius_t,
+        torch.tensor(0.75),
+        torch.tensor(1.0),
+    )
+    fixed_value_t.backward()
+
+    fixed_value_j, fixed_grad_j = jax.value_and_grad(
+        lambda a: jax_fixed_energy(
+            a,
+            jnp.zeros_like(a),
+            jnp.asarray([0], dtype=jnp.int32),
+            jnp.zeros((1, 1, 1), dtype=jnp.int32),
+            jnp.ones((1, 1, 1)),
+            jnp.asarray([1.7]),
+            jnp.asarray([1.7]),
+            jnp.asarray(0.75),
+            jnp.asarray(1.0),
+        )
+    )(jnp.zeros((1, 1, 3)))
+
+    active_neighbours_t = torch.tensor([[[1], [0]]])
+    pair_factor_t = torch.full((1, 2, 1), 0.5, dtype=torch.float64)
+    active_radii_t = torch.full((2,), 1.7, dtype=torch.float64)
+    active_t = torch.zeros((1, 2, 3), dtype=torch.float64, requires_grad=True)
+    active_value_t = torch_active_energy(
+        active_t, active_neighbours_t, pair_factor_t, active_radii_t, 0.75, 1.0
+    )
+    active_value_t.backward()
+
+    active_value_j, active_grad_j = jax.value_and_grad(
+        lambda a: jax_active_energy(
+            a,
+            jnp.asarray([[[1], [0]]], dtype=jnp.int32),
+            jnp.full((1, 2, 1), 0.5),
+            jnp.full((2,), 1.7),
+            jnp.asarray(0.75),
+            jnp.asarray(1.0),
+        )
+    )(jnp.zeros((1, 2, 3)))
+
+    assert np.linalg.norm(fixed_t.grad.numpy()) > 1.0
+    assert np.linalg.norm(active_t.grad.numpy()) > 1.0

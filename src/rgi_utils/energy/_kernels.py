@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from rgi_utils import _geometry as G
-from rgi_utils._array_ops import EPS
+from rgi_utils._array_ops import EPS, VDW_OVERLAP_EPS
 
 
 def bond_energy(ops, positions, idx, r0, slack, weight, half, mask):
@@ -50,10 +50,32 @@ def cistrans_energy(ops, positions, idx, phi0, slack, weight, mask):
     return ops.sum(weight * delta * delta * mask)
 
 
-def vdw_energy(ops, positions, idx, r_min, weight, mask):
-    distance = G.distance_points(
-        ops, positions[..., idx[:, 0], :], positions[..., idx[:, 1], :]
+def _safe_vdw_diff(ops, diff, first, second):
+    """Give exact/near overlaps a deterministic straight-through separation axis."""
+    lo = ops.minimum(first, second)
+    hi = ops.maximum(first, second)
+    code = lo * 31 + hi
+    axis = code % 3
+    base_sign = ops.where((code // 3) % 2 == 0, 1.0, -1.0)
+    orientation = ops.where(first <= second, 1.0, -1.0)
+    unit = ops.stack(
+        [
+            ops.astype_like(axis == 0, diff),
+            ops.astype_like(axis == 1, diff),
+            ops.astype_like(axis == 2, diff),
+        ],
+        axis=-1,
     )
+    fallback = VDW_OVERLAP_EPS * (base_sign * orientation)[..., None] * unit
+    effective = diff + ops.stop_gradient(fallback - diff)
+    norm2 = ops.sum(diff * diff, axis=-1)
+    return ops.where((norm2 < VDW_OVERLAP_EPS**2)[..., None], effective, diff)
+
+
+def vdw_energy(ops, positions, idx, r_min, weight, mask):
+    first, second = idx[:, 0], idx[:, 1]
+    diff = positions[..., first, :] - positions[..., second, :]
+    distance = ops.vnorm(_safe_vdw_diff(ops, diff, first, second))
     delta = ops.minimum(0.0, distance - r_min)
     return ops.sum(weight * delta * delta * mask)
 

@@ -47,6 +47,7 @@ import os
 
 import torch
 
+from rgi_utils._array_ops import VDW_OVERLAP_EPS
 from rgi_utils.energy import torch_energy
 from rgi_utils.optim._cell_list import (
     CELL_CHUNK_SIZE,
@@ -126,8 +127,21 @@ def _merge_cell_candidates_torch(best_dist2, best_idx, dist2, candidate, k):
     )
 
 
-def _build_cell_pairs_torch(query, target, dmax, max_neighbors, exclude_self=False):
-    """Return nearest target indices and squared distances from a sorted cell list."""
+def _build_cell_pairs_torch(
+    query,
+    target,
+    dmax,
+    max_neighbors,
+    exclude_self=False,
+    query_radii=None,
+    target_radii=None,
+    pair_scale=None,
+    query_polymer=None,
+    target_polymer=None,
+    excluded_codes=None,
+    pair_code_size=None,
+):
+    """Return target indices and ranking scores from a sorted cell list."""
 
     n_query, n_target = query.shape[-2], target.shape[-2]
     query_batch = query.reshape(-1, n_query, 3).detach()
@@ -162,7 +176,7 @@ def _build_cell_pairs_torch(query, target, dmax, max_neighbors, exclude_self=Fal
     own_end = torch.searchsorted(sorted_hashes, target_hashes.contiguous(), right=True)
     max_bucket = int(torch.max(own_end - own_start).item())
 
-    best_dist2 = torch.full(
+    best_score = torch.full(
         (n_batch, n_query, k),
         float("inf"),
         dtype=query_batch.dtype,
@@ -201,17 +215,34 @@ def _build_cell_pairs_torch(query, target, dmax, max_neighbors, exclude_self=Fal
             )
             if exclude_self:
                 valid_candidate = valid_candidate & (candidate != source)
-            dist2 = torch.where(
-                valid_candidate, dist2, torch.full_like(dist2, float("inf"))
+            score = dist2
+            if query_radii is not None:
+                source_r = query_radii[source]
+                target_r = target_radii[candidate]
+                valid_candidate = valid_candidate & (source_r > 0) & (target_r > 0)
+                score = torch.sqrt(dist2 + EPS) - pair_scale * (source_r + target_r)
+            if query_polymer is not None:
+                valid_candidate = valid_candidate & (
+                    query_polymer[source] | target_polymer[candidate]
+                )
+            if excluded_codes is not None and excluded_codes.numel() > 0:
+                lo = torch.minimum(source, candidate)
+                hi = torch.maximum(source, candidate)
+                codes = lo * pair_code_size + hi
+                positions = torch.searchsorted(excluded_codes, codes)
+                positions = torch.clamp(positions, max=excluded_codes.numel() - 1)
+                valid_candidate = valid_candidate & (excluded_codes[positions] != codes)
+            score = torch.where(
+                valid_candidate, score, torch.full_like(score, float("inf"))
             )
             candidate = torch.where(
                 valid_candidate, candidate, torch.zeros_like(candidate)
             )
-            best_dist2, best_idx = _merge_cell_candidates_torch(
-                best_dist2, best_idx, dist2, candidate, k
+            best_score, best_idx = _merge_cell_candidates_torch(
+                best_score, best_idx, score, candidate, k
             )
 
-    return best_idx, best_dist2
+    return best_idx, best_score
 
 
 def build_active_vdw_pairs(
@@ -221,11 +252,13 @@ def build_active_vdw_pairs(
     excluded_codes,
     dmax,
     max_neighbors,
+    scale=0.75,
 ):
     """Build a fixed-width directed neighbour list with a sorted spatial cell list.
 
+    Exclusions are applied before K candidates are selected by smallest VdW clearance.
     Mutual directed rows receive weight 1/2 and one-sided KNN rows weight 1, so every
-    physical pair contributes once. The list is held fixed during the subsequent CG.
+    physical pair contributes once. The caller holds the list fixed for one CG block.
     Sorting is O(N log N); the 27 neighbouring hash buckets are traversed in bounded
     chunks without a capacity cutoff. Normal molecular density is therefore O(N log N)
     time and O(N*K) memory, while a fully collapsed cell correctly degrades to O(N^2).
@@ -233,23 +266,25 @@ def build_active_vdw_pairs(
 
     n_atom = active.shape[-2]
     batch = active.reshape(-1, n_atom, 3).detach()
-    neighbours, best_dist2 = _build_cell_pairs_torch(
-        batch, batch, dmax, max_neighbors, exclude_self=True
+    neighbours, best_score = _build_cell_pairs_torch(
+        batch,
+        batch,
+        dmax,
+        max_neighbors,
+        exclude_self=True,
+        query_radii=radii,
+        target_radii=radii,
+        pair_scale=scale,
+        query_polymer=polymer_mask,
+        target_polymer=polymer_mask,
+        excluded_codes=excluded_codes,
+        pair_code_size=n_atom,
     )
     if neighbours.shape[-1] == 0:
         return neighbours, neighbours.to(active.dtype)
     batch_idx = torch.arange(batch.shape[0], device=active.device).view(-1, 1, 1)
     source = torch.arange(n_atom, device=active.device).view(1, n_atom, 1)
-    lo = torch.minimum(source, neighbours)
-    hi = torch.maximum(source, neighbours)
-    codes = lo * n_atom + hi
-    valid = torch.isfinite(best_dist2)
-    valid = valid & (polymer_mask[source] | polymer_mask[neighbours])
-    valid = valid & (radii[source] > 0) & (radii[neighbours] > 0)
-    if excluded_codes.numel() > 0:
-        positions = torch.searchsorted(excluded_codes, codes)
-        positions = torch.clamp(positions, max=excluded_codes.numel() - 1)
-        valid = valid & (excluded_codes[positions] != codes)
+    valid = torch.isfinite(best_score)
 
     reverse_neighbours = neighbours[batch_idx, neighbours]
     reverse_valid = valid[batch_idx, neighbours]
@@ -258,14 +293,42 @@ def build_active_vdw_pairs(
     return neighbours, pair_factor
 
 
-def build_fixed_vdw_pairs(active, bg_pos, lig_local, dmax, max_neighbors):
-    """Build moving-ligand to fixed-background neighbours once per diffusion step."""
+def build_fixed_vdw_pairs(
+    active, bg_pos, lig_local, dmax, max_neighbors, lig_r=None, bg_r=None, scale=None
+):
+    """Build moving-ligand to fixed-background neighbours for the current CG block."""
 
     n_active = active.shape[-2]
     batch = active.reshape(-1, n_active, 3).detach()
     lig = batch[:, lig_local, :]
-    neighbours, best_dist2 = _build_cell_pairs_torch(lig, bg_pos, dmax, max_neighbors)
-    return neighbours, torch.isfinite(best_dist2).to(active.dtype)
+    neighbours, best_score = _build_cell_pairs_torch(
+        lig,
+        bg_pos,
+        dmax,
+        max_neighbors,
+        query_radii=lig_r,
+        target_radii=bg_r,
+        pair_scale=scale,
+    )
+    return neighbours, torch.isfinite(best_score).to(active.dtype)
+
+
+def _safe_vdw_diff_torch(diff, source, target, canonical):
+    if canonical:
+        lo = torch.minimum(source, target)
+        hi = torch.maximum(source, target)
+        code = lo * 31 + hi
+        orientation = torch.where(source <= target, 1.0, -1.0)
+    else:
+        code = source * 31 + target
+        orientation = 1.0
+    axis = code % 3
+    base_sign = torch.where((code // 3) % 2 == 0, 1.0, -1.0)
+    unit = torch.stack((axis == 0, axis == 1, axis == 2), dim=-1).to(diff.dtype)
+    fallback = VDW_OVERLAP_EPS * (base_sign * orientation)[..., None] * unit
+    effective = diff + (fallback - diff).detach()
+    norm2 = torch.sum(diff * diff, dim=-1)
+    return torch.where((norm2 < VDW_OVERLAP_EPS**2)[..., None], effective, diff)
 
 
 def _vdw_pair_energy(
@@ -290,6 +353,8 @@ def _vdw_pair_energy(
     batch_idx = torch.arange(batch.shape[0], device=active.device).view(-1, 1, 1)
     other = background[batch_idx, neighbours]
     diff = lig[:, :, None, :] - other
+    source = lig_local.reshape(1, -1, 1)
+    diff = _safe_vdw_diff_torch(diff, source, neighbours, canonical=False)
     dist = torch.sqrt(torch.sum(diff**2, dim=-1) + EPS)
     r_min = scale * (lig_r[None, :, None] + bg_r[neighbours])
     delta = torch.clamp(dist - r_min, max=0.0)
@@ -306,6 +371,8 @@ def active_vdw_pair_energy(active, neighbours, pair_factor, radii, scale, weight
     batch_idx = torch.arange(batch.shape[0], device=active.device).view(-1, 1, 1)
     other = batch[batch_idx, neighbours]
     diff = batch[:, :, None, :] - other
+    source = torch.arange(n_atom, device=active.device).reshape(1, n_atom, 1)
+    diff = _safe_vdw_diff_torch(diff, source, neighbours, canonical=True)
     dist = torch.sqrt(torch.sum(diff**2, dim=-1) + EPS)
     r_min = scale * (radii[None, :, None] + radii[neighbours])
     delta = torch.clamp(dist - r_min, max=0.0)
@@ -415,7 +482,9 @@ def _get_cvg(mode=0):
         return None
 
 
-def _cg_minimize_torch(vg, x0, max_iter, max_ls=MAX_LS, gtol=GTOL, ftol=FTOL):
+def _cg_minimize_torch(
+    vg, x0, max_iter, max_ls=MAX_LS, gtol=GTOL, ftol=FTOL, max_atom_step=None
+):
     """Sequential nonlinear CG (Polak-Ribiere+, backtracking Armijo line search, restart
     on non-descent) — the exact algorithm of ``torch_optim._minimize_cg`` but functional:
     ``vg(x) -> (grad, value)``. ``x0`` is the active-site coords. Returns the optimized
@@ -441,10 +510,19 @@ def _cg_minimize_torch(vg, x0, max_iter, max_ls=MAX_LS, gtol=GTOL, ftol=FTOL):
         step, accepted = 1.0, False
         gt = g
         for _ in range(max_ls):
-            xt = xbase + step * d
+            delta = step * d
+            if max_atom_step is not None:
+                atom_norm = torch.sqrt(
+                    torch.sum(delta * delta, dim=-1, keepdim=True) + EPS
+                )
+                delta = delta * torch.clamp(max_atom_step / atom_norm, max=1.0)
+            xt = xbase + delta
             gt, e = vg(xt)
-            f_new = float(e)  # Armijo needs the value
-            if f_new <= f + ARMIJO_C1 * step * slope:
+            if max_atom_step is None:
+                f_new, predicted = float(e), step * slope
+            else:
+                f_new, predicted = torch.stack((e, torch.sum(g * delta))).tolist()
+            if f_new <= f + ARMIJO_C1 * predicted:
                 accepted = True
                 break
             step *= BACKTRACK
@@ -466,7 +544,7 @@ def _cg_minimize_torch(vg, x0, max_iter, max_ls=MAX_LS, gtol=GTOL, ftol=FTOL):
     return x
 
 
-def gpu_cg(prepared, x0, max_iter, vdw=None, active_vdw=None):
+def gpu_cg(prepared, x0, max_iter, vdw=None, active_vdw=None, max_atom_step=None):
     """Run the CG on CUDA coords. ``prepared`` is the (stable, pre-gated) energy dict;
     ``x0`` the active coords; ``vdw`` carries the fixed-background positions, atom data,
     and per-step neighbour list; ``active_vdw`` similarly carries the fixed per-step
@@ -498,7 +576,7 @@ def gpu_cg(prepared, x0, max_iter, vdw=None, active_vdw=None):
                 return cvg(x, prepared, *vdw, *active_vdw)
 
         try:
-            return _cg_minimize_torch(vg, x0, max_iter)
+            return _cg_minimize_torch(vg, x0, max_iter, max_atom_step=max_atom_step)
         except (
             Exception
         ) as exc:  # this artifact's runtime failure -> eager, permanently
@@ -513,4 +591,6 @@ def gpu_cg(prepared, x0, max_iter, vdw=None, active_vdw=None):
     def e_of(a):
         return base(a, prepared, *extra)
 
-    return _cg_minimize_torch(torch.func.grad_and_value(e_of), x0, max_iter)
+    return _cg_minimize_torch(
+        torch.func.grad_and_value(e_of), x0, max_iter, max_atom_step=max_atom_step
+    )

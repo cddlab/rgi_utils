@@ -415,3 +415,49 @@ def test_conf_slack_null_handling_uniform(term, default):
     assert _conf_slack({term: {"slack": None}}, term, default) == default  # null
     assert _conf_slack({term: {"slack": 0}}, term, default) == 0.0  # explicit 0 kept
     assert _conf_slack({term: {"slack": 0.3}}, term, default) == pytest.approx(0.3)
+
+
+def test_intramolecular_vdw_does_not_use_reference_distance_cutoff():
+    m = Chem.RemoveHs(Chem.AddHs(Chem.MolFromSmiles("CCCCC")))
+    n = m.GetNumAtoms()
+    coords = np.zeros((n, 3), dtype=np.float64)
+    coords[:, 0] = np.arange(n) * 1.5
+    lc = LigandConf(
+        mol=m,
+        conf_coords=coords,
+        global_indices=np.arange(n),
+        conformer_restraints=True,
+    )
+
+    spec = build_spec(
+        [lc],
+        [],
+        {"vdw": {"mode": "intramolecular", "dmax": 5.0}},
+    )
+
+    assert np.linalg.norm(coords[0] - coords[4]) > 5.0
+    assert spec.vdw is not None
+    np.testing.assert_array_equal(spec.vdw.idx, [[0, 4]])
+
+
+def test_vdw_cg_controls_are_stored_on_spec():
+    m, coords = _ethane()
+    lc = LigandConf(
+        mol=m,
+        conf_coords=coords,
+        global_indices=np.arange(m.GetNumAtoms()),
+        conformer_restraints=True,
+    )
+    spec = build_spec(
+        [lc],
+        [],
+        {
+            "vdw": {
+                "mode": "intramolecular",
+                "max_atom_step": 0.2,
+                "neighbor_rebuild_interval": 4,
+            }
+        },
+    )
+    assert spec.vdw_max_atom_step == 0.2
+    assert spec.vdw_neighbor_rebuild_interval == 4

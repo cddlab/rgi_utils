@@ -135,8 +135,8 @@ partners). `P_intra` and `P_ll` are the explicit static pair counts defined belo
 |---|---:|---:|---:|---|
 | Intramolecular ligand | setup pair scan `O(sum_l n_l^2)` | `O(P_intra)` | `O(P_intra)` | `P_intra = O(sum_l n_l^2)`; RDKit's topological-distance calculation is additional setup-only library work. |
 | Restrained ligand-ligand | setup `O(P_ll)`, where `P_ll = sum_(i<j) n_i n_j` | `O(P_ll)` | `O(P_ll)` | `O((sum_l n_l)^2)`; this remains an explicit all-cross-pairs list. |
-| Moving atoms vs fixed background | ordinary density: `O(B log B + L log B)` once per diffusion step | `O(LK)` | `O(B + LK)` | A collapsed/hash-colliding cell population degrades to `O(LB)` build time, without allocating an `L x B` distance matrix. |
-| Active-active pairs involving restrained polymer | ordinary density: `O(N log N)` once per diffusion step | `O(NK)` | `O(NK)` for fixed `K` | A collapsed cell degrades to `O(N^2)` build time, without allocating an `N x N` distance matrix. |
+| Moving atoms vs fixed background | ordinary density: `O(B log B + L log B)` per CG block | `O(LK)` | `O(B + LK)` | A collapsed/hash-colliding cell population degrades to `O(LB)` build time, without allocating an `L x B` distance matrix. |
+| Active-active pairs involving restrained polymer | ordinary density: `O(N log N)` per CG block | `O(NK)` | `O(NK)` for fixed `K` | A collapsed cell degrades to `O(N^2)` build time, without allocating an `N x N` distance matrix. |
 
 The cell-list orders treat the 27 adjacent cells, traversal chunk width 32, and configured `K` as
 bounded constants, which is the intended use (`K=32` by default). If `K` itself is scaled with the
@@ -697,6 +697,8 @@ conformer_restraints_config:
   chiral: {}
   vdw:
     max_neighbors: 32
+    max_atom_step: 0.1
+    neighbor_rebuild_interval: 10
 ```
 
 Intra-residue bond, angle, chiral, and planar-group targets come from each predictor's residue-local
@@ -730,7 +732,7 @@ not configured" rule the other restraint types follow.
 | `chiral` | `weight` (1.0), `slack` (0.05) | chiral volume (stereochemistry) — holds each stereocentre's handedness |
 | `plane` | `weight` (1.0), `slack` (0.0 Å) | **best-fit-plane** flatness of whole planar atom groups ([servalcat](https://github.com/keitaroyam/servalcat)-style) — penalises each group's out-of-plane RMS deviation toward 0. Fires on (a) aromatic/conjugated rings (whole ring) and (b) non-ring sp2 groups (an acyclic double-bond centre + its heavy neighbors: carbonyl / amide / ester / carboxyl / trisubstituted alkene). Group membership is confirmed by the reference conformer being coplanar (not the RDKit aromaticity flag). Add a `plane:` block to activate |
 | `cistrans` | `weight` (1.0), `slack` (0.0 rad) | **cis/trans (E/Z)** of acyclic, non-aromatic double bonds (needs real bond orders; detects 0 for ligands with none, e.g. ATP/NAD/GLN) |
-| `vdw` | `weight` (1.0), `mode` (`"both"`), `scale` (0.75), `dmax` (5.0 Å), `max_neighbors` (32) | non-bonded clash avoidance |
+| `vdw` | `weight` (1.0), `mode` (`"both"`), `scale` (0.75), `dmax` (5.0 Å), `max_neighbors` (32), `max_atom_step` (0.1 Å), `neighbor_rebuild_interval` (10) | non-bonded clash avoidance with bounded CG steps and Verlet-style neighbor rebuilds |
 
 ### `monomer_library` — refinement targets for polymers (not a term)
 
@@ -878,8 +880,8 @@ quantity $x$:
 E = w \sum_{(i,j)} \min\big(0,\; d_{ij} - \text{scale}\cdot(r_i + r_j)\big)^2,
 ```
 
-over non-bonded atom pairs closer than `dmax`, where $d_{ij}$ is the pair distance and $r_i, r_j$
-are their VdW radii.
+where $d_{ij}$ is the pair distance and $r_i, r_j$ are their VdW radii. Static ligand pairs are
+enumerated from topology; `dmax` is the baseline cutoff for dynamic neighbor searches.
 
 ### Van der Waals modes
 
@@ -896,38 +898,43 @@ are their VdW radii.
 
 So to make two restrained ligands avoid each other, just keep the default `mode: both` (or set
 `intermolecular`) and give both a `vdw` block — no extra key. `scale` = fraction of the summed VdW
-radii used as the contact threshold; `dmax` = pairs farther than this are ignored (the inter-ligand
-pairs ignore `dmax` — the two ligands' frames are independent, so all cross pairs are listed and the
-clamp zeroes non-contacts). Like every conformer term, `vdw` is built only when a `vdw:` block is
+radii used as the contact threshold. `dmax` is the baseline dynamic-search cutoff; CG expands it
+with a safe movement skin. Intramolecular pairs more than three bonds apart and all inter-ligand
+pairs are enumerated regardless of their reference-conformer distance, because either can clash in
+the predicted coordinates. Like every conformer term, `vdw` is built only when a `vdw:` block is
 present (then `weight` defaults to 1.0); omit the block to leave it off. **The old
 `mode: ligand_protein` was removed** (it was only the fixed-background half) — it now raises a
 migration error pointing to `intermolecular`.
 
 ### Dynamic intermolecular neighbor lists
 
-Two fixed-width neighbor lists are rebuilt from the current coordinates at each diffusion step and
-held fixed during CG: moving ligand/polymer atoms against the fixed background, and restrained
-polymer active-active pairs. Energy evaluation is therefore `O(L * max_neighbors)` and
-`O(N * max_neighbors)` respectively, rather than rebuilding all-pairs distances on every CG
-iteration. Covalent active-active 1-2, 1-3, and 1-4 pairs, including paths across peptide and
-phosphodiester links, are excluded. Omit `start_sigma` (the default `+inf`) to keep VdW active from
-the first denoising step; setting `start_sigma` delays all conformer terms together.
+With `method: CG`, the two fixed-width dynamic neighbor lists are rebuilt every
+`neighbor_rebuild_interval` CG iterations (default 10): moving ligand/polymer atoms against the
+fixed background, and restrained polymer active-active pairs. CG restarts its search direction at
+each block boundary. Energy evaluation remains `O(L * max_neighbors)` /
+`O(N * max_neighbors)`; `method: l-bfgs` keeps the previous one-list-per-diffusion-step behavior.
 
-The neighbor-list build uses a sorted spatial cell list with cell width `dmax`: atoms are sorted
-by an int32 cell hash, and only the same or 26 adjacent cells are searched. Hash collisions are
-checked against the full cell coordinate, and each bucket is traversed completely in fixed-width
-chunks, so there is no occupancy cap that can silently drop a clash. At ordinary molecular density
-the fixed-background build is `O(B log B + L log B)` time and the active-active build is
-`O(N log N)`, with `O(B + L * max_neighbors)` / `O(N * max_neighbors)` working memory. A
-pathologically collapsed structure correctly degrades to `O(LB)` / `O(N^2)` time, but still avoids
-a dense distance matrix.
+`max_atom_step` (default 0.1 Å) caps each atom's accepted displacement in one CG iteration whenever
+VdW is active. The line search uses the capped displacement in its Armijo test, so increasing
+`weight` or the number of contacts cannot produce a large accepted overshoot. For a block of
+`I` iterations, `M = max_atom_step * I`; the fixed-background search cutoff is at least
+`max_r_min + M`, and the active-active cutoff is at least `max_r_min + 2M`. This Verlet-style
+skin guarantees that a pair which can become a contact before the next rebuild is already listed.
 
-`max_neighbors` (default 32) caps both neighbor lists for each moving atom: an atom with more than
-`max_neighbors` partners within `dmax` keeps only its nearest `max_neighbors`. The nearest are the
-most clash-relevant, so this is a deliberate approximation — raise it for very dense cores. Under
-JAX the pair codes are int32 (JAX runs with x64 disabled by default), so a **single restrained
-polymer selection is limited to ~46340 active atoms on AF3**; exceeding it raises rather than
-silently corrupting the covalent-pair exclusion (the torch tools use int64 and are unaffected).
+The neighbor-list build uses a sorted spatial cell list whose cell width is the resulting search
+cutoff (never smaller than `dmax`). Hash collisions are checked against the full cell coordinate,
+and each bucket is traversed completely in fixed-width chunks. Covalent 1-2/1-3/1-4 exclusions,
+the polymer-participation rule, and zero-radius atoms are filtered **before** the K cap. Remaining
+candidates are ranked by clearance `distance - scale * (r_i + r_j)`, so the most severe clashes
+win even when radii differ. At ordinary density the build remains
+`O(B log B + L log B)` / `O(N log N)`, with linear fixed-width working memory; a collapsed
+structure degrades to `O(LB)` / `O(N^2)` time without allocating a dense distance matrix.
+
+`max_neighbors` (default 32) caps both dynamic lists after those filters. Raise it for unusually
+dense cores. Exact and near-exact overlaps use a deterministic pair-derived separation axis in the
+gradient, avoiding a zero radial gradient and seed-dependent escape direction. Under JAX the pair
+codes are int32, so a single restrained polymer selection is limited to ~46340 active atoms on AF3;
+exceeding it raises rather than silently corrupting covalent exclusions.
 
 ## `rmsd_restraints_config` (list)
 

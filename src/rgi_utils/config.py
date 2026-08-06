@@ -10,7 +10,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from rgi_utils import monlib_geom
-from rgi_utils._config_util import check_window_exclusive, coerce_bool
+from rgi_utils._config_util import (
+    check_window_exclusive,
+    coerce_bool,
+    validate_vdw_config,
+)
 from rgi_utils._mol_build import parse_relax_force_field
 from rgi_utils.base_pair_restr_data import BasePairData
 from rgi_utils.custom.data import CustomData
@@ -208,6 +212,7 @@ class RestraintsConfig:
                 f"{sorted(unknown_conformer)}. Known keys: "
                 f"{sorted(known_conformer_keys)}"
             )
+        validate_vdw_config(conformer_config)
         # Validate the monomer-library spec HERE so a typo'd path/option raises while
         # parsing the config, not several minutes later when the first structure builds
         # its polymer geometry. Parsing is stdlib-only (gemmi loads lazily).
