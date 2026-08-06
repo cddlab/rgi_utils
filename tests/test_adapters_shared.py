@@ -6,8 +6,8 @@
   data by the in-tool shim) — verifies it imports NO alphafold3 and that
   iter_atoms / iter_ligand_confs (SMILES positional + CCD by-name leaving-atom drop)
   produce the expected records.
-- ``rgi_utils._biotite_adapter`` (protenix/openfold shared core) over a duck-typed
-  fake AtomArray, covering both tools' parameterisation.
+- ``rgi_utils._biotite_adapter`` (protenix/openfold/OpenDDE shared core) over a
+  duck-typed fake AtomArray, covering the tools' parameterisation.
 """
 
 from __future__ import annotations
@@ -362,3 +362,62 @@ def test_openfold3_adapter_delegation():
     ad_optin = Openfold3Adapter(aa_optin, num_atoms=5, ref_coords=aa_optin.coord)
     confs_optin = list(ad_optin.iter_ligand_confs())
     assert confs_optin[0].conformer_restraints is True
+
+
+def test_opendde_adapter_uses_residue_level_tokens_and_ref_pos():
+    from rgi_utils.opendde.adapter import OpenDDEAdapter
+
+    aa = _FakeAtomArray(
+        element=["N", "C", "C", "C"],
+        coord=np.zeros((4, 3)),
+        bonds=[[2, 3, 2]],
+        annots=["conformer_restraints"],
+        label_asym_id=["A", "A", "L", "L"],
+        atom_name=["N", "CA", "C1", "C2"],
+        res_name=["ALA", "ALA", "UNL", "UNL"],
+        mol_type=["protein", "protein", "ligand", "ligand"],
+        conformer_restraints=[False, False, True, True],
+    )
+    ref_pos = np.array([[0, 0, 0], [1, 0, 0], [4, 0, 0], [5.3, 0, 0]], dtype=float)
+    ad = OpenDDEAdapter(
+        {
+            "atom_array": aa,
+            # Structural tokens intentionally differ. The adapter must use the
+            # residue-level mapping retained by OpenDDE before expansion.
+            "atom_to_token_idx": np.array([[0, 1, 2, 3]]),
+            "residue_level_atom_to_token_idx": np.array([[0, 0, 1, 2]]),
+            "ref_pos": ref_pos[None],
+            "ref_space_uid": np.array([[0, 0, 1, 1]]),
+        }
+    )
+
+    records = list(ad.iter_atoms())
+    assert [(r.chain, r.resid, r.index, r.mol_type) for r in records] == [
+        ("A", 1, 0, "protein"),
+        ("A", 1, 1, "protein"),
+        ("L", 1, 2, "ligand"),
+        ("L", 2, 3, "ligand"),
+    ]
+    assert ad.num_atoms() == 4
+    assert ad.get_elements().tolist() == [7, 6, 6, 6]
+    assert np.array_equal(ad.get_reference_positions(), ref_pos)
+    assert ad.get_reference_space_uid().tolist() == [0, 0, 1, 1]
+
+    ligand = list(ad.iter_ligand_confs())
+    assert len(ligand) == 1
+    assert ligand[0].global_indices.tolist() == [2, 3]
+    assert np.array_equal(ligand[0].conf_coords, ref_pos[2:])
+    assert ligand[0].mol.GetBondWithIdx(0).GetBondTypeAsDouble() == 2.0
+    assert ligand[0].conformer_restraints is True
+
+
+def test_opendde_adapter_imports_no_tool_or_torch():
+    import importlib
+
+    before = set(sys.modules)
+    importlib.import_module("rgi_utils.opendde.adapter")
+    newly_loaded = set(sys.modules) - before
+    assert not any(
+        name == "opendde" or name.startswith("opendde.") for name in newly_loaded
+    )
+    assert "torch" not in newly_loaded

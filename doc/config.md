@@ -3,7 +3,7 @@
 [Documentation index](README.md)
 
 Every RGI tool is driven by one `restraints_config` dict (a YAML/JSON block for boltz / protenix /
-chai / AF3 / openfold, or a Python dict for ESMFold2 — see each tool's page for where it lives).
+OpenDDE / chai / AF3 / openfold, or a Python dict for ESMFold2 — see each tool's page for where it lives).
 This page documents **every variable**: its type, default, allowed values, and meaning.
 
 Omitted keys fall back to their documented defaults. Unknown top-level keys and unknown conformer
@@ -684,7 +684,7 @@ with no `pair`, a missing WC atom, a negative `coplanar_slack`, or a `residue3` 
 
 Repairs local geometry in ligands, proteins, DNA, and RNA. It is a single dict (not a
 list). Every molecule is **independently opt-in**: set `conformer_restraints: true`
-on each boltz / protenix / AF3 / openfold sequence or chain object, or
+on each boltz / protenix / OpenDDE / AF3 / openfold sequence or chain object, or
 `conformer_restraints=True` on each esmfold2 input object. Chai uses the equivalent
 sidecar map keyed by chain id because FASTA cannot carry the flag. Missing/false chains
 remain unrestrained, including when another chain of the same polymer type is enabled.

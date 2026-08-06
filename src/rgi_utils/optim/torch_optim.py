@@ -1,4 +1,4 @@
-"""GPU restraint optimizer for PyTorch tools (boltz, protenix).
+"""GPU restraint optimizer for integrated PyTorch predictors.
 
 Minimizes the restraint energy on active-site coordinates using autograd for
 gradients. ``method`` selects the solver: ``"CG"`` (default) -> a nonlinear

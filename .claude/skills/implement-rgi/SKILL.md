@@ -4,7 +4,7 @@ description: >-
   Integrate Restraint-Guided Inference (RGI) into a diffusion-based structure
   predictor using rgi_utils. Use when adding or porting guided sampling,
   distance, group-angle, group-dihedral, ligand-conformer, VdW, RMSD, or custom
-  restraints to boltz, protenix, chai-lab, openfold-3, esmfold2, AlphaFold3, or
+  restraints to boltz, protenix, OpenDDE, chai-lab, openfold-3, esmfold2, AlphaFold3, or
   a similar sampler. Implement only the framework adapter, sampling-loop hooks,
   and restraints_config pass-through; do not duplicate energy, optimization,
   config, or selection logic in the tool.
@@ -89,7 +89,7 @@ mechanism when available. It is a deliberate placement choice, and both options 
 identically at runtime because the rgi_utils adapter protocol is duck-typed (no base
 class, no registration):
 
-- **In rgi_utils** (`rgi_utils/<tool>/adapter.py`) — the convention all six existing tools
+- **In rgi_utils** (`rgi_utils/<tool>/adapter.py`) — the convention all seven existing tools
   follow; centralizes parity-critical code in one repo (one place to review the `resid`
   convention / a protocol tweak). Needs the adapter to be framework-free (plain dict/array
   in), so any irreducibly framework-coupled step (CCD/SMILES mol resolution, atom-name
@@ -168,7 +168,7 @@ reference for "how small this should be."
 
 ## Framework selection
 
-- **PyTorch (eager loop)** — boltz, protenix, chai-lab, openfold-3, esmfold2. The
+- **PyTorch (eager loop)** — boltz, protenix, OpenDDE, chai-lab, openfold-3, esmfold2. The
   adapter lives in `rgi_utils/<tool>/adapter.py` (it receives a plain dict/array and
   imports no framework code — **except boltz**, whose feats arrive as native torch
   tensors so its adapter imports torch, read at batch 0). Call `minimize` each step.

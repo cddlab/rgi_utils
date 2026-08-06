@@ -3,7 +3,7 @@
 Restraint-Guided Inference (RGI) utilities for diffusion-based structure predictors
 (PyTorch and JAX).
 
-**Implemented and available in the following 8 models** (across 6 predictor integrations):
+**Implemented and available in the following 9 models** (across 7 predictor integrations):
 
 | Model           | Integration | Backend | Details                                              |
 | --------------- | ----------- | ------- | ---------------------------------------------------- |
@@ -15,6 +15,7 @@ Restraint-Guided Inference (RGI) utilities for diffusion-based structure predict
 | **ESMFold2**    | esmfold2    | torch   | [`doc/esmfold2_restr.md`](doc/esmfold2_restr.md)     |
 | **OpenFold-3**  | openfold-3  | torch   | [`doc/openfold-3_restr.md`](doc/openfold-3_restr.md) |
 | **Chai-1**      | chai-lab    | torch   | [`doc/chai-lab_restr.md`](doc/chai-lab_restr.md)     |
+| **OpenDDE v1**  | opendde     | torch   | [`doc/opendde_restr.md`](doc/opendde_restr.md)       |
 
 See each tool's guide in [`doc/`](doc/) for install / run details, and
 [`doc/config.md`](doc/config.md) for the full `restraints_config` schema.
@@ -315,7 +316,7 @@ class MyAdapter:
             yield LigandConf(mol, conf_coords, global_indices)
 ```
 
-Tool-side adapters are tiny — see `src/rgi_utils/{boltz,protenix,chai,openfold3}/adapter.py`
+Tool-side adapters are tiny — see `src/rgi_utils/{boltz,protenix,chai,openfold3,opendde}/adapter.py`
 for worked examples, and the shared `implement-rgi` skill under `.claude/skills/` and
 `.agents/skills/` for the full integration recipe.
 

@@ -1,4 +1,4 @@
-"""Shared biotite-``AtomArray`` extraction for the protenix + openfold3 adapters.
+"""Shared biotite-``AtomArray`` extraction for protenix, openfold3, and OpenDDE.
 
 Both tools expose the SAME biotite ``AtomArray`` type (per-atom element/chain + a
 ``BondList``), so ``get_elements`` and the ligand-conformer loop are identical up to
@@ -46,7 +46,7 @@ def biotite_ligand_confs(
 ) -> Iterator[LigandConf]:
     """Yield one ``LigandConf`` per ligand chain of a biotite ``AtomArray``.
 
-    Shared core of the protenix + openfold3 adapters; the framework-specific knobs
+    Shared core of the protenix, openfold3, and OpenDDE adapters; framework knobs
     are parameters:
       - ``ligand_mask`` (n_atom,) bool: which atoms are ligand atoms (protenix uses
         biotite ``hetero``; openfold uses ``molecule_type_id == LIGAND``).

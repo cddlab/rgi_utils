@@ -45,9 +45,9 @@ spells out the trade-off and requires a structured question when the client supp
 one): in rgi_utils (the convention below) or in the tool's own codebase (rgi_utils left
 unedited, the tool owns the adapter and may import its framework freely — at the cost of
 having to track protocol drift). Both work — the protocol is duck-typed (no base class,
-no registration). The existing six all chose rgi_utils:
+no registration). The existing seven all chose rgi_utils:
 
-**All six adapters live in `rgi_utils/<tool>/adapter.py`** — the project keeps them
+**All seven adapters live in `rgi_utils/<tool>/adapter.py`** — the project keeps them
 together so a cross-tool invariant (the `resid` convention, a protocol tweak) is
 reviewed in one place. They receive plain dict/array data and import no framework
 code, EXCEPT boltz, whose feats arrive as native torch tensors so its adapter imports
@@ -143,13 +143,14 @@ is rgi_utils.
 
 ## Full source
 
-The six complete adapters are the ground truth:
+The seven complete adapters are the ground truth:
 - `rgi_utils/src/rgi_utils/boltz/adapter.py` — feats dict + exposed `ligand_mols`
 - `rgi_utils/src/rgi_utils/protenix/adapter.py` — biotite AtomArray (real bonds + coords)
 - `rgi_utils/src/rgi_utils/chai/adapter.py` — reference conformer; prefers the source SMILES (`_mol_from_smiles`, real bond orders), falling back to `build_ligand_mol(perceive_bonds=True)` when none is supplied
 - `rgi_utils/src/rgi_utils/openfold3/adapter.py` — AtomArray with zeroed coords → geometry from `ref_pos`; ligand by `molecule_type_id`
 - `rgi_utils/src/rgi_utils/esmfold2/adapter.py` — one token/atom; intra-ligand bonds + orders from `token_bonds` / `ligand_bond_orders` (CCD or SMILES)
 - `rgi_utils/src/rgi_utils/alphafold3/adapter.py` — framework-free (JAX), fed by the in-tool shim `<af3>/src/alphafold3/model/restraints/adapter.py` (`build_af3_adapter` = CCD/SMILES mol resolution + `fold_input` read)
+- `rgi_utils/src/rgi_utils/opendde/adapter.py` — OpenDDE AtomArray metadata + pre-expansion token mapping + `ref_pos`; ligand identity from `mol_type`
 
 The chai and openfold3 adapters are worth reading specifically for the "tool exposes
 an incomplete ligand picture" cases (pitfalls 10–12).

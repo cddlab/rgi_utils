@@ -134,7 +134,7 @@ class CombinedRestraints:
         the old two-call ``set_config -> setup`` into one. Constructing a fresh
         instance per structure makes batch runs cross-contamination-free.
 
-        ``nbatch`` is accepted for the documented integration API (all six tools pass
+        ``nbatch`` is accepted for the documented integration API (all seven tools pass
         it) but is currently unused here — the spec is built once and broadcast over the
         batch dim at minimize time. It is kept as a stable hook for future per-batch
         specs; do not remove it without updating every tool's call site.

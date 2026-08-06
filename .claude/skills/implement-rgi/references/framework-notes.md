@@ -1,6 +1,6 @@
 # Framework notes
 
-## PyTorch (eager loop) — boltz, protenix, chai-lab, openfold-3, esmfold2
+## PyTorch (eager loop) — boltz, protenix, OpenDDE, chai-lab, openfold-3, esmfold2
 
 - **autograd under `inference_mode`**: predict loops often run inside
   `torch.inference_mode()`, where autograd backward fails with "element does not
