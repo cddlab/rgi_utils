@@ -1,6 +1,6 @@
 [project]
 name = "rgi-utils"
-version = "0.1.0"
+version = "0.2.0.dev0"
 description = "Restraint-Guided Inference utilities for PyTorch/JAX-based structure prediction models"
 readme = "README.md"
 requires-python = ">=3.12"
