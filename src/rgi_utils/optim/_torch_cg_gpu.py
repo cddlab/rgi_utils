@@ -48,6 +48,7 @@ import os
 import torch
 
 from rgi_utils._array_ops import VDW_OVERLAP_EPS
+from rgi_utils._config_util import VDW_SCALE_DEFAULT
 from rgi_utils.energy import torch_energy
 from rgi_utils.optim._cell_list import (
     CELL_CHUNK_SIZE,
@@ -252,7 +253,7 @@ def build_active_vdw_pairs(
     excluded_codes,
     dmax,
     max_neighbors,
-    scale=0.75,
+    scale=VDW_SCALE_DEFAULT,
 ):
     """Build a fixed-width directed neighbour list with a sorted spatial cell list.
 

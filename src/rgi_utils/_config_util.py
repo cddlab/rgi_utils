@@ -15,6 +15,7 @@ from typing import Iterable
 _TRUE_STRINGS = ("1", "true", "yes", "on")
 
 
+VDW_SCALE_DEFAULT = 0.92
 VDW_MAX_ATOM_STEP_DEFAULT = 0.1
 VDW_NEIGHBOR_REBUILD_INTERVAL_DEFAULT = 10
 
@@ -71,7 +72,7 @@ def validate_vdw_config(conformer_config: dict | None) -> None:
         return parsed
 
     finite_real("weight", 1.0)
-    finite_real("scale", 0.75, positive=True)
+    finite_real("scale", VDW_SCALE_DEFAULT, positive=True)
     finite_real("dmax", 5.0, positive=True)
     finite_real("max_atom_step", VDW_MAX_ATOM_STEP_DEFAULT, positive=True)
 

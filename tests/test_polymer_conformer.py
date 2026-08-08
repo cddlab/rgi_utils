@@ -148,6 +148,7 @@ def test_protein_builds_peptide_link_plane_and_vdw_exclusions():
     av = spec.active_vdw_config
     assert av is not None
     assert av.polymer_mask.all()
+    assert av.scale == pytest.approx(0.92)
     assert spec.conf_start_sigma == float("inf")
     # Peptide C-N and the CA-C-N 1-3 pair must never receive VdW repulsion.
     assert 2 * spec.n_active + 5 in set(av.excluded_codes.tolist())

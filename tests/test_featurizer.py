@@ -156,6 +156,7 @@ def test_vdw_config_fixed_background():
     assert {int(x) for x in spec.vdw_config.background_global} == {n, n + 1}
     assert spec.vdw_config.background_radii.shape == (2,)
     assert spec.vdw_config.max_neighbors == 7
+    assert spec.vdw_config.scale == pytest.approx(0.92)
 
     with pytest.raises(ValueError, match="max_neighbors must be >= 1"):
         build_spec(
@@ -190,6 +191,7 @@ def test_intramolecular_vdw_static_arrays():
     assert spec.vdw.idx.shape == (1, 2)
     np.testing.assert_array_equal(spec.vdw.idx[0], [0, 4])
     assert float(spec.vdw.weight[0]) == 1.0
+    assert float(spec.vdw.r_min[0]) == pytest.approx(0.92 * (1.7 + 1.7))
     assert int(spec.vdw.idx.max()) < spec.n_active  # valid local indices
 
     # explicit mode=intermolecular keeps ONLY the dynamic/inter paths (no static intra);

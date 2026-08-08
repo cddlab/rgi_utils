@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from rgi_utils._config_util import VDW_SCALE_DEFAULT
 from rgi_utils.energy._terms import CONF_KEYS, PER_ENTRY_KEYS, iter_spec_terms
 
 # ---------------------------------------------------------------------------
@@ -160,7 +161,7 @@ class VdwConfig:
     ligand_radii: np.ndarray  # (n_lig,) VdW radius per ligand atom
     background_global: np.ndarray  # (n_bg,) global atom indices (fixed background)
     background_radii: np.ndarray  # (n_bg,) VdW radius per background atom
-    scale: float = 0.75
+    scale: float = VDW_SCALE_DEFAULT
     dmax: float = 5.0
     max_neighbors: int = 32
 
@@ -178,7 +179,7 @@ class ActiveVdwConfig:
     radii: np.ndarray  # (n_active,) VdW radius for every active atom
     polymer_mask: np.ndarray  # (n_active,) bool; pair needs at least one True endpoint
     excluded_codes: np.ndarray  # sorted canonical pair codes min(i,j)*N+max(i,j)
-    scale: float = 0.75
+    scale: float = VDW_SCALE_DEFAULT
     dmax: float = 5.0
     max_neighbors: int = 32
 

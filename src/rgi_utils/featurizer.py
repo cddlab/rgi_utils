@@ -25,6 +25,7 @@ from rdkit import Chem
 from rgi_utils._config_util import (
     VDW_MAX_ATOM_STEP_DEFAULT,
     VDW_NEIGHBOR_REBUILD_INTERVAL_DEFAULT,
+    VDW_SCALE_DEFAULT,
     validate_vdw_config,
 )
 from rgi_utils._mol_build import ff_relax, parse_relax_force_field
@@ -531,7 +532,7 @@ def _build_vdw_config(
         ligand_radii=ligand_radii,
         background_global=background_global,
         background_radii=background_radii,
-        scale=float(vcfg.get("scale", 0.75)),
+        scale=float(vcfg.get("scale", VDW_SCALE_DEFAULT)),
         dmax=float(vcfg.get("dmax", 5.0)),
         max_neighbors=max_neighbors,
     )
@@ -609,7 +610,7 @@ def _build_active_vdw_config(
         radii=radii,
         polymer_mask=polymer_mask,
         excluded_codes=np.asarray(sorted(excluded), dtype=np.int64),
-        scale=float(vcfg.get("scale", 0.75)),
+        scale=float(vcfg.get("scale", VDW_SCALE_DEFAULT)),
         dmax=float(vcfg.get("dmax", 5.0)),
         max_neighbors=max_neighbors,
     )
@@ -636,7 +637,7 @@ def _build_intramolecular_vdw(
         return None
     from rdkit.Chem import rdmolops
 
-    scale = float(vcfg.get("scale", 0.75))
+    scale = float(vcfg.get("scale", VDW_SCALE_DEFAULT))
     idx_pairs: list[list[int]] = []
     r_min_list: list[float] = []
     for lc in ligand_confs:
@@ -689,7 +690,7 @@ def _build_interligand_vdw(
     if weight <= 0.0 or len(ligand_confs) < 2:
         return None
 
-    scale = float(vcfg.get("scale", 0.75))
+    scale = float(vcfg.get("scale", VDW_SCALE_DEFAULT))
     radii = [
         [_vdw_radius(a.GetAtomicNum()) for a in lc.mol.GetAtoms()]
         for lc in ligand_confs
