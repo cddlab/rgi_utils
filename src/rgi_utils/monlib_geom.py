@@ -188,10 +188,19 @@ class MonomerLibrary:
     def link_restraints(
         self, mol_type: str, prev_names: dict[str, int], curr_names: dict[str, int]
     ):
-        """Inter-residue link bonds / angles for one adjacent pair.
+        """Inter-residue link bonds / angles / planes for one adjacent pair.
 
         Returns ``None`` when the library has no entry for this polymer type, so the
         caller can keep its built-in link geometry.
+
+        The PLANES matter as much as the bonds here. Refmac/servalcat split the peptide
+        link into two 4-atom sp2 groups — ``plan-1`` {CA(1), C(1), O(1), N(2)} at the
+        carbonyl carbon and ``plan-2`` {CA(2), C(1), H(2), N(2)} at the amide nitrogen —
+        and neither contains BOTH CA atoms, so the plane restraints deliberately leave
+        omega free; omega is a separate ``_chem_link_tor`` (180 deg, esd 5 deg). ``plan-2``
+        drops to 3 atoms once the hydrogens are gone (predictors model heavy atoms only)
+        and is filtered out by the ``_MIN_PLANE_ATOMS`` check, which is correct: a 3-atom
+        group is trivially planar.
         """
         link_id = _LINK_ID.get(mol_type)
         if link_id is None or link_id not in self._monlib.links:
@@ -214,7 +223,13 @@ class MonomerLibrary:
             idx = tuple(resolve(a) for a in (angle.id1, angle.id2, angle.id3))
             if all(k is not None for k in idx):
                 angles.append((*idx, math.radians(float(angle.value))))
-        return bonds, angles
+
+        planes = []
+        for plane in restraints.planes:
+            group = {k for k in (resolve(a) for a in plane.ids) if k is not None}
+            if len(group) >= _MIN_PLANE_ATOMS:
+                planes.append(tuple(sorted(group)))
+        return bonds, angles, planes
 
 
 def collect(library: MonomerLibrary, residues, on_missing: str) -> LibraryTargets:

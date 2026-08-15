@@ -82,9 +82,22 @@ _PROTEIN_LINK = _LinkGeometry(
         (("O", _PREV), ("C", _PREV), ("N", _CURR), 122.7),
         (("C", _PREV), ("N", _CURR), ("CA", _CURR), 121.7),
     ),
-    # Peptide plane: the union of the two classic omega-plane impropers is one 5-atom
-    # planar group {C, CA, O of the previous residue; N, CA of the current}.
-    planes=((("C", _PREV), ("CA", _PREV), ("O", _PREV), ("N", _CURR), ("CA", _CURR)),),
+    # Peptide plane, following Refmac/servalcat's TRANS link (`_chem_link_plane`): the
+    # sp2 group at the carbonyl carbon, {CA, C, O of the previous residue; N of the
+    # current} = their `plan-1`. Their second group `plan-2` {CA(2), C(1), H(2), N(2)}
+    # degenerates to 3 atoms without hydrogens, so it is not modelled here.
+    #
+    # NOTE the atom that is deliberately ABSENT: CA of the CURRENT residue. No library
+    # plane group contains both CA atoms, so the plane restraints do NOT constrain omega
+    # — Refmac restrains that separately as `_chem_link_tor omega` (180 deg, esd 5 deg).
+    # This module used to merge the two groups into one 5-atom {C, CA, O, N, CA} plane on
+    # the theory that it was "the stronger restraint". It is, and that is the problem: a
+    # zero-tolerance plane over both CA atoms pins omega far tighter than any reference
+    # structure. Measured on QBP (boltz2, 3 seeds): the merged group held |omega - planar|
+    # at 0.11 deg where the crystal references 1GGG/1WDN sit at ~3.5 deg and Engh-Huber
+    # gives omega a 5.8 deg sigma. The rigidified backbone showed up as packing damage —
+    # MolProbity clashscore 8.8 (bond+angle+chiral) -> 27.2 once that plane was added.
+    planes=((("C", _PREV), ("CA", _PREV), ("O", _PREV), ("N", _CURR)),),
 )
 _NUCLEIC_LINK = _LinkGeometry(
     bond=(("O3'", _PREV), ("P", _CURR), _PHOSPHODIESTER_BOND),
@@ -109,10 +122,10 @@ def _is_enabled_polymer(record) -> bool:
 def _link_geometry(previous, current, mol_type: str, library=None):
     """Return canonical link bond/angles/planes for two adjacent residue atom maps.
 
-    With a monomer ``library`` the bond and angle targets come from its link entry
-    (``TRANS`` / ``p``) instead of the built-in table; the planes stay built-in either
-    way, because the library's peptide plane is the 4-atom ``CA-C-N-O`` group while the
-    5-atom omega group used here (adding the next CA) is the stronger restraint.
+    With a monomer ``library`` every target — bonds, angles AND planes — comes from its
+    link entry (``TRANS`` / ``p``); without one the built-in table mirrors the same
+    Refmac/servalcat definitions. (The planes used to stay built-in and merged into a
+    single 5-atom omega group; see ``_PROTEIN_LINK`` for why that was wrong.)
     """
 
     names = (previous["names"], current["names"])  # index by _PREV / _CURR
@@ -128,7 +141,7 @@ def _link_geometry(previous, current, mol_type: str, library=None):
         else library.link_restraints(mol_type, previous["names"], current["names"])
     )
     if from_library is not None:
-        bonds, angles = from_library
+        bonds, angles, planes = from_library
     else:
         b0, b1, bond_target = link.bond
         g0, g1 = resolve(b0), resolve(b1)
@@ -140,11 +153,11 @@ def _link_geometry(previous, current, mol_type: str, library=None):
             if all(i is not None for i in idx):
                 angles.append((*idx, float(np.deg2rad(degrees))))
 
-    planes = []
-    for group in link.planes:
-        idx = tuple(resolve(a) for a in group)
-        if all(i is not None for i in idx):
-            planes.append(idx)
+        planes = []
+        for group in link.planes:
+            idx = tuple(resolve(a) for a in group)
+            if all(i is not None for i in idx):
+                planes.append(idx)
     return bonds, angles, planes
 
 

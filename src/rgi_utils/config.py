@@ -213,6 +213,25 @@ class RestraintsConfig:
                 f"{sorted(known_conformer_keys)}"
             )
         validate_vdw_config(conformer_config)
+        # Only `vdw` validated its own sub-keys, so a typo INSIDE any other term block was
+        # silently ignored: the run looked configured while the term kept its default. That
+        # is the same silent-config-failure class the outer whitelist exists for, and it
+        # bites hardest on `slack`, whose whole purpose is to loosen a restraint that is
+        # otherwise driven to its exact target. Check every term's sub-keys while parsing.
+        for term in ("bond", "angle", "chiral", "cistrans", "plane"):
+            block = conformer_config.get(term)
+            if not isinstance(block, dict):
+                continue
+            unknown_term = {
+                key
+                for key in block
+                if not str(key).startswith("_") and key not in {"weight", "slack"}
+            }
+            if unknown_term:
+                raise ValueError(
+                    f"conformer_restraints_config.{term}: unknown key(s) "
+                    f"{sorted(unknown_term)}. Known keys: ['slack', 'weight']"
+                )
         # Validate the monomer-library spec HERE so a typo'd path/option raises while
         # parsing the config, not several minutes later when the first structure builds
         # its polymer geometry. Parsing is stdlib-only (gemmi loads lazily).

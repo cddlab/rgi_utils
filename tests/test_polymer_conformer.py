@@ -139,11 +139,16 @@ def test_protein_builds_peptide_link_plane_and_vdw_exclusions():
     assert spec.chiral is not None and int(spec.chiral.mask.sum()) >= 2
     assert not (spec.chiral.vol0 == 0.0).any()
 
-    # The peptide plane is one 5-atom best-fit-plane group {C,CA,O(res1), N,CA(res2)} =
-    # local indices {1, 2, 3, 5, 6}. ALA has no aromatic ring, so it is the only plane.
+    # The peptide plane is Refmac/servalcat's TRANS `plan-1`: the 4-atom sp2 group at the
+    # carbonyl carbon {CA,C,O(res1), N(res2)} = local indices {1, 2, 3, 5}. ALA has no
+    # aromatic ring, so it is the only plane. CA of the CURRENT residue (local 6) must NOT
+    # be in it: no library plane group spans both CA atoms, which is what leaves omega to
+    # the separate torsion restraint. Merging them into one 5-atom group pins omega ~30x
+    # tighter than any reference structure and wrecks packing (clashscore 8.8 -> 27.2 on
+    # QBP), so this is a regression guard, not a cosmetic assertion.
     assert spec.plane is not None and int(spec.plane.mask.sum()) == 1
     group = {int(i) for i, m in zip(spec.plane.idx[0], spec.plane.grp_mask[0]) if m > 0}
-    assert group == {1, 2, 3, 5, 6}
+    assert group == {1, 2, 3, 5}
 
     av = spec.active_vdw_config
     assert av is not None
