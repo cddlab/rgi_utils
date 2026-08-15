@@ -219,17 +219,23 @@ def test_vdw_nested_config_validation():
                 "vdw": {
                     "max_atom_step": 0.2,
                     "neighbor_rebuild_interval": 4,
+                    "neighbor_skin": 1.5,
                 }
             }
         }
     )
     assert cfg.conformer_config["vdw"]["max_atom_step"] == 0.2
     assert cfg.conformer_config["vdw"]["neighbor_rebuild_interval"] == 4
+    assert cfg.conformer_config["vdw"]["neighbor_skin"] == 1.5
 
     invalid = (
         ({"max_atom_step": 0.0}, "max_atom_step must be > 0"),
         ({"neighbor_rebuild_interval": 0}, "neighbor_rebuild_interval must be >= 1"),
         ({"neighbor_rebuild_interval": 1.5}, "must be an integer"),
+        ({"neighbor_skin": -0.1}, "neighbor_skin must be >= 0"),
+        # a skin wider than dmax can overflow max_neighbors and drop contacting pairs
+        ({"neighbor_skin": 9.0, "dmax": 5.0}, "neighbor_skin must be <= dmax"),
+        ({"neighbor_skin": "x"}, "neighbor_skin must be a finite number"),
         ({"dmax": float("nan")}, "dmax must be finite"),
         ({"scale": 0.0}, "scale must be > 0"),
         ({"typo": 1}, "unknown key"),

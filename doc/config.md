@@ -699,6 +699,7 @@ conformer_restraints_config:
     max_neighbors: 32
     max_atom_step: 0.1
     neighbor_rebuild_interval: 10
+    neighbor_skin: 2.0
 ```
 
 Intra-residue bond, angle, chiral, and planar-group targets come from each predictor's residue-local
@@ -732,7 +733,7 @@ not configured" rule the other restraint types follow.
 | `chiral` | `weight` (1.0), `slack` (0.05) | chiral volume (stereochemistry) — holds each stereocentre's handedness |
 | `plane` | `weight` (1.0), `slack` (0.0 Å) | **best-fit-plane** flatness of whole planar atom groups ([servalcat](https://github.com/keitaroyam/servalcat)-style) — penalises each group's out-of-plane RMS deviation toward 0. Fires on (a) aromatic/conjugated rings (whole ring) and (b) non-ring sp2 groups (an acyclic double-bond centre + its heavy neighbors: carbonyl / amide / ester / carboxyl / trisubstituted alkene). Group membership is confirmed by the reference conformer being coplanar (not the RDKit aromaticity flag). Add a `plane:` block to activate |
 | `cistrans` | `weight` (1.0), `slack` (0.0 rad) | **cis/trans (E/Z)** of acyclic, non-aromatic double bonds (needs real bond orders; detects 0 for ligands with none, e.g. ATP/NAD/GLN) |
-| `vdw` | `weight` (1.0), `mode` (`"both"`), `scale` (0.75), `dmax` (5.0 Å), `max_neighbors` (32), `max_atom_step` (0.1 Å), `neighbor_rebuild_interval` (10) | non-bonded clash avoidance with bounded CG steps and Verlet-style neighbor rebuilds |
+| `vdw` | `weight` (1.0), `mode` (`"both"`), `scale` (0.75), `dmax` (5.0 Å), `max_neighbors` (32), `max_atom_step` (0.1 Å), `neighbor_rebuild_interval` (10), `neighbor_skin` (2.0 Å) | non-bonded clash avoidance with bounded CG steps and displacement-triggered Verlet neighbor rebuilds |
 
 ### `monomer_library` — refinement targets for polymers (not a term)
 
@@ -908,18 +909,34 @@ migration error pointing to `intermolecular`.
 
 ### Dynamic intermolecular neighbor lists
 
-With `method: CG`, the two fixed-width dynamic neighbor lists are rebuilt every
-`neighbor_rebuild_interval` CG iterations (default 10): moving ligand/polymer atoms against the
-fixed background, and restrained polymer active-active pairs. CG restarts its search direction at
-each block boundary. Energy evaluation remains `O(L * max_neighbors)` /
+With `method: CG`, the two fixed-width dynamic neighbor lists — moving ligand/polymer atoms
+against the fixed background, and restrained polymer active-active pairs — are listed out to a
+**Verlet skin** and rebuilt only when the atoms have actually moved far enough to invalidate them.
+`neighbor_skin` (default 2.0 Å) is both the extra listed radius and the displacement budget: a
+rebuild fires when the largest per-atom displacement since the last build exceeds `neighbor_skin`
+(fixed background, where only the ligand moves) or `neighbor_skin / 2` (active-active, where both
+endpoints move). `neighbor_skin: 0` reproduces the old rebuild-at-every-check behavior.
+
+`neighbor_rebuild_interval` (default 10) is how often that staleness CHECK runs, in CG iterations —
+**not** how often a rebuild happens. It also bounds the movement that can go unnoticed between two
+checks, `M = max_atom_step * neighbor_rebuild_interval`, which is folded into the search radius.
+CG restarts its search direction only on an actual rebuild; between checks its state is carried
+across the block boundary, so a block that does not rebuild costs neither a re-entry energy
+evaluation nor the conjugate direction. Energy evaluation remains `O(L * max_neighbors)` /
 `O(N * max_neighbors)`; `method: l-bfgs` keeps the previous one-list-per-diffusion-step behavior.
 
 `max_atom_step` (default 0.1 Å) caps each atom's accepted displacement in one CG iteration whenever
 VdW is active. The line search uses the capped displacement in its Armijo test, so increasing
-`weight` or the number of contacts cannot produce a large accepted overshoot. For a block of
-`I` iterations, `M = max_atom_step * I`; the fixed-background search cutoff is at least
-`max_r_min + M`, and the active-active cutoff is at least `max_r_min + 2M`. This Verlet-style
-skin guarantees that a pair which can become a contact before the next rebuild is already listed.
+`weight` or the number of contacts cannot produce a large accepted overshoot. The fixed-background
+search cutoff is at least `max_r_min + M + neighbor_skin` and the active-active cutoff at least
+`max_r_min + 2M + neighbor_skin`, which is what guarantees that a pair able to become a contact
+before the next rebuild is already listed.
+
+Raising `dmax` does **not** reduce how often the lists are rebuilt — raise `neighbor_skin` for
+that. A larger skin lists many more candidates, and `max_neighbors` is applied **after** ranking
+them by VdW clearance, so a skin big enough to overflow `K` drops contacting pairs *silently*
+rather than raising. `neighbor_skin` is therefore capped at `dmax`; raise `max_neighbors`
+alongside it if you go much above the default.
 
 The neighbor-list build uses a sorted spatial cell list whose cell width is the resulting search
 cutoff (never smaller than `dmax`). Hash collisions are checked against the full cell coordinate,

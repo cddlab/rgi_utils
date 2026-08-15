@@ -49,3 +49,18 @@ EPS = 1e-12  # denominator guard in the Polak-Ribiere+ beta
 LS_STEP_MAX = 1.0  # trial-step ceiling, and the first iteration's trial step
 LS_STEP_GROW = 1.0 / BACKTRACK  # one backtrack of headroom per iteration
 LS_STEP_MIN = BACKTRACK**MAX_LS  # floor on the CARRIED step (see above)
+
+# --- resumable block state ----------------------------------------------------------------
+# All three solvers accept a `state` and hand one back, so a driver can run the CG in blocks
+# (to re-check a dynamic VdW neighbour list) without paying a re-entry energy+grad evaluation
+# or throwing away the conjugate direction at each boundary. The tuple is
+# `(f, g, d, gg, step)` — torch adds nothing else and jax appends a traced `valid` flag,
+# since it cannot branch on python control flow inside a `fori_loop`.
+#
+# It is only valid while the coordinates AND the objective are unchanged. A driver must drop
+# it (pass None / clear `valid`) after a neighbour rebuild: in theory the pairs a rebuild adds
+# or removes contribute exactly zero, because the VdW penalty is clamped beyond contact — but
+# `max_neighbors` truncation can break that premise, so the drivers pay one evaluation per
+# REBUILD rather than rely on it. Rebuilds are displacement-triggered and therefore rare.
+# A solver returns None (torch) / valid=False (jax) once it has converged, stalled or hit a
+# degenerate iteration: there is then nothing to resume.

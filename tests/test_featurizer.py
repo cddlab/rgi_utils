@@ -458,8 +458,10 @@ def test_vdw_cg_controls_are_stored_on_spec():
                 "mode": "intramolecular",
                 "max_atom_step": 0.2,
                 "neighbor_rebuild_interval": 4,
+                "neighbor_skin": 1.5,
             }
         },
     )
     assert spec.vdw_max_atom_step == 0.2
     assert spec.vdw_neighbor_rebuild_interval == 4
+    assert spec.vdw_neighbor_skin == 1.5

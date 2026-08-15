@@ -25,6 +25,7 @@ from rdkit import Chem
 from rgi_utils._config_util import (
     VDW_MAX_ATOM_STEP_DEFAULT,
     VDW_NEIGHBOR_REBUILD_INTERVAL_DEFAULT,
+    VDW_NEIGHBOR_SKIN_DEFAULT,
     VDW_SCALE_DEFAULT,
     validate_vdw_config,
 )
@@ -1228,6 +1229,9 @@ def build_spec(
             (cfg.get("vdw", {}) or {}).get(
                 "neighbor_rebuild_interval", VDW_NEIGHBOR_REBUILD_INTERVAL_DEFAULT
             )
+        ),
+        vdw_neighbor_skin=float(
+            (cfg.get("vdw", {}) or {}).get("neighbor_skin", VDW_NEIGHBOR_SKIN_DEFAULT)
         ),
         conf_start_sigma=conf_start_sigma,
         conf_stop_sigma=conf_stop_sigma,

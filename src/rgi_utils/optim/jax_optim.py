@@ -11,7 +11,18 @@ backtracking line search). Note: it is not bit-identical to torch — XLA float-
 reordering inside ``lax.while_loop`` can make the jax minimum differ from torch's by a
 small, input-dependent amount, and on some inputs at high ``max_iter`` (>~300) the
 backtracking line search can stall a little earlier than the eager torch loop; at the
-default ``max_iter=100`` they agree on the standard fixtures.
+default ``max_iter=100`` they agree on the standard fixtures. (That stall caveat was
+measured against the cold-start line search, which restarted every iteration at step 1.0
+and so exhausted ``MAX_LS`` more readily; the warm start makes it rarer, but the caveat
+is kept until it is re-measured.)
+
+The dynamic VdW neighbour lists are rebuilt on measured displacement against a Verlet
+skin, not on a fixed cadence. ``lax.fori_loop`` needs a static trip count, so the number
+of blocks stays fixed and it is the REBUILD that is ``lax.cond``-gated; the neighbour
+arrays and the CG state ride in the loop carry, so a block that does not rebuild neither
+re-evaluates the energy nor loses the conjugate direction. Keep this in step with
+``torch_optim`` — the displacement metric, the 1x/2x skin asymmetry and the constant
+movement bound are deliberately identical in both files.
 """
 
 from __future__ import annotations
@@ -22,7 +33,12 @@ import jax
 import jax.numpy as jnp
 
 from rgi_utils._array_ops import VDW_OVERLAP_EPS
-from rgi_utils._config_util import VDW_SCALE_DEFAULT
+from rgi_utils._config_util import (
+    VDW_MAX_ATOM_STEP_DEFAULT,
+    VDW_NEIGHBOR_REBUILD_INTERVAL_DEFAULT,
+    VDW_NEIGHBOR_SKIN_DEFAULT,
+    VDW_SCALE_DEFAULT,
+)
 from rgi_utils.energy import jax_energy
 from rgi_utils.optim._cell_list import (
     CELL_CHUNK_SIZE,
@@ -46,8 +62,26 @@ from rgi_utils.spec import check_active_vdw_int32_safe
 logger = logging.getLogger(__name__)
 
 
+def _max_disp(current, reference):
+    """Largest per-atom Euclidean displacement between two coordinate sets.
+
+    The Euclidean norm, NOT a component-wise max: the latter underestimates the true
+    displacement by up to sqrt(3) and would let a neighbour list go stale unnoticed. The
+    torch optimizer computes the same quantity — keep the two in step.
+    """
+    return jnp.max(jnp.linalg.norm(current - reference, axis=-1))
+
+
 def _cg_minimize(
-    energy_fn, x0, max_iter, max_ls=MAX_LS, gtol=GTOL, ftol=FTOL, max_atom_step=None
+    energy_fn,
+    x0,
+    max_iter,
+    max_ls=MAX_LS,
+    gtol=GTOL,
+    ftol=FTOL,
+    max_atom_step=None,
+    state=None,
+    return_state=False,
 ):
     """Pure-jax nonlinear conjugate gradient (Polak-Ribiere+, backtracking Armijo line
     search, restart on non-descent) — a port of the torch ``TorchRestraintOptimizer.
@@ -93,9 +127,29 @@ def _cg_minimize(
         s, accepted, xt, ft, gt, _i = jax.lax.while_loop(cond, body, init)
         return xt, ft, gt, accepted, s
 
-    f0, g0 = vg(x0)
-    gg0 = jnp.sum(g0 * g0)
-    stop0 = jnp.max(jnp.abs(g0)) < gtol
+    def _fresh():
+        f_, g_ = vg(x0)
+        return (
+            f_,
+            g_,
+            -g_,
+            jnp.sum(g_ * g_),
+            jnp.asarray(LS_STEP_MAX),
+            jnp.max(jnp.abs(g_)) < gtol,
+        )
+
+    if state is None:
+        f0, g0, d0, gg0, s0, stop0 = _fresh()
+    else:
+        # Resume a previous block. `lax.cond` EXECUTES only the taken branch, so a carried
+        # block genuinely pays no re-entry evaluation. Mirrors the torch `state` argument;
+        # the caller must pass None after a neighbour rebuild (the objective changed).
+        f_c, g_c, d_c, gg_c, s_c, valid = state
+        f0, g0, d0, gg0, s0, stop0 = jax.lax.cond(
+            valid,
+            lambda: (f_c, g_c, d_c, gg_c, s_c, jnp.asarray(False)),
+            _fresh,
+        )
 
     def cond(st):
         _x, _f, _g, _d, _gg, it, stop, _step = st
@@ -131,9 +185,13 @@ def _cg_minimize(
         stop_next = jnp.logical_or(bad, jnp.logical_or(jnp.logical_not(accepted), conv))
         return (nx, nf, ng, nd, ngg, it + 1, stop_next, nstep)
 
-    init = (x0, f0, g0, -g0, gg0, jnp.asarray(0), stop0, jnp.asarray(LS_STEP_MAX))
-    x = jax.lax.while_loop(cond, body, init)[0]
-    return x
+    init = (x0, f0, g0, d0, gg0, jnp.asarray(0), stop0, s0)
+    xf, ff, gf, df, ggf, _it, stopf, sf = jax.lax.while_loop(cond, body, init)
+    if return_state:
+        # `stop` is False exactly when the loop exited on the iteration budget, i.e. the
+        # solver is still live and the next block can resume it.
+        return xf, (ff, gf, df, ggf, sf, jnp.logical_not(stopf))
+    return xf
 
 
 def _cell_hash_jax(cells):
@@ -501,8 +559,19 @@ def make_minimizer(
         active_vdw_max_neighbors = int(_ac.max_neighbors)
     has_static_vdw = spec.has_array_term("vdw")
     has_any_vdw = has_static_vdw or has_vdw or has_active_vdw
-    vdw_step_limit = float(getattr(spec, "vdw_max_atom_step", 0.1))
-    vdw_rebuild_interval = int(getattr(spec, "vdw_neighbor_rebuild_interval", 10))
+    vdw_step_limit = float(
+        getattr(spec, "vdw_max_atom_step", VDW_MAX_ATOM_STEP_DEFAULT)
+    )
+    # How often a dynamic list is CHECKED for staleness; the rebuild itself is triggered by
+    # measured displacement against `vdw_skin` (see torch_optim, kept deliberately in step).
+    vdw_rebuild_interval = int(
+        getattr(
+            spec,
+            "vdw_neighbor_rebuild_interval",
+            VDW_NEIGHBOR_REBUILD_INTERVAL_DEFAULT,
+        )
+    )
+    vdw_skin = float(getattr(spec, "vdw_neighbor_skin", VDW_NEIGHBOR_SKIN_DEFAULT))
     if has_any_vdw:
         conf_ss = jnp.asarray(float(spec.conf_start_sigma))
         conf_stop = jnp.asarray(float(getattr(spec, "conf_stop_sigma", -1.0)))
@@ -613,46 +682,142 @@ def make_minimizer(
 
             if is_cg and (has_vdw or has_active_vdw):
                 n_blocks = (max_iter + vdw_rebuild_interval - 1) // vdw_rebuild_interval
+                # `movement` is the worst-case travel between two staleness CHECKS, so it
+                # uses the CONSTANT interval, not the traced per-block count: a list now
+                # survives many blocks and the bound must cover one unchecked stretch.
+                # Keep this expression identical to torch_optim's, including the 1x / 2x
+                # asymmetry (only the ligand moves against the fixed background).
+                movement = vdw_step_limit * vdw_rebuild_interval
+                fixed_cutoff = None
+                active_cutoff = None
+                if has_vdw:
+                    _mr = vdw_scale * (jnp.max(vdw_lig_r) + jnp.max(vdw_bg_r))
+                    fixed_cutoff = jnp.maximum(vdw_dmax, _mr + movement + vdw_skin)
+                if has_active_vdw:
+                    _mr = active_vdw_scale * 2.0 * jnp.max(active_vdw_radii)
+                    active_cutoff = jnp.maximum(
+                        active_vdw_dmax, _mr + 2.0 * movement + vdw_skin
+                    )
 
-                def block_body(block_index, state):
-                    current, stopped = state
+                # Build once BEFORE the loop: the carry then has concrete shapes and there
+                # is no "block 0 must always build" special case. (Seeding the references
+                # with inf does not work -- inf - inf is nan and nan > T is False.)
+                _n0, _m0, _a0, _f0 = build_dynamic_pairs(
+                    active, fixed_cutoff, active_cutoff
+                )
+                # The CG state's dtypes must match the loop carry EXACTLY (fori_loop demands
+                # an invariant carry), and the energy dtype is not simply the coord dtype --
+                # it depends on x64 and on the prepared arrays. Take the exact structure from
+                # an abstract trace rather than guessing: eval_shape runs no computation.
+                _probe = jax.eval_shape(
+                    lambda a: _cg_minimize(
+                        lambda x: energy_fn(x, _n0, _m0, _a0, _f0),
+                        a,
+                        0,
+                        max_atom_step=step_cap,
+                        return_state=True,
+                    ),
+                    active,
+                )
+                carry = {
+                    "x": active,
+                    "stopped": jnp.asarray(False),
+                    # CG state carried across blocks; the trailing flag marks it invalid
+                    # until a block has actually produced one.
+                    "cg": tuple(jnp.zeros(s.shape, s.dtype) for s in _probe[1]),
+                }
+                if has_vdw:
+                    carry["fn"], carry["fm"] = _n0, _m0
+                    carry["fref"] = active[..., vdw_lig_local, :]
+                if has_active_vdw:
+                    carry["an"], carry["af"] = _a0, _f0
+                    carry["aref"] = active
 
-                    def run_block(a):
+                def block_body(block_index, c):
+                    def run_block(c):
+                        a = c["x"]
+                        new = dict(c)
+                        rebuilt = jnp.asarray(False)
+                        if has_vdw:
+                            lig = a[..., vdw_lig_local, :]
+                            # `in_win` gate: outside the conformer window step_cap is inf,
+                            # so displacement is unbounded and every block would rebuild --
+                            # while the VdW weight is 0, so the list does not matter. torch
+                            # gets this structurally (no dynamic list => a single block).
+                            need = jnp.logical_and(
+                                in_win, _max_disp(lig, c["fref"]) > vdw_skin
+                            )
+                            nb, mask = jax.lax.cond(
+                                need,
+                                lambda: _build_fixed_vdw_pairs(
+                                    a,
+                                    bg_pos,
+                                    vdw_lig_local,
+                                    fixed_cutoff,
+                                    vdw_max_neighbors,
+                                    vdw_lig_r,
+                                    vdw_bg_r,
+                                    vdw_scale,
+                                ),
+                                lambda: (c["fn"], c["fm"]),
+                            )
+                            new["fn"], new["fm"] = nb, mask
+                            new["fref"] = jnp.where(need, lig, c["fref"])
+                            rebuilt = jnp.logical_or(rebuilt, need)
+                        if has_active_vdw:
+                            # both endpoints move, so half the budget each
+                            need = jnp.logical_and(
+                                in_win, _max_disp(a, c["aref"]) > 0.5 * vdw_skin
+                            )
+                            nb, factor = jax.lax.cond(
+                                need,
+                                lambda: _build_active_vdw_pairs(
+                                    a,
+                                    active_vdw_radii,
+                                    active_vdw_polymer,
+                                    active_vdw_excluded,
+                                    active_cutoff,
+                                    active_vdw_max_neighbors,
+                                    active_vdw_scale,
+                                ),
+                                lambda: (c["an"], c["af"]),
+                            )
+                            new["an"], new["af"] = nb, factor
+                            new["aref"] = jnp.where(need, a, c["aref"])
+                            rebuilt = jnp.logical_or(rebuilt, need)
+
+                        pairs = (
+                            new.get("fn"),
+                            new.get("fm"),
+                            new.get("an"),
+                            new.get("af"),
+                        )
                         block_iters = jnp.minimum(
                             vdw_rebuild_interval,
                             max_iter - block_index * vdw_rebuild_interval,
                         )
-                        movement = vdw_step_limit * block_iters
-                        fixed_cutoff = None
-                        active_cutoff = None
-                        if has_vdw:
-                            max_r_min = vdw_scale * (
-                                jnp.max(vdw_lig_r) + jnp.max(vdw_bg_r)
-                            )
-                            fixed_cutoff = jnp.maximum(vdw_dmax, max_r_min + movement)
-                        if has_active_vdw:
-                            max_r_min = (
-                                active_vdw_scale * 2.0 * jnp.max(active_vdw_radii)
-                            )
-                            active_cutoff = jnp.maximum(
-                                active_vdw_dmax, max_r_min + 2.0 * movement
-                            )
-                        pairs = build_dynamic_pairs(a, fixed_cutoff, active_cutoff)
-                        updated = _cg_minimize(
+                        # a rebuild changed the objective -> the carried state describes the
+                        # OLD pair list, so invalidate it (one evaluation per REBUILD, which
+                        # is now rare, instead of one per block)
+                        cg_in = c["cg"][:-1] + (
+                            jnp.logical_and(c["cg"][-1], jnp.logical_not(rebuilt)),
+                        )
+                        updated, cg_out = _cg_minimize(
                             lambda x: energy_fn(x, *pairs),
                             a,
                             block_iters,
                             max_atom_step=step_cap,
+                            state=cg_in,
+                            return_state=True,
                         )
-                        return updated, jnp.all(updated == a)
+                        new["x"] = updated
+                        new["cg"] = cg_out
+                        new["stopped"] = jnp.all(updated == a)
+                        return new
 
-                    return jax.lax.cond(
-                        stopped, lambda a: (a, stopped), run_block, current
-                    )
+                    return jax.lax.cond(c["stopped"], lambda c: c, run_block, c)
 
-                opt, _stopped = jax.lax.fori_loop(
-                    0, n_blocks, block_body, (active, jnp.asarray(False))
-                )
+                opt = jax.lax.fori_loop(0, n_blocks, block_body, carry)["x"]
             elif is_cg:
                 opt = _cg_minimize(
                     lambda a: energy_fn(a, None, None, None, None),

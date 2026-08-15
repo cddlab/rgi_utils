@@ -15,7 +15,12 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from rgi_utils._config_util import VDW_SCALE_DEFAULT
+from rgi_utils._config_util import (
+    VDW_MAX_ATOM_STEP_DEFAULT,
+    VDW_NEIGHBOR_REBUILD_INTERVAL_DEFAULT,
+    VDW_NEIGHBOR_SKIN_DEFAULT,
+    VDW_SCALE_DEFAULT,
+)
 from rgi_utils.energy._terms import CONF_KEYS, PER_ENTRY_KEYS, iter_spec_terms
 
 # ---------------------------------------------------------------------------
@@ -419,10 +424,14 @@ class RestraintSpec:
     vdw_config: VdwConfig | None = None
     active_vdw_config: ActiveVdwConfig | None = None
     # CG safety controls shared by static and dynamic VdW. The step cap prevents the
-    # quadratic one-sided penalty from accepting a large overshooting Armijo step; the
-    # interval bounds how long dynamic Verlet-style neighbour lists stay fixed.
-    vdw_max_atom_step: float = 0.1
-    vdw_neighbor_rebuild_interval: int = 10
+    # quadratic one-sided penalty from accepting a large overshooting Armijo step. The
+    # interval is how often the CG CHECKS a dynamic Verlet-style list for staleness (it
+    # bounds the unchecked movement `max_atom_step * interval`, folded into the search
+    # cutoff); the skin is the extra listed radius AND the measured-displacement budget
+    # that actually triggers a rebuild.
+    vdw_max_atom_step: float = VDW_MAX_ATOM_STEP_DEFAULT
+    vdw_neighbor_rebuild_interval: int = VDW_NEIGHBOR_REBUILD_INTERVAL_DEFAULT
+    vdw_neighbor_skin: float = VDW_NEIGHBOR_SKIN_DEFAULT
     distance: DistanceArrays | None = None
     rmsd: RmsdArrays | None = None
     # centroid angle/dihedral restraints between atom GROUPS (distinct from the conformer

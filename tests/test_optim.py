@@ -1678,6 +1678,11 @@ def test_torch_dynamic_vdw_rebuilds_before_new_contact():
         conf_start_sigma=float("inf"),
         vdw_max_atom_step=0.1,
         vdw_neighbor_rebuild_interval=4,
+        # Pinned, not inherited: the fixture depends on the pair at 5.3 A being OUTSIDE the
+        # built list (dmax 5.0, r_min 2.55, movement 0.4 -> cutoff max(5.0, 4.95) = 5.0). A
+        # larger default skin would list it from the first build and the test would pass
+        # vacuously, verifying nothing about the rebuild.
+        vdw_neighbor_skin=2.0,
     )
     coords = torch.tensor(
         [[5.3, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
@@ -1729,6 +1734,11 @@ def test_jax_dynamic_vdw_rebuilds_before_new_contact():
         conf_start_sigma=float("inf"),
         vdw_max_atom_step=0.1,
         vdw_neighbor_rebuild_interval=4,
+        # Pinned, not inherited: the fixture depends on the pair at 5.3 A being OUTSIDE the
+        # built list (dmax 5.0, r_min 2.55, movement 0.4 -> cutoff max(5.0, 4.95) = 5.0). A
+        # larger default skin would list it from the first build and the test would pass
+        # vacuously, verifying nothing about the rebuild.
+        vdw_neighbor_skin=2.0,
     )
     coords = jnp.asarray([[5.3, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
 
@@ -1836,3 +1846,124 @@ def test_cg_warm_start_recovers_after_shrinking():
     assert float(easy(x)) < 1e-12, (
         "isotropic quadratic must converge in a few iterations"
     )
+
+
+@pytest.mark.parametrize(
+    "skin,expect_rebuilds",
+    [(2.0, 1), (0.5, 3)],  # travel is 1.5 A: under a 2.0 skin, over a 0.5 one
+)
+def test_torch_dynamic_vdw_rebuild_follows_measured_displacement(
+    monkeypatch, skin, expect_rebuilds
+):
+    """The neighbour list is rebuilt on MEASURED displacement, not every N iterations.
+
+    A distance restraint drags the ligand atom 1.5 A while ``max_atom_step=0.1`` forces at
+    least 15 iterations, i.e. at least 4 staleness checks at ``interval=4``. With a 2.0 A
+    skin the atom never travels far enough and the initial list stands; with a 0.5 A skin it
+    crosses the budget repeatedly. The background atom is parked 20 A away so VdW never
+    interferes with the motion, and the movement assertion stops a solver that simply
+    stalls from satisfying the ``calls == 1`` case for the wrong reason.
+    """
+    torch = pytest.importorskip("torch")
+    from rgi_utils.optim import _torch_cg_gpu
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+    from rgi_utils.spec import DistanceArrays, RestraintSpec, VdwConfig
+
+    calls = 0
+    original = _torch_cg_gpu.build_fixed_vdw_pairs
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(_torch_cg_gpu, "build_fixed_vdw_pairs", counted)
+    spec = RestraintSpec(
+        n_active=2,
+        active_sites=np.array([0, 1]),
+        distance=DistanceArrays(
+            grp1_idx=np.array([[0]], dtype=np.int64),
+            grp2_idx=np.array([[1]], dtype=np.int64),
+            grp1_mask=np.ones((1, 1)),
+            grp2_mask=np.ones((1, 1)),
+            target1=np.zeros(1),
+            target2=np.zeros(1),
+            dist_type=np.zeros(1, dtype=np.int64),
+            move_mode=np.ones(1, dtype=np.int64),  # only group 1 moves
+            weight=np.ones(1),
+            mask=np.ones(1),
+            start_sigma=np.array([float("inf")]),
+            stop_sigma=np.array([-1.0]),
+            start_step=np.array([float("-inf")]),
+            stop_step=np.array([float("inf")]),
+        ),
+        vdw_config=VdwConfig(
+            weight=1.0,
+            ligand_local=np.array([0]),
+            ligand_radii=np.array([1.7]),
+            background_global=np.array([2]),
+            background_radii=np.array([1.7]),
+            scale=0.75,
+            dmax=5.0,
+            max_neighbors=4,
+        ),
+        conf_start_sigma=float("inf"),
+        vdw_max_atom_step=0.1,
+        vdw_neighbor_rebuild_interval=4,
+        vdw_neighbor_skin=skin,
+    )
+    coords = torch.tensor(
+        [[1.5, 0.0, 0.0], [0.0, 0.0, 0.0], [20.0, 0.0, 0.0]],
+        dtype=torch.float64,
+    )
+    TorchRestraintOptimizer(spec, max_iter=20, method="CG").minimize(coords)
+
+    moved = 1.5 - float(torch.linalg.norm(coords[0] - coords[1]))
+    assert moved > 1.4, f"the ligand barely moved ({moved:.3f} A); test is vacuous"
+    if expect_rebuilds == 1:
+        assert calls == 1, f"list rebuilt {calls}x despite staying inside the skin"
+    else:
+        assert calls >= expect_rebuilds, f"only {calls} rebuild(s) for 1.5 A of travel"
+
+
+def test_vdw_skin_does_not_change_the_listed_energy():
+    """Widening the search radius by the skin must not change what the VdW term scores.
+
+    The K-nearest cap (`max_neighbors`) is applied AFTER ranking by VdW clearance, so a
+    larger radius can only add candidates that rank WORSE than everything already kept —
+    and those sit beyond contact, where ``clamp(d - r_min, max=0)**2`` is exactly zero.
+    This is the cheap guard on the truncation hazard the skin introduces: if a wider list
+    ever displaced a contacting pair, the two energies would differ.
+    """
+    torch = pytest.importorskip("torch")
+    from rgi_utils.optim._torch_cg_gpu import _vdw_pair_energy, build_fixed_vdw_pairs
+
+    rng = np.random.default_rng(0)
+    lig = torch.tensor(rng.uniform(-4, 4, (12, 3)), dtype=torch.float64)
+    bg = torch.tensor(rng.uniform(-9, 9, (200, 3)), dtype=torch.float64)
+    lig_local = torch.arange(12)
+    lig_r = torch.full((12,), 1.7, dtype=torch.float64)
+    bg_r = torch.full((200,), 1.7, dtype=torch.float64)
+    scale = torch.tensor(0.75, dtype=torch.float64)
+    weight = torch.tensor(1.0, dtype=torch.float64)
+
+    def energy_at(cutoff):
+        pairs = build_fixed_vdw_pairs(
+            lig,
+            bg,
+            lig_local,
+            torch.tensor(cutoff, dtype=torch.float64),
+            32,
+            lig_r,
+            bg_r,
+            scale,
+        )
+        return float(
+            _vdw_pair_energy(
+                lig, bg, lig_local, pairs[0], pairs[1], lig_r, bg_r, scale, weight
+            )
+        )
+
+    bare, skinned = energy_at(5.0), energy_at(7.0)
+    assert bare > 0.0, "fixture has no contacts; the comparison would be vacuous"
+    assert abs(bare - skinned) < 1e-12, f"skin changed the energy: {bare} vs {skinned}"

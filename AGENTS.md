@@ -65,6 +65,12 @@ Design = **3 layers + autodiff + static shapes + GPU-complete optimization**:
    GPU-complete): optimize only `active_sites` coords, scatter back. Default
    `method='CG'`: torch = a hand-rolled nonlinear CG (Polak-Ribiere+, backtracking
    Armijo); jax = a pure-jax port of it (`lax.while_loop`, JIT-able inside `lax.scan`).
+   The Armijo trial step is **warm-started** — carried across iterations and grown by one
+   backtrack, floored so it cannot ratchet to a no-op — because the accepted step is
+   typically far below 1 and restarting at 1.0 every iteration re-derived it (~6
+   energy+grad evaluations per iteration instead of ~2). All three implementations
+   (`torch_optim._minimize_cg`, `_torch_cg_gpu._cg_minimize_torch`, `jax_optim._cg_minimize`)
+   must move together — see `optim/_cg_config.py`.
    `method='l-bfgs'` is opt-in (torch `LBFGS` strong-Wolfe / `jaxopt.LBFGS`, lazily
    imported). Distance is CG-minimised like every other restraint (the old closed-form
    `distance_shift.py` was removed); to stop the `1/N` centroid-gradient dilution from
@@ -306,8 +312,9 @@ plane/cistrans/vdw). `mode` picks **two categories** (default `both` = both):
   - *Fixed background* (`_build_vdw_config` → `VdwConfig` → optimizers): the partner is
     every non-padding atom NOT in `active_sites` (protein / DNA/RNA / **non-restrained** ligand),
     read from the full coordinate tensor at minimize time and held fixed (it needs no
-    gradient). A two-set sorted cell list is rebuilt once per diffusion step and held
-    fixed during CG: background build/query is normally `O(B log B + L log B)`, each
+    gradient). A two-set sorted cell list is rebuilt when the ligand's measured
+    displacement exhausts the Verlet skin (see below): background build/query is normally
+    `O(B log B + L log B)`, each
     energy evaluation is `O(L * max_neighbors)`, and working memory is linear rather
     than `L * B`. Lives in `optim/torch_optim.py` AND `optim/jax_optim.py`
     (`_vdw_pair_energy` is the shared fixed-width formula, ported to jnp). **torch + jax**
@@ -335,9 +342,15 @@ vdw=Iintra+Jinter+Llig/Mbg/Knn` log breaks the counts down: `intra` = intramolec
 + `lig/bg` together = intermolecular (`inter` = restrained-ligand pairs, `lig/bg` =
 fixed background) — confirm `Jinter>0` when you expect ligand-ligand repulsion.
 
-The fixed-background and restrained-polymer active-active halves rebuild fixed-width
-neighbor lists once per diffusion step and hold them fixed during CG. Both use the same
-sort-based spatial cell-list primitive. Normal-density build time is `O(B log B + L log B)`
+The fixed-background and restrained-polymer active-active halves list fixed-width neighbors
+out to a **Verlet skin** (`vdw.neighbor_skin`, default 2 Å) beyond the contact cutoff, and
+rebuild only when the atoms' **measured** displacement since the last build exhausts that
+skin (the full skin for the fixed background, where one endpoint moves; half of it for
+active-active, where both do). `vdw.neighbor_rebuild_interval` (default 10) is how often
+that staleness CHECK runs, not how often a rebuild happens — it also bounds the unchecked
+movement folded into the search radius. Between checks the CG state is carried across the
+block boundary, so a block that does not rebuild costs neither a re-entry evaluation nor
+the conjugate direction. Both halves use the same sort-based spatial cell-list primitive. Normal-density build time is `O(B log B + L log B)`
 for moving ligand/polymer atoms `L` against fixed background `B`, and `O(N log N)` for
 active-active atoms; energy evaluation is `O(L * max_neighbors)` / `O(N * max_neighbors)`.
 Cell buckets are fully traversed and hash collisions are verified, so a collapsed structure

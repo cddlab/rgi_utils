@@ -115,7 +115,7 @@ restraints_config = {
         "vdw": {
             "weight": 1.0, "max_neighbors": 32,  # mode defaults to "both"
             "max_atom_step": 0.1,
-            "neighbor_rebuild_interval": 10,
+            "neighbor_rebuild_interval": 10, "neighbor_skin": 2.0,
         },
     },
     "custom_restraints_config": [            # define your OWN restraint as a formula (DSL)

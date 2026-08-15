@@ -17,7 +17,17 @@ _TRUE_STRINGS = ("1", "true", "yes", "on")
 
 VDW_SCALE_DEFAULT = 0.75
 VDW_MAX_ATOM_STEP_DEFAULT = 0.1
+# How often the CG CHECKS whether a dynamic neighbour list has gone stale (in iterations).
+# It is no longer how often it rebuilds -- that is decided by measured displacement against
+# VDW_NEIGHBOR_SKIN_DEFAULT -- but it still bounds how far an atom can move between checks,
+# which is folded into the search cutoff as `max_atom_step * interval`.
 VDW_NEIGHBOR_REBUILD_INTERVAL_DEFAULT = 10
+# Verlet skin (Angstrom): extra radius listed beyond the contact cutoff so a pair can drift
+# toward contact without being missed, and the displacement budget that triggers a rebuild.
+# 0 reproduces the old rebuild-at-every-check behaviour exactly. Bounded above by `dmax`
+# because the K-nearest cap (`max_neighbors`) is applied AFTER ranking by clearance: a skin
+# large enough to overflow K silently drops restrained pairs instead of raising.
+VDW_NEIGHBOR_SKIN_DEFAULT = 2.0
 
 
 def validate_vdw_config(conformer_config: dict | None) -> None:
@@ -39,6 +49,7 @@ def validate_vdw_config(conformer_config: dict | None) -> None:
         "max_neighbors",
         "max_atom_step",
         "neighbor_rebuild_interval",
+        "neighbor_skin",
     }
     unknown = set(raw) - known
     if unknown:
@@ -73,8 +84,18 @@ def validate_vdw_config(conformer_config: dict | None) -> None:
 
     finite_real("weight", 1.0)
     finite_real("scale", VDW_SCALE_DEFAULT, positive=True)
-    finite_real("dmax", 5.0, positive=True)
+    dmax = finite_real("dmax", 5.0, positive=True)
     finite_real("max_atom_step", VDW_MAX_ATOM_STEP_DEFAULT, positive=True)
+    skin = finite_real("neighbor_skin", VDW_NEIGHBOR_SKIN_DEFAULT)
+    if skin < 0.0:
+        raise ValueError("conformer vdw neighbor_skin must be >= 0")
+    if skin > dmax:
+        # The K-nearest cap is applied after ranking by clearance, so a skin big enough to
+        # overflow `max_neighbors` drops contacting pairs silently rather than erroring.
+        raise ValueError(
+            "conformer vdw neighbor_skin must be <= dmax (a larger skin lists many more "
+            "candidates and can be silently truncated by max_neighbors)"
+        )
 
     for key, default in (
         ("max_neighbors", 32),

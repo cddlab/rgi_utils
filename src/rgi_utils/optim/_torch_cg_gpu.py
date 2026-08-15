@@ -487,22 +487,43 @@ def _get_cvg(mode=0):
 
 
 def _cg_minimize_torch(
-    vg, x0, max_iter, max_ls=MAX_LS, gtol=GTOL, ftol=FTOL, max_atom_step=None
+    vg,
+    x0,
+    max_iter,
+    max_ls=MAX_LS,
+    gtol=GTOL,
+    ftol=FTOL,
+    max_atom_step=None,
+    state=None,
+    return_state=False,
 ):
     """Sequential nonlinear CG (Polak-Ribiere+, backtracking Armijo line search, restart
     on non-descent) — the exact algorithm of ``torch_optim._minimize_cg`` but functional:
     ``vg(x) -> (grad, value)``. ``x0`` is the active-site coords. Returns the optimized
     coords (keeps ``x0`` if non-finite). The early-exit line search reaches arbitrarily
     fine steps, so stiff terms (chiral) converge as on CPU; the host scalar reads are
-    cheap because each ``vg`` is a fused compiled call."""
+    cheap because each ``vg`` is a fused compiled call.
+
+    ``state`` resumes a previous call's ``(f, g, d, gg, step)``. The caller uses it to run
+    the CG in blocks — to re-check a dynamic neighbour list — WITHOUT paying a fresh
+    entry evaluation and, more importantly, without discarding the conjugate direction at
+    every block boundary. It is only valid when the coordinates have not moved and the
+    objective is unchanged since that state was produced; the caller must pass ``None``
+    after a neighbour rebuild. With ``return_state`` the second return value is the live
+    state, or ``None`` when the solver terminated (converged, stalled or degenerate) and
+    there is nothing to resume."""
     x = x0
-    g, e = vg(x)
-    f = float(e)
-    if float(g.abs().max()) < gtol:
-        return x
-    d = -g
-    gg = torch.sum(g * g)
-    carried = LS_STEP_MAX  # warm-started trial step (see _cg_config)
+    if state is None:
+        g, e = vg(x)
+        f = float(e)
+        if float(g.abs().max()) < gtol:
+            return (x, None) if return_state else x
+        d = -g
+        gg = torch.sum(g * g)
+        carried = LS_STEP_MAX  # warm-started trial step (see _cg_config)
+    else:
+        f, g, d, gg, carried = state
+    finished = True  # cleared only if the iteration budget runs out with work left
     for _ in range(max_iter):
         gg_v, dg_v = torch.stack((gg, torch.sum(d * g))).tolist()
         if not math.isfinite(gg_v) or gg_v <= GG_FLOOR:
@@ -546,12 +567,26 @@ def _cg_minimize_torch(
         f, g, gg = f_new, gt, torch.sum(gt * gt)
         if converged:
             break
+    else:
+        # ran out of iterations with the solver still live -> resumable
+        finished = False
     if not torch.isfinite(x).all():
-        return x0
+        return (x0, None) if return_state else x0
+    if return_state:
+        return x, (None if finished else (f, g, d, gg, carried))
     return x
 
 
-def gpu_cg(prepared, x0, max_iter, vdw=None, active_vdw=None, max_atom_step=None):
+def gpu_cg(
+    prepared,
+    x0,
+    max_iter,
+    vdw=None,
+    active_vdw=None,
+    max_atom_step=None,
+    state=None,
+    return_state=False,
+):
     """Run the CG on CUDA coords. ``prepared`` is the (stable, pre-gated) energy dict;
     ``x0`` the active coords; ``vdw`` carries the fixed-background positions, atom data,
     and per-step neighbour list; ``active_vdw`` similarly carries the fixed per-step
@@ -583,7 +618,14 @@ def gpu_cg(prepared, x0, max_iter, vdw=None, active_vdw=None, max_atom_step=None
                 return cvg(x, prepared, *vdw, *active_vdw)
 
         try:
-            return _cg_minimize_torch(vg, x0, max_iter, max_atom_step=max_atom_step)
+            return _cg_minimize_torch(
+                vg,
+                x0,
+                max_iter,
+                max_atom_step=max_atom_step,
+                state=state,
+                return_state=return_state,
+            )
         except (
             Exception
         ) as exc:  # this artifact's runtime failure -> eager, permanently
@@ -592,6 +634,7 @@ def gpu_cg(prepared, x0, max_iter, vdw=None, active_vdw=None, max_atom_step=None
 
     # eager fallback (CPU coords, compile disabled, or compiled artifact failed): the same
     # correct early-exit CG on the same (vdw-augmented) energy used by the compiled path.
+    # A state produced by either path is valid for the other -- identical maths.
     base = _ENERGY_BY_MODE[mode]
     extra = (vdw or ()) + (active_vdw or ())
 
@@ -599,5 +642,10 @@ def gpu_cg(prepared, x0, max_iter, vdw=None, active_vdw=None, max_atom_step=None
         return base(a, prepared, *extra)
 
     return _cg_minimize_torch(
-        torch.func.grad_and_value(e_of), x0, max_iter, max_atom_step=max_atom_step
+        torch.func.grad_and_value(e_of),
+        x0,
+        max_iter,
+        max_atom_step=max_atom_step,
+        state=state,
+        return_state=return_state,
     )

@@ -12,8 +12,12 @@ The fixed-background VdW term (``spec.vdw_config``) is handled here rather than 
 the static energy layer: the ligand atoms come from the optimised ``active`` set
 while the background atoms (protein / DNA/RNA / non-restrained ligand) are a *fixed
 background* read from the full coordinate tensor. A fixed-width neighbour list is
-rebuilt between bounded CG blocks (only the ligand is pushed; the background is held
-fixed).
+listed out to a Verlet skin beyond the contact cutoff and rebuilt when the atoms'
+MEASURED displacement since the last build exhausts that skin (only the ligand is
+pushed; the background is held fixed). ``vdw_neighbor_rebuild_interval`` is how often
+that check runs, not how often a rebuild happens; between checks the CG state is
+carried across the block boundary, so a block that does not rebuild costs neither a
+re-entry evaluation nor the conjugate direction.
 """
 
 from __future__ import annotations
@@ -24,6 +28,11 @@ import os
 
 import torch
 
+from rgi_utils._config_util import (
+    VDW_MAX_ATOM_STEP_DEFAULT,
+    VDW_NEIGHBOR_REBUILD_INTERVAL_DEFAULT,
+    VDW_NEIGHBOR_SKIN_DEFAULT,
+)
 from rgi_utils.energy import torch_energy
 from rgi_utils.energy._terms import CONF_KEYS, PER_ENTRY_KEYS
 from rgi_utils.optim._cg_config import (
@@ -40,6 +49,16 @@ from rgi_utils.optim._cg_config import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _max_disp(current, reference) -> float:
+    """Largest per-atom Euclidean displacement between two coordinate sets.
+
+    The Euclidean norm, NOT a component-wise max: the latter underestimates the true
+    displacement by up to sqrt(3) and would let a neighbour list go stale unnoticed. The
+    jax optimizer computes the same quantity — keep the two in step.
+    """
+    return float(torch.linalg.norm(current - reference, dim=-1).max())
 
 
 class TorchRestraintOptimizer:
@@ -126,17 +145,17 @@ class TorchRestraintOptimizer:
         return self._custom_cvg[mode]
 
     def _minimize_custom_gpu(
-        self, active, sigma, step, mi, vdw, active_vdw, max_atom_step=None
-    ) -> bool:
+        self, active, sigma, step, mi, vdw, active_vdw, max_atom_step=None, state=None
+    ):
         """GPU CG with the torch.compile'd custom-inclusive energy. ``vdw`` /
         ``active_vdw`` are the same optional argument tuples ``gpu_cg`` takes; they select
         the base energy so the dynamic VdW terms stay inside the compiled graph. Returns
-        False (caller falls back to the eager CG) when compile is unavailable or the
-        artifact fails."""
+        ``(ok, state)``; ``ok`` is False (caller falls back to the eager CG) when compile is
+        unavailable or the artifact fails."""
         mode = (1 if vdw is not None else 0) | (2 if active_vdw is not None else 0)
         cvg = self._get_custom_cvg(mode)
         if cvg is None:
-            return False
+            return False, None
         from rgi_utils.optim._torch_cg_gpu import _cg_minimize_torch
 
         vdw_args = (vdw or ()) + (active_vdw or ())
@@ -154,15 +173,17 @@ class TorchRestraintOptimizer:
             device=active.device,
         )
         try:
-            opt = _cg_minimize_torch(
+            opt, out_state = _cg_minimize_torch(
                 lambda x: cvg(x, prepared_g, gates, *vdw_args),
                 active.detach(),
                 mi,
                 max_atom_step=max_atom_step,
+                state=state,
+                return_state=True,
             )
             with torch.no_grad():
                 active.copy_(opt)
-            return True
+            return True, out_state
         except (
             Exception
         ) as exc:  # this artifact's runtime failure -> eager, permanently
@@ -170,7 +191,7 @@ class TorchRestraintOptimizer:
                 "custom GPU CG (compiled) failed at runtime (%s); eager", exc
             )
             self._custom_cvg[mode] = False
-            return False
+            return False, None
 
     def _ensure(self, device, dtype) -> None:
         if self._prepared is not None and self._device == device:
@@ -393,9 +414,23 @@ class TorchRestraintOptimizer:
         static_vdw_active = self.spec.has_array_term("vdw") and conformer_in_window
         any_vdw_active = vdw_active or active_vdw_active or static_vdw_active
         max_atom_step = (
-            float(getattr(self.spec, "vdw_max_atom_step", 0.1))
+            float(getattr(self.spec, "vdw_max_atom_step", VDW_MAX_ATOM_STEP_DEFAULT))
             if self._is_cg() and any_vdw_active
             else None
+        )
+        # How often a dynamic neighbour list is CHECKED for staleness, in CG iterations.
+        # With no dynamic list there is nothing to check, so the whole budget is one block.
+        dynamic_vdw = vdw_active or active_vdw_active
+        check = (
+            int(
+                getattr(
+                    self.spec,
+                    "vdw_neighbor_rebuild_interval",
+                    VDW_NEIGHBOR_REBUILD_INTERVAL_DEFAULT,
+                )
+            )
+            if dynamic_vdw
+            else max(int(mi), 1)
         )
 
         has_builtin = self.spec.has_conformer() or self.spec.has_per_entry()
@@ -432,44 +467,59 @@ class TorchRestraintOptimizer:
                 fixed_vdw = None
                 active_vdw = None
 
-                def rebuild_dynamic_pairs(block_iters=None):
-                    nonlocal fixed_vdw, active_vdw
-                    movement = (
-                        None
-                        if block_iters is None or max_atom_step is None
-                        else max_atom_step * int(block_iters)
-                    )
-                    if bg_pos is not None:
-                        v = self._vdw
-                        cutoff = v["dmax"]
-                        if movement is not None:
-                            max_r_min = v["scale"] * (
-                                torch.max(v["lig_r"]) + torch.max(v["bg_r"])
-                            )
-                            cutoff = torch.maximum(cutoff, max_r_min + float(movement))
-                        fixed_vdw = self._fixed_vdw_pairs(active, bg_pos, cutoff)
-                    if active_vdw_active:
-                        from rgi_utils.optim._torch_cg_gpu import (
-                            build_active_vdw_pairs,
-                        )
+                # Verlet skin: list a `skin` shell beyond the contact cutoff and rebuild on
+                # MEASURED displacement rather than every `check` iterations. `movement` is
+                # the worst-case travel between two staleness CHECKS (not per block, since a
+                # list now survives many blocks), so a pair outside the listed radius cannot
+                # reach contact before the next check notices. skin=0 reproduces the old
+                # rebuild-every-check behaviour. See _cg_config.py / doc/config.md.
+                skin = float(
+                    getattr(self.spec, "vdw_neighbor_skin", VDW_NEIGHBOR_SKIN_DEFAULT)
+                )
+                movement = (
+                    None if max_atom_step is None else max_atom_step * float(check)
+                )
 
-                        av = self._active_vdw
-                        cutoff = av["dmax"]
-                        if movement is not None:
-                            max_r_min = av["scale"] * 2.0 * torch.max(av["radii"])
-                            cutoff = torch.maximum(
-                                cutoff, max_r_min + 2.0 * float(movement)
-                            )
-                        neighbours, pair_factor = build_active_vdw_pairs(
-                            active,
-                            av["radii"],
-                            av["polymer_mask"],
-                            av["excluded_codes"],
-                            cutoff,
-                            av["max_neighbors"],
-                            av["scale"],
+                def _rebuild_fixed():
+                    nonlocal fixed_vdw
+                    v = self._vdw
+                    cutoff = v["dmax"]
+                    if movement is not None:
+                        max_r_min = v["scale"] * (
+                            torch.max(v["lig_r"]) + torch.max(v["bg_r"])
                         )
-                        active_vdw = (neighbours, pair_factor)
+                        cutoff = torch.maximum(cutoff, max_r_min + movement + skin)
+                    fixed_vdw = self._fixed_vdw_pairs(active, bg_pos, cutoff)
+
+                def _rebuild_active():
+                    nonlocal active_vdw
+                    from rgi_utils.optim._torch_cg_gpu import build_active_vdw_pairs
+
+                    av = self._active_vdw
+                    cutoff = av["dmax"]
+                    if movement is not None:
+                        max_r_min = av["scale"] * 2.0 * torch.max(av["radii"])
+                        # both endpoints move, hence 2x the one-sided travel allowance
+                        cutoff = torch.maximum(
+                            cutoff, max_r_min + 2.0 * movement + skin
+                        )
+                    neighbours, pair_factor = build_active_vdw_pairs(
+                        active,
+                        av["radii"],
+                        av["polymer_mask"],
+                        av["excluded_codes"],
+                        cutoff,
+                        av["max_neighbors"],
+                        av["scale"],
+                    )
+                    active_vdw = (neighbours, pair_factor)
+
+                def rebuild_dynamic_pairs():
+                    """Unconditional build of both halves (the l-bfgs entry point)."""
+                    if bg_pos is not None:
+                        _rebuild_fixed()
+                    if active_vdw_active:
+                        _rebuild_active()
 
                 def energy_fn():
                     e = torch_energy.total_energy(active, prepared, sigma, step)
@@ -518,11 +568,11 @@ class TorchRestraintOptimizer:
                         )
                     return vdw, active_args
 
-                def run_cg(block_iters):
-                    rebuild_dynamic_pairs(block_iters)
+                def run_cg(block_iters, state):
+                    """Run one block and return the resumable CG state (None = done)."""
                     vdw, active_args = dynamic_args()
                     if active.is_cuda and has_custom:
-                        if not self._minimize_custom_gpu(
+                        ok, out_state = self._minimize_custom_gpu(
                             active,
                             sigma,
                             step,
@@ -530,46 +580,78 @@ class TorchRestraintOptimizer:
                             vdw,
                             active_args,
                             max_atom_step,
-                        ):
-                            self._minimize_cg(
-                                active,
-                                energy_fn,
-                                block_iters,
-                                max_atom_step=max_atom_step,
-                            )
-                    elif active.is_cuda:
+                            state=state,
+                        )
+                        if ok:
+                            return out_state
+                        return self._minimize_cg(
+                            active,
+                            energy_fn,
+                            block_iters,
+                            max_atom_step=max_atom_step,
+                            state=state,
+                        )
+                    if active.is_cuda:
                         from rgi_utils.optim._torch_cg_gpu import gpu_cg
 
-                        opt = gpu_cg(
+                        opt, out_state = gpu_cg(
                             self._gated_prepared(sigma, step),
                             active.detach(),
                             block_iters,
                             vdw=vdw,
                             active_vdw=active_args,
                             max_atom_step=max_atom_step,
+                            state=state,
+                            return_state=True,
                         )
                         with torch.no_grad():
                             active.copy_(opt)
-                    else:
-                        self._minimize_cg(
-                            active,
-                            energy_fn,
-                            block_iters,
-                            max_atom_step=max_atom_step,
-                        )
+                        return out_state
+                    return self._minimize_cg(
+                        active,
+                        energy_fn,
+                        block_iters,
+                        max_atom_step=max_atom_step,
+                        state=state,
+                    )
 
                 if self._is_cg():
                     remaining = int(mi)
-                    dynamic_vdw = bg_pos is not None or active_vdw_active
-                    interval = (
-                        int(getattr(self.spec, "vdw_neighbor_rebuild_interval", 10))
-                        if dynamic_vdw
-                        else max(remaining, 1)
-                    )
+                    # Displacement reference coordinates from the last build of each half.
+                    # The fixed-background half tracks only the LIGAND atoms: `bg_pos` is a
+                    # snapshot for the whole call, so only ligand motion can stale that list
+                    # — measuring all of `active` would let ordinary polymer motion force
+                    # pointless rebuilds of it.
+                    fixed_ref = active_ref = None
+                    cg_state = None
                     while remaining > 0:
-                        block_iters = min(interval, remaining)
+                        rebuilt = False
+                        if bg_pos is not None:
+                            lig = active.detach()[..., self._vdw["lig_local"], :]
+                            if fixed_ref is None or _max_disp(lig, fixed_ref) > skin:
+                                _rebuild_fixed()
+                                fixed_ref = lig.clone()
+                                rebuilt = True
+                        if active_vdw_active:
+                            cur = active.detach()
+                            # both endpoints move, so half the budget each
+                            if active_ref is None or _max_disp(cur, active_ref) > (
+                                0.5 * skin
+                            ):
+                                _rebuild_active()
+                                active_ref = cur.clone()
+                                rebuilt = True
+                        if rebuilt:
+                            # the objective changed: the carried energy/gradient/direction
+                            # describe the OLD pair list, so restart the CG. Theory says the
+                            # added and removed pairs contribute exactly zero (the penalty is
+                            # clamped beyond contact), but `max_neighbors` truncation can
+                            # break that premise, so pay one evaluation per REBUILD rather
+                            # than rely on it. Rebuilds are now rare, so this is cheap.
+                            cg_state = None
+                        block_iters = min(check, remaining)
                         before_block = active.detach().clone()
-                        run_cg(block_iters)
+                        cg_state = run_cg(block_iters, cg_state)
                         remaining -= block_iters
                         if torch.equal(active.detach(), before_block):
                             break
@@ -625,7 +707,8 @@ class TorchRestraintOptimizer:
         gtol: float = GTOL,
         ftol: float = FTOL,
         max_atom_step=None,
-    ) -> None:
+        state=None,
+    ):
         """In-place nonlinear conjugate gradient (Polak-Ribiere+, backtracking
         Armijo line search). Matches the jax backend's pure-jax CG (a port of this
         solver), so ``method='CG'`` is the same algorithm on both backends. ``active``
@@ -633,7 +716,12 @@ class TorchRestraintOptimizer:
         energy with ``active`` in its graph. Stops early on convergence
         (``max|grad| < gtol`` or ``|df| < ftol``, mirroring torch LBFGS's
         tolerance_grad / tolerance_change) or when the line search stalls, so simple
-        restraints finish well under ``max_iter``."""
+        restraints finish well under ``max_iter``.
+
+        ``state`` mirrors ``_torch_cg_gpu._cg_minimize_torch``: it lets the caller run the
+        CG in blocks (to re-check a dynamic neighbour list) without paying a re-entry
+        evaluation or throwing away the conjugate direction. Always returns the live state,
+        or ``None`` once the solver has terminated and there is nothing to resume."""
 
         # GPU note: every float()/.item() on a device scalar is a blocking
         # device->host sync that serialises the GPU; for this tiny CG that dominates
@@ -660,13 +748,17 @@ class TorchRestraintOptimizer:
             e.backward()
             return e.detach(), active.grad.detach().clone()
 
-        e_t, g = value_grad()
-        f = float(e_t)  # the line search needs the scalar energy
-        if float(g.abs().max()) < gtol:
-            return
-        d = g.neg()
-        gg = torch.sum(g * g)
-        carried = LS_STEP_MAX  # warm-started trial step (see _cg_config)
+        if state is None:
+            e_t, g = value_grad()
+            f = float(e_t)  # the line search needs the scalar energy
+            if float(g.abs().max()) < gtol:
+                return None
+            d = g.neg()
+            gg = torch.sum(g * g)
+            carried = LS_STEP_MAX  # warm-started trial step (see _cg_config)
+        else:
+            f, g, d, gg, carried = state
+        finished = True  # cleared only if the iteration budget runs out with work left
         for _ in range(max_iter):
             # one host read for both top-of-iteration scalars (gg + descent slope)
             dg = torch.sum(d * g)
@@ -713,6 +805,10 @@ class TorchRestraintOptimizer:
             f, g, gg = f_new, g_new, torch.sum(g_new * g_new)
             if converged:
                 break
+        else:
+            # ran out of iterations with the solver still live -> resumable
+            finished = False
+        return None if finished else (f, g, d, gg, carried)
 
     def energy(self, coords) -> float:
         """Current restraint energy (for verbose stats / finalize)."""
