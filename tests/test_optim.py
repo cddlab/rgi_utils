@@ -1775,3 +1775,64 @@ def test_torch_dynamic_vdw_stops_rebuilding_after_convergence(monkeypatch):
     TorchRestraintOptimizer(spec, max_iter=20, method="CG").minimize(coords)
 
     assert calls == 1
+
+
+def test_cg_warm_start_cuts_line_search_evals():
+    """Regression pin for the line-search warm start (see optim/_cg_config.py).
+
+    ``e(x) = 0.5 * sum(k_i * x_i**2)`` with a 16:1 curvature ratio: a unit step along
+    ``-grad`` overshoots the stiff axis, so Armijo accepts only around 2**-4 and the FIRST
+    iteration pays 5 evaluations getting there. Every later iteration needs the same scale.
+    A cold start re-derives it every time (~5 x 20 = ~100 evaluations); carrying the step
+    costs 5 + ~2 per iteration (measured 42). The bound below separates the two.
+
+    The curvature ratio is deliberately moderate. At 64:1 this solver does not converge at
+    all — Armijo only asks for *sufficient* decrease, so a step that reflects the stiff
+    coordinate from +1 to -1 is accepted on the strength of the soft axes alone. That is
+    ordinary steepest-descent behaviour, unrelated to the warm start, and it would make the
+    energy assertion below untestable.
+    """
+    torch = pytest.importorskip("torch")
+    from rgi_utils.optim._torch_cg_gpu import _cg_minimize_torch
+
+    k = torch.tensor([16.0, 1.0, 1.0], dtype=torch.float64)
+
+    def energy(x):
+        return 0.5 * torch.sum(k * x * x)
+
+    calls = 0
+
+    def vg(x):
+        nonlocal calls
+        calls += 1
+        return torch.func.grad_and_value(energy)(x)
+
+    x = _cg_minimize_torch(vg, torch.ones(3, dtype=torch.float64), 20)
+    assert calls <= 60, f"line search cost {calls} evaluations (cold start costs ~100)"
+    # keeps a solver that "saves" evaluations by stopping early from passing
+    assert float(energy(x)) < 0.01, "warm start must still reach the minimum"
+
+
+def test_cg_warm_start_recovers_after_shrinking():
+    """The carried step must be able to grow back, not ratchet monotonically down.
+
+    Optimising the stiff quadratic drives the accepted step to ~2**-6; the returned point
+    is then used as the start of a run on an ISOTROPIC quadratic, where step 1.0 is
+    optimal. With growth capped at one backtrack per iteration the solver climbs back
+    within a few iterations, so a handful of iterations suffices to converge. Without any
+    growth the step would stay at 2**-6 forever and this would not converge.
+    """
+    torch = pytest.importorskip("torch")
+    from rgi_utils.optim._torch_cg_gpu import _cg_minimize_torch
+
+    def easy(x):
+        return 0.5 * torch.sum(x * x)
+
+    def vg(x):
+        return torch.func.grad_and_value(easy)(x)
+
+    x0 = torch.full((3,), 0.5, dtype=torch.float64)
+    x = _cg_minimize_torch(vg, x0, 8)
+    assert float(easy(x)) < 1e-12, (
+        "isotropic quadratic must converge in a few iterations"
+    )

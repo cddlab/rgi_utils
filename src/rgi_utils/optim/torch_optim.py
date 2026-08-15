@@ -33,6 +33,9 @@ from rgi_utils.optim._cg_config import (
     FTOL,
     GG_FLOOR,
     GTOL,
+    LS_STEP_GROW,
+    LS_STEP_MAX,
+    LS_STEP_MIN,
     MAX_LS,
 )
 
@@ -663,6 +666,7 @@ class TorchRestraintOptimizer:
             return
         d = g.neg()
         gg = torch.sum(g * g)
+        carried = LS_STEP_MAX  # warm-started trial step (see _cg_config)
         for _ in range(max_iter):
             # one host read for both top-of-iteration scalars (gg + descent slope)
             dg = torch.sum(d * g)
@@ -674,7 +678,8 @@ class TorchRestraintOptimizer:
                 dg_v = float(torch.sum(d * g))
             slope = dg_v
             x0 = active.detach().clone()
-            step, accepted = 1.0, False
+            step = min(LS_STEP_MAX, max(carried, LS_STEP_MIN) * LS_STEP_GROW)
+            accepted = False
             for _ in range(max_ls):
                 with torch.no_grad():
                     delta = step * d
@@ -697,6 +702,7 @@ class TorchRestraintOptimizer:
                 with torch.no_grad():
                     active.copy_(x0)
                 break
+            carried = step
             # one host read for the post-step scalars (grad-max + PR+ numerator)
             gmax_v, pr_num_v = torch.stack(
                 (g_new.abs().max(), torch.sum(g_new * (g_new - g)))

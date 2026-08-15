@@ -1584,3 +1584,42 @@ def test_dynamic_exact_overlap_vdw_gradient_torch_jax_parity():
 
     assert np.linalg.norm(fixed_t.grad.numpy()) > 1.0
     assert np.linalg.norm(active_t.grad.numpy()) > 1.0
+
+
+def test_jax_torch_cg_same_trajectory_on_stiff_quadratic():
+    """The warm start must land on BOTH backends, and identically.
+
+    The trial step only ever undergoes ``*0.5`` / ``*2.0`` / ``min(., 1.0)`` / ``max(., f)``
+    from an initial 1.0, so it stays an exact power of two: with the same policy the two
+    solvers take bit-identical steps on this smooth fixture. If one backend warm-starts and
+    the other does not they diverge by orders of magnitude, which the tight tolerance
+    catches. This is the lockstep guard that
+    ``test_jax_torch_cg_same_minimum_at_default_iters`` (5% fuzzy, on the minimum only)
+    cannot provide. Eval counts cannot be compared instead: jax traces ``energy_fn`` once
+    and XLA executes it, so a python counter would count traces, not evaluations.
+    """
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.optim._torch_cg_gpu import _cg_minimize_torch
+    from rgi_utils.optim.jax_optim import _cg_minimize
+
+    k = [64.0, 1.0, 1.0]  # ill-conditioned: the accepted step sits well below 1
+    kt = torch.tensor(k, dtype=torch.float64)
+    kj = jnp.asarray(k)
+
+    def et(x):
+        return 0.5 * torch.sum(kt * x * x)
+
+    def ej(x):
+        return 0.5 * jnp.sum(kj * x * x)
+
+    xt = _cg_minimize_torch(
+        torch.func.grad_and_value(et), torch.ones(3, dtype=torch.float64), 20
+    )
+    xj = _cg_minimize(ej, jnp.ones(3), 20)
+    assert np.allclose(np.asarray(xt), np.asarray(xj), atol=1e-10), (
+        f"torch {np.asarray(xt)} vs jax {np.asarray(xj)}"
+    )

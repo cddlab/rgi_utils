@@ -62,6 +62,9 @@ from rgi_utils.optim._cg_config import (
     FTOL,
     GG_FLOOR,
     GTOL,
+    LS_STEP_GROW,
+    LS_STEP_MAX,
+    LS_STEP_MIN,
     MAX_LS,
 )
 
@@ -499,6 +502,7 @@ def _cg_minimize_torch(
         return x
     d = -g
     gg = torch.sum(g * g)
+    carried = LS_STEP_MAX  # warm-started trial step (see _cg_config)
     for _ in range(max_iter):
         gg_v, dg_v = torch.stack((gg, torch.sum(d * g))).tolist()
         if not math.isfinite(gg_v) or gg_v <= GG_FLOOR:
@@ -508,7 +512,8 @@ def _cg_minimize_torch(
             dg_v = float(torch.sum(d * g))
         slope = dg_v
         xbase = x
-        step, accepted = 1.0, False
+        step = min(LS_STEP_MAX, max(carried, LS_STEP_MIN) * LS_STEP_GROW)
+        accepted = False
         gt = g
         for _ in range(max_ls):
             delta = step * d
@@ -530,6 +535,7 @@ def _cg_minimize_torch(
         if not accepted:  # line search exhausted -> converged / stuck
             x = xbase
             break
+        carried = step
         x = xt
         gmax_v, pr_num_v = torch.stack(
             (gt.abs().max(), torch.sum(gt * (gt - g)))

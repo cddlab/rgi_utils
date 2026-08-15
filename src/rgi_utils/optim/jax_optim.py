@@ -36,6 +36,9 @@ from rgi_utils.optim._cg_config import (
     FTOL,
     GG_FLOOR,
     GTOL,
+    LS_STEP_GROW,
+    LS_STEP_MAX,
+    LS_STEP_MIN,
     MAX_LS,
 )
 from rgi_utils.spec import check_active_vdw_int32_safe
@@ -56,7 +59,7 @@ def _cg_minimize(
     differ from torch's by a small, input-dependent amount (see the module docstring)."""
     vg = jax.value_and_grad(energy_fn)
 
-    def line_search(x_base, d, f, g_proto, slope):
+    def line_search(x_base, d, f, g_proto, slope, step0):
         def cond(s):
             _step, accepted, _x, _f, _g, i = s
             return jnp.logical_and(jnp.logical_not(accepted), i < max_ls)
@@ -78,26 +81,28 @@ def _cg_minimize(
             return (jnp.where(ok, step, step * BACKTRACK), ok, xt, ft, gt, i + 1)
 
         init = (
-            jnp.asarray(1.0),
+            step0,
             jnp.asarray(False),
             x_base,
             f,
             g_proto,
             jnp.asarray(0),
         )
-        _s, accepted, xt, ft, gt, _i = jax.lax.while_loop(cond, body, init)
-        return xt, ft, gt, accepted
+        # On acceptance `body` leaves the slot at the accepted step; on exhaustion it holds
+        # the already-shrunk `step * BACKTRACK`. The caller only carries it when `accepted`.
+        s, accepted, xt, ft, gt, _i = jax.lax.while_loop(cond, body, init)
+        return xt, ft, gt, accepted, s
 
     f0, g0 = vg(x0)
     gg0 = jnp.sum(g0 * g0)
     stop0 = jnp.max(jnp.abs(g0)) < gtol
 
     def cond(st):
-        _x, _f, _g, _d, _gg, it, stop = st
+        _x, _f, _g, _d, _gg, it, stop, _step = st
         return jnp.logical_and(jnp.logical_not(stop), it < max_iter)
 
     def body(st):
-        x, f, g, d, gg, it, _stop = st
+        x, f, g, d, gg, it, _stop, carried = st
         bad = jnp.logical_or(jnp.logical_not(jnp.isfinite(gg)), gg <= GG_FLOOR)
         d = jnp.where(jnp.sum(d * g) >= 0.0, -g, d)  # restart if not a descent dir
         # On a degenerate iteration (non-finite / underflowed gg) zero the search
@@ -105,7 +110,10 @@ def _cg_minimize(
         # backtracking) — matching torch's pre-line-search break; `use` discards it.
         d = jnp.where(bad, jnp.zeros_like(d), d)
         slope = jnp.sum(d * g)
-        xt, ft, gt, accepted = line_search(x, d, f, g, slope)
+        step0 = jnp.minimum(
+            LS_STEP_MAX, jnp.maximum(carried, LS_STEP_MIN) * LS_STEP_GROW
+        )
+        xt, ft, gt, accepted, acc_step = line_search(x, d, f, g, slope, step0)
         conv = jnp.logical_or(
             jnp.max(jnp.abs(gt)) < gtol,
             jnp.abs(ft - f) < ftol * (1.0 + jnp.abs(f)),
@@ -117,10 +125,13 @@ def _cg_minimize(
         ng = jnp.where(use, gt, g)
         nd = jnp.where(use, -gt + beta * d, d)
         ngg = jnp.where(use, jnp.sum(gt * gt), gg)
+        # Carry the accepted step only on a real iteration: on a `bad` one `d` was zeroed so
+        # the step is meaningless, and on exhaustion the slot holds the shrunk trial value.
+        nstep = jnp.where(use, acc_step, carried)
         stop_next = jnp.logical_or(bad, jnp.logical_or(jnp.logical_not(accepted), conv))
-        return (nx, nf, ng, nd, ngg, it + 1, stop_next)
+        return (nx, nf, ng, nd, ngg, it + 1, stop_next, nstep)
 
-    init = (x0, f0, g0, -g0, gg0, jnp.asarray(0), stop0)
+    init = (x0, f0, g0, -g0, gg0, jnp.asarray(0), stop0, jnp.asarray(LS_STEP_MAX))
     x = jax.lax.while_loop(cond, body, init)[0]
     return x
 
