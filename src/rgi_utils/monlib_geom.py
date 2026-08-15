@@ -74,8 +74,8 @@ class LibraryTargets:
     sources never both restrain the same residue.
     """
 
-    bonds: list[tuple[int, int, float]] = field(default_factory=list)
-    angles: list[tuple[int, int, int, float]] = field(default_factory=list)
+    bonds: list[tuple[int, int, float, float]] = field(default_factory=list)
+    angles: list[tuple[int, int, int, float, float]] = field(default_factory=list)
     planes: list[tuple[int, ...]] = field(default_factory=list)
     atoms: frozenset[int] = frozenset()
     covered: tuple[str, ...] = ()
@@ -215,6 +215,8 @@ class MonomerLibrary:
         restraints = chem_comp.rt
         bond_overrides: dict[frozenset, float] = {}
         angle_overrides: dict[tuple, float] = {}
+        bond_esd: dict[frozenset, float] = {}
+        angle_esd: dict[tuple, float] = {}
         for mod in mods:
             for bond in mod.rt.bonds:
                 value = float(bond.value)
@@ -223,6 +225,7 @@ class MonomerLibrary:
                         (_normalise_name(bond.id1.atom), _normalise_name(bond.id2.atom))
                     )
                     bond_overrides[key] = value
+                    bond_esd[key] = float(bond.esd)
             for angle in mod.rt.angles:
                 value = float(angle.value)
                 if math.isfinite(value):
@@ -233,6 +236,9 @@ class MonomerLibrary:
                         )
                     )
                     angle_overrides[(_normalise_name(angle.id2.atom), ends)] = value
+                    angle_esd[(_normalise_name(angle.id2.atom), ends)] = float(
+                        angle.esd
+                    )
 
         bonds = []
         for bond in restraints.bonds:
@@ -240,8 +246,10 @@ class MonomerLibrary:
             n2 = _normalise_name(bond.id2.atom)
             i, j = names.get(n1), names.get(n2)
             if i is not None and j is not None:
-                target = bond_overrides.get(frozenset((n1, n2)), float(bond.value))
-                bonds.append((i, j, target))
+                key = frozenset((n1, n2))
+                target = bond_overrides.get(key, float(bond.value))
+                esd = bond_esd.get(key, float(bond.esd))
+                bonds.append((i, j, target, esd))
 
         angles = []
         for angle in restraints.angles:
@@ -250,11 +258,11 @@ class MonomerLibrary:
             )
             idx = tuple(names.get(n) for n in trio)
             if all(k is not None for k in idx):
-                target = angle_overrides.get(
-                    (trio[1], frozenset((trio[0], trio[2]))), float(angle.value)
-                )
+                key = (trio[1], frozenset((trio[0], trio[2])))
+                target = angle_overrides.get(key, float(angle.value))
+                esd = angle_esd.get(key, float(angle.esd))
                 # The library stores angles in DEGREES; the energy layer wants radians.
-                angles.append((*idx, math.radians(target)))
+                angles.append((*idx, math.radians(target), math.radians(esd)))
 
         planes = []
         for plane in restraints.planes:
@@ -302,13 +310,19 @@ class MonomerLibrary:
         for bond in restraints.bonds:
             i, j = resolve(bond.id1), resolve(bond.id2)
             if i is not None and j is not None:
-                bonds.append((i, j, float(bond.value)))
+                bonds.append((i, j, float(bond.value), float(bond.esd)))
 
         angles = []
         for angle in restraints.angles:
             idx = tuple(resolve(a) for a in (angle.id1, angle.id2, angle.id3))
             if all(k is not None for k in idx):
-                angles.append((*idx, math.radians(float(angle.value))))
+                angles.append(
+                    (
+                        *idx,
+                        math.radians(float(angle.value)),
+                        math.radians(float(angle.esd)),
+                    )
+                )
 
         planes = []
         for plane in restraints.planes:
@@ -326,8 +340,8 @@ def collect(library: MonomerLibrary, residues, on_missing: str) -> LibraryTarget
     ``link_side1`` / ``link_side2`` markers saying which side(s) of a polymer link this
     residue sits on — see ``link_mods`` for why the targets depend on that).
     """
-    bonds: list[tuple[int, int, float]] = []
-    angles: list[tuple[int, int, int, float]] = []
+    bonds: list[tuple[int, int, float, float]] = []
+    angles: list[tuple[int, int, int, float, float]] = []
     planes: list[tuple[int, ...]] = []
     atoms: set[int] = set()
     covered: set[str] = set()

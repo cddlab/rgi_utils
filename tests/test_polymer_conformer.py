@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import pathlib
 
 import numpy as np
 import pytest
@@ -164,6 +165,51 @@ def test_protein_builds_peptide_link_plane_and_vdw_exclusions():
     # 1-5 path remains eligible for VdW repulsion.
     assert 1 * spec.n_active + 6 in set(av.excluded_codes.tolist())
     assert 0 * spec.n_active + 6 not in set(av.excluded_codes.tolist())
+
+
+def test_library_esd_becomes_the_flat_bottom_half_width():
+    # Refmac/servalcat weight each restraint by 1/sigma^2 and let the experimental data
+    # decide where inside that sigma the atom sits. RGI has no data term, so a weighted
+    # harmonic converges to the exact target regardless of weight -- the only way sigma
+    # can mean anything here is as a TOLERANCE. Driving every bond and angle to its exact
+    # ideal removes the scatter real structures carry (measured on QBP: the N-CA-C spread
+    # collapses 1.83 -> 0.88 deg against 2.90 in the 1GGG crystal) and the strain that can
+    # no longer be absorbed locally reappears as clashes.
+    library = "/mnt/lustre01/hori/bench_rgi/monomers"
+    if not pathlib.Path(library).is_dir():
+        pytest.skip("no CCP4 monomer library on this machine")
+    config = {
+        "gpu": False,
+        "max_iter": 100,
+        "conformer_restraints_config": {
+            "bond": {},
+            "angle": {},
+            "monomer_library": library,
+        },
+    }
+    restr = CombinedRestraints()
+    restr.setup(_PolymerAdapter("protein", _ALA_NAMES, _ALA_COORDS), config=config)
+    spec = restr.spec
+
+    # Per RESTRAINT, not one value for the term: the library gives C-O 0.0183 A where
+    # N-CA is 0.0100, and CA-C-O 2.33 deg where the rest are 1.50.
+    assert len(set(spec.bond.slack.tolist())) > 1
+    assert min(spec.bond.slack) == pytest.approx(0.010)
+    assert max(spec.bond.slack) == pytest.approx(0.0183)
+    assert max(spec.angle.slack) == pytest.approx(math.radians(2.33))
+    assert (spec.bond.slack > 0).all() and (spec.angle.slack > 0).all()
+
+
+def test_conformer_derived_targets_keep_the_configured_slack():
+    # A ligand (or any residue the library does not cover) has no sigma to inherit, so it
+    # must keep the configured slack -- default 0. This is what stops the change above
+    # from loosening the LIGAND conformer restraints, whose whole point is exact geometry.
+    restr = CombinedRestraints()
+    restr.setup(_PolymerAdapter("protein", _RING_NAMES, _RING_COORDS), config=_config())
+    spec = restr.spec
+    assert spec.bond is not None
+    assert (spec.bond.slack == 0.0).all()
+    assert (spec.angle.slack == 0.0).all()
 
 
 def test_polymer_residue_local_aromatic_ring_builds_plane():

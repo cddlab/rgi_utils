@@ -185,7 +185,9 @@ def _extract_conformer(
 
         for b in mol.GetBonds():
             ai, aj = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
-            bonds.append((int(gidx[ai]), int(gidx[aj]), _bond_length(crds, ai, aj)))
+            bonds.append(
+                (int(gidx[ai]), int(gidx[aj]), _bond_length(crds, ai, aj), None)
+            )
 
         for ai, aj, ak in mol.GetSubstructMatches(_ANGLE_PATT):
             angles.append(
@@ -194,6 +196,7 @@ def _extract_conformer(
                     int(gidx[aj]),
                     int(gidx[ak]),
                     _angle_rad(crds, ai, aj, ak),
+                    None,
                 )
             )
 
@@ -573,7 +576,7 @@ def _build_active_vdw_config(
             excluded.add(i * n_active + j)
 
     adjacency: dict[int, set[int]] = {}
-    for g0, g1, _target in bonds:
+    for g0, g1, *_ in bonds:
         g0, g1 = int(g0), int(g1)
         adjacency.setdefault(g0, set()).add(g1)
         adjacency.setdefault(g1, set()).add(g0)
@@ -596,7 +599,7 @@ def _build_active_vdw_config(
 
     # Keep explicit angle exclusions even if an incomplete external geometry source
     # supplied an angle without both constituent bonds.
-    for g0, g1, g2, _target in angles:
+    for g0, g1, g2, *_ in angles:
         exclude(g0, g1)
         exclude(g1, g2)
         exclude(g0, g2)
@@ -903,9 +906,9 @@ def build_spec(
 
     # ---- collect every referenced global atom -> active_sites -----------------
     active: set[int] = set()
-    for g0, g1, _ in bonds:
+    for g0, g1, *_ in bonds:
         active.update((g0, g1))
-    for g0, g1, g2, _ in angles:
+    for g0, g1, g2, *_ in angles:
         active.update((g0, g1, g2))
     for g0, g1, g2, g3, _ in chirals:
         active.update((g0, g1, g2, g3))
@@ -984,11 +987,20 @@ def build_spec(
     # ---- conformer arrays (local indices) -------------------------------------
     bond = None
     if bonds:
-        idx = np.array([[g2l[g0], g2l[g1]] for g0, g1, _ in bonds], dtype=np.int64)
+        idx = np.array([[g2l[g0], g2l[g1]] for g0, g1, *_ in bonds], dtype=np.int64)
         bond = BondArrays(
             idx=idx,
-            r0=np.array([r for _, _, r in bonds]),
-            slack=np.full(len(bonds), bsl),
+            r0=np.array([r for _, _, r, _ in bonds]),
+            # A library-derived restraint carries its own sigma; use it as the
+            # flat-bottom half-width. Refmac/servalcat weight by 1/sigma^2 and let
+            # the experimental data decide where inside that sigma the atom sits;
+            # with no data term a weighted harmonic just converges to the exact
+            # target no matter the weight, so the only way sigma can mean anything
+            # here is as a tolerance. Without it the CG removes the scatter real
+            # structures carry (measured on QBP: N-CA-C spread 1.83 -> 0.88 deg
+            # against 2.90 in the 1GGG crystal) and the strain it can no longer
+            # absorb locally reappears as clashes.
+            slack=np.array([bsl if e is None else float(e) for *_, e in bonds]),
             weight=np.full(len(bonds), bw),
             half=np.zeros(len(bonds)),
             mask=np.ones(len(bonds)),
@@ -996,12 +1008,13 @@ def build_spec(
     angle = None
     if angles:
         idx = np.array(
-            [[g2l[g0], g2l[g1], g2l[g2]] for g0, g1, g2, _ in angles], dtype=np.int64
+            [[g2l[g0], g2l[g1], g2l[g2]] for g0, g1, g2, *_ in angles],
+            dtype=np.int64,
         )
         angle = AngleArrays(
             idx=idx,
-            th0=np.array([t for _, _, _, t in angles]),
-            slack=np.full(len(angles), asl),
+            th0=np.array([t for _, _, _, t, _ in angles]),
+            slack=np.array([asl if e is None else float(e) for *_, e in angles]),
             weight=np.full(len(angles), aw),
             mask=np.ones(len(angles)),
         )

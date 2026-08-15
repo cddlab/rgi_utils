@@ -35,8 +35,8 @@ class PolymerGeometry:
 
     residue_confs: list[LigandConf]
     atom_indices: np.ndarray
-    link_bonds: list[tuple[int, int, float]]
-    link_angles: list[tuple[int, int, int, float]]
+    link_bonds: list[tuple[int, int, float, float]]
+    link_angles: list[tuple[int, int, int, float, float]]
     # Canonical inter-residue planar groups (e.g. the peptide plane): each a tuple of
     # global atom indices scored by the `plane` term (best-fit-plane flatness).
     link_planes: list[tuple[int, ...]]
@@ -44,8 +44,10 @@ class PolymerGeometry:
     # REPLACE (never supplement) the reference-conformer bond/angle/plane targets for
     # the residues the library covered: `featurizer` drops every conformer-derived
     # tuple whose atoms all lie in `library_atoms`, so no residue is restrained twice.
-    library_bonds: list[tuple[int, int, float]] = field(default_factory=list)
-    library_angles: list[tuple[int, int, int, float]] = field(default_factory=list)
+    library_bonds: list[tuple[int, int, float, float]] = field(default_factory=list)
+    library_angles: list[tuple[int, int, int, float, float]] = field(
+        default_factory=list
+    )
     library_planes: list[tuple[int, ...]] = field(default_factory=list)
     library_atoms: frozenset[int] = frozenset()
 
@@ -69,6 +71,7 @@ class _LinkGeometry:
 
     bond: tuple
     angles: tuple
+    bond_esd: float
     planes: tuple = ()
 
 
@@ -78,9 +81,13 @@ class _LinkGeometry:
 # against and which defines every angle the link needs; nucleic acids have no equivalent
 # tabulation, so the phosphodiester values below come from the CCP4 `p` link instead.
 _PEPTIDE_BOND = 1.329
+_PEPTIDE_BOND_ESD = 0.011
+_LINK_ANGLE_ESD = 1.5
 _PHOSPHODIESTER_BOND = 1.607
+_PHOSPHODIESTER_BOND_ESD = 0.010
 _PROTEIN_LINK = _LinkGeometry(
     bond=(("C", _PREV), ("N", _CURR), _PEPTIDE_BOND),
+    bond_esd=_PEPTIDE_BOND_ESD,
     angles=(
         (("CA", _PREV), ("C", _PREV), ("N", _CURR), 116.2),
         (("O", _PREV), ("C", _PREV), ("N", _CURR), 122.7),
@@ -110,6 +117,7 @@ _PROTEIN_LINK = _LinkGeometry(
 # PREVIOUS residue's O3' were missing entirely, leaving the phosphate free to pivot.
 _NUCLEIC_LINK = _LinkGeometry(
     bond=(("O3'", _PREV), ("P", _CURR), _PHOSPHODIESTER_BOND),
+    bond_esd=_PHOSPHODIESTER_BOND_ESD,
     angles=(
         (("C3'", _PREV), ("O3'", _PREV), ("P", _CURR), 121.082),
         (("OP1", _CURR), ("P", _CURR), ("O3'", _PREV), 109.493),
@@ -158,13 +166,21 @@ def _link_geometry(previous, current, mol_type: str, library=None):
     else:
         b0, b1, bond_target = link.bond
         g0, g1 = resolve(b0), resolve(b1)
-        bonds = [] if g0 is None or g1 is None else [(g0, g1, bond_target)]
+        bonds = (
+            [] if g0 is None or g1 is None else [(g0, g1, bond_target, link.bond_esd)]
+        )
 
         angles = []
         for a0, a1, a2, degrees in link.angles:
             idx = tuple(resolve(a) for a in (a0, a1, a2))
             if all(i is not None for i in idx):
-                angles.append((*idx, float(np.deg2rad(degrees))))
+                angles.append(
+                    (
+                        *idx,
+                        float(np.deg2rad(degrees)),
+                        float(np.deg2rad(_LINK_ANGLE_ESD)),
+                    )
+                )
 
         planes = []
         for group in link.planes:

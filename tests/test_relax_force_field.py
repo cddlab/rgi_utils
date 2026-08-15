@@ -162,11 +162,12 @@ def test_none_keeps_the_cached_conformer_exactly():
         )
         for b in mol.GetBonds()
     }
-    for g0, g1, r0 in raw:
+    for g0, g1, r0, _esd in raw:
         assert r0 == pytest.approx(expected[(g0, g1)], abs=1e-12)
     # ...and the relax really was doing something, so "none" is not a no-op distinction
     assert any(
-        r0 != pytest.approx(expected[(g0, g1)], abs=1e-6) for g0, g1, r0 in relaxed
+        r0 != pytest.approx(expected[(g0, g1)], abs=1e-6)
+        for g0, g1, r0, _esd in relaxed
     )
 
 
