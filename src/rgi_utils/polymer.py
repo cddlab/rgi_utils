@@ -72,7 +72,11 @@ class _LinkGeometry:
     planes: tuple = ()
 
 
-# Engh-Huber peptide-link targets and conventional phosphodiester targets.
+# Built-in link targets, used only when no `monomer_library` is configured. The two
+# polymers take them from DIFFERENT sources on purpose: the peptide link is Engh-Huber
+# (CA-C-N 116.2 and C-N-CA 121.7 match it exactly), which is also what MolProbity scores
+# against and which defines every angle the link needs; nucleic acids have no equivalent
+# tabulation, so the phosphodiester values below come from the CCP4 `p` link instead.
 _PEPTIDE_BOND = 1.329
 _PHOSPHODIESTER_BOND = 1.607
 _PROTEIN_LINK = _LinkGeometry(
@@ -99,11 +103,18 @@ _PROTEIN_LINK = _LinkGeometry(
     # MolProbity clashscore 8.8 (bond+angle+chiral) -> 27.2 once that plane was added.
     planes=((("C", _PREV), ("CA", _PREV), ("O", _PREV), ("N", _CURR)),),
 )
+# Phosphodiester link, from the CCP4 `p` link entry (the same source the library path
+# reads, so the two paths no longer disagree). The values this replaced were ~"textbook"
+# rather than library: C3'-O3'-P read 119.7 against the library's 121.082 and O3'-P-O5'
+# read 104.0 against 100.661 -- and the two angles at the phosphorus that involve the
+# PREVIOUS residue's O3' were missing entirely, leaving the phosphate free to pivot.
 _NUCLEIC_LINK = _LinkGeometry(
     bond=(("O3'", _PREV), ("P", _CURR), _PHOSPHODIESTER_BOND),
     angles=(
-        (("C3'", _PREV), ("O3'", _PREV), ("P", _CURR), 119.7),
-        (("O3'", _PREV), ("P", _CURR), ("O5'", _CURR), 104.0),
+        (("C3'", _PREV), ("O3'", _PREV), ("P", _CURR), 121.082),
+        (("OP1", _CURR), ("P", _CURR), ("O3'", _PREV), 109.493),
+        (("OP2", _CURR), ("P", _CURR), ("O3'", _PREV), 109.493),
+        (("O5'", _CURR), ("P", _CURR), ("O3'", _PREV), 100.661),
     ),
 )
 

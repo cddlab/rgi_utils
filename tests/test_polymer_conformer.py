@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
@@ -194,26 +196,48 @@ def test_reference_uid_groups_atom_tokenized_modified_residues():
 
 
 def test_phosphodiester_link_targets_are_present():
-    names = ["P", "O5'", "C5'", "C3'", "O3'"]
+    # OP1/OP2 are in the fixture because the built-in link restrains them: the two angles
+    # they make with the PREVIOUS residue's O3' used to be missing, which left the
+    # phosphate free to pivot about the backbone with only C3'-O3'-P and O5'-P-O3' to
+    # hold it. All four link angles now come from the CCP4 `p` entry.
+    names = ["P", "OP1", "OP2", "O5'", "C5'", "C3'", "O3'"]
     coords = np.array(
         [
             [0.0, 0.0, 0.0],
+            [0.6, 1.4, 0.0],
+            [0.6, -1.4, 0.0],
             [1.6, 0.0, 0.0],
             [2.8, 0.5, 0.0],
             [5.0, 1.0, 0.0],
             [6.2, 1.4, 0.0],
         ]
     )
+    n = len(names)
+    p2, op1_2, op2_2, o5_2 = n, n + 1, n + 2, n + 3  # residue 2's phosphate
+    c3_1, o3_1 = 5, 6  # residue 1's C3' / O3'
     restr = CombinedRestraints()
     restr.setup(_PolymerAdapter("rna", names, coords), config=_config())
     spec = restr.spec
 
-    link = np.where(np.all(spec.bond.idx == np.array([4, 5]), axis=1))[0]
+    link = np.where(np.all(spec.bond.idx == np.array([o3_1, p2]), axis=1))[0]
     assert len(link) == 1
     assert spec.bond.r0[link[0]] == pytest.approx(1.607)
-    assert any(np.array_equal(row, [3, 4, 5]) for row in spec.angle.idx)
-    assert any(np.array_equal(row, [4, 5, 6]) for row in spec.angle.idx)
-    assert not any(np.array_equal(row, [0, 6, 7]) for row in spec.angle.idx)
+
+    def angle_target(i, j, k):
+        rows = [
+            t
+            for row, t in zip(spec.angle.idx, spec.angle.th0)
+            if list(row) in ([i, j, k], [k, j, i])
+        ]
+        assert len(rows) == 1, f"angle {i}-{j}-{k} not built exactly once"
+        return math.degrees(float(rows[0]))
+
+    assert angle_target(c3_1, o3_1, p2) == pytest.approx(121.082, abs=1e-3)
+    assert angle_target(o5_2, p2, o3_1) == pytest.approx(100.661, abs=1e-3)
+    assert angle_target(op1_2, p2, o3_1) == pytest.approx(109.493, abs=1e-3)
+    assert angle_target(op2_2, p2, o3_1) == pytest.approx(109.493, abs=1e-3)
+    # No link is built across the chain break between the two independent copies.
+    assert not any(np.array_equal(row, [0, o5_2, p2]) for row in spec.angle.idx)
 
 
 def test_polymer_restraint_repairs_peptide_link_at_high_sigma():

@@ -34,8 +34,8 @@ _MOD_S1_BOND_O5_C5 = 1.808
 _MOD_S2_BOND_P_O5 = 1.707
 _MOD_S2_ANGLE_P_O5_C5 = 104.0
 _LIB_LINK_BOND = 1.666  # the built-in phosphodiester target is 1.607
-_LIB_LINK_ANGLE_C3_O3_P = 122.5  # built-in 119.7
-_LIB_LINK_ANGLE_O3_P_O5 = 101.5  # built-in 104.0
+_LIB_LINK_ANGLE_C3_O3_P = 122.5  # built-in 121.082
+_LIB_LINK_ANGLE_O3_P_O5 = 101.5  # built-in 100.661
 
 _COMPONENT_CIF = f"""data_comp_list
 loop_
