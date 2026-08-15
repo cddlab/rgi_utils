@@ -732,7 +732,7 @@ not configured" rule the other restraint types follow.
 | `chiral` | `weight` (1.0), `slack` (0.05) | chiral volume (stereochemistry) — holds each stereocentre's handedness |
 | `plane` | `weight` (1.0), `slack` (0.0 Å) | **best-fit-plane** flatness of whole planar atom groups ([servalcat](https://github.com/keitaroyam/servalcat)-style) — penalises each group's out-of-plane RMS deviation toward 0. Fires on (a) aromatic/conjugated rings (whole ring) and (b) non-ring sp2 groups (an acyclic double-bond centre + its heavy neighbors: carbonyl / amide / ester / carboxyl / trisubstituted alkene). Group membership is confirmed by the reference conformer being coplanar (not the RDKit aromaticity flag). Add a `plane:` block to activate |
 | `cistrans` | `weight` (1.0), `slack` (0.0 rad) | **cis/trans (E/Z)** of acyclic, non-aromatic double bonds (needs real bond orders; detects 0 for ligands with none, e.g. ATP/NAD/GLN) |
-| `vdw` | `weight` (1.0), `mode` (`"both"`), `scale` (0.92), `dmax` (5.0 Å), `max_neighbors` (32), `max_atom_step` (0.1 Å), `neighbor_rebuild_interval` (10) | non-bonded clash avoidance with bounded CG steps and Verlet-style neighbor rebuilds |
+| `vdw` | `weight` (1.0), `mode` (`"both"`), `scale` (0.75), `dmax` (5.0 Å), `max_neighbors` (32), `max_atom_step` (0.1 Å), `neighbor_rebuild_interval` (10) | non-bonded clash avoidance with bounded CG steps and Verlet-style neighbor rebuilds |
 
 ### `monomer_library` — refinement targets for polymers (not a term)
 
