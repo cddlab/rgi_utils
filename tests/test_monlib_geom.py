@@ -17,6 +17,7 @@ import math
 import numpy as np
 import pytest
 
+from rgi_utils import monlib_geom
 from rgi_utils.atom_context import AtomRecord
 from rgi_utils.combined import CombinedRestraints
 from rgi_utils.config import RestraintsConfig
@@ -415,3 +416,142 @@ def test_library_target_pulls_a_distorted_bond_back(library_dir):
     assert before > 0.15  # the fixture really does start off-target
     assert after < before
     assert after < 0.02
+
+
+_PEPTIDE_GROUP_CIF = """data_comp_list
+loop_
+_chem_comp.id
+_chem_comp.three_letter_code
+_chem_comp.name
+_chem_comp.group
+_chem_comp.number_atoms_all
+_chem_comp.number_atoms_nh
+_chem_comp.desc_level
+ AAA AAA 'plain residue' peptide 1 1 .
+ PPP PPP 'proline-like residue' P-peptide 1 1 .
+
+data_comp_AAA
+loop_
+_chem_comp_atom.comp_id
+_chem_comp_atom.atom_id
+_chem_comp_atom.type_symbol
+_chem_comp_atom.type_energy
+_chem_comp_atom.charge
+ AAA N N NT3 1
+
+data_comp_PPP
+loop_
+_chem_comp_atom.comp_id
+_chem_comp_atom.atom_id
+_chem_comp_atom.type_symbol
+_chem_comp_atom.type_energy
+_chem_comp_atom.charge
+ PPP N N NT2 1
+"""
+
+_PEPTIDE_LINK_LIST_CIF = """data_link_list
+loop_
+_chem_link.id
+_chem_link.comp_id_1
+_chem_link.mod_id_1
+_chem_link.group_comp_1
+_chem_link.comp_id_2
+_chem_link.mod_id_2
+_chem_link.group_comp_2
+_chem_link.name
+ TRANS  .  DEL-OXT  peptide  .  DEL-HN1  peptide    TRANS
+ PTRANS .  DEL-OXT  peptide  .  DEL-HNP  P-peptide  PTRANS
+
+data_link_TRANS
+loop_
+_chem_link_bond.link_id
+_chem_link_bond.atom_1_comp_id
+_chem_link_bond.atom_id_1
+_chem_link_bond.atom_2_comp_id
+_chem_link_bond.atom_id_2
+_chem_link_bond.type
+_chem_link_bond.value_dist
+_chem_link_bond.value_dist_esd
+ TRANS 1 C 2 N single 1.337 0.011
+
+data_link_PTRANS
+loop_
+_chem_link_bond.link_id
+_chem_link_bond.atom_1_comp_id
+_chem_link_bond.atom_id_1
+_chem_link_bond.atom_2_comp_id
+_chem_link_bond.atom_id_2
+_chem_link_bond.type
+_chem_link_bond.value_dist
+_chem_link_bond.value_dist_esd
+ PTRANS 1 C 2 N single 1.352 0.010
+
+data_mod_DEL-HN1
+loop_
+_chem_mod_bond.mod_id
+_chem_mod_bond.function
+_chem_mod_bond.atom_id_1
+_chem_mod_bond.atom_id_2
+_chem_mod_bond.new_type
+_chem_mod_bond.new_value_dist
+_chem_mod_bond.new_value_dist_esd
+ DEL-HN1 change CA N single 1.453 0.010
+
+data_mod_DEL-HNP
+loop_
+_chem_mod_bond.mod_id
+_chem_mod_bond.function
+_chem_mod_bond.atom_id_1
+_chem_mod_bond.atom_id_2
+_chem_mod_bond.new_type
+_chem_mod_bond.new_value_dist
+_chem_mod_bond.new_value_dist_esd
+ DEL-HNP change CA N single 1.459 0.010
+
+data_mod_DEL-OXT
+loop_
+_chem_mod_bond.mod_id
+_chem_mod_bond.function
+_chem_mod_bond.atom_id_1
+_chem_mod_bond.atom_id_2
+_chem_mod_bond.new_type
+_chem_mod_bond.new_value_dist
+_chem_mod_bond.new_value_dist_esd
+ DEL-OXT change C O double 1.229 0.012
+"""
+
+
+def test_peptide_link_id_follows_the_second_residue_group(tmp_path):
+    # CCP4 splits the peptide link by the SECOND residue's group because the nitrogen
+    # differs: proline's sits in a ring with no amide hydrogen, so X-Pro uses PTRANS (and
+    # the DEL-HNP mod) rather than TRANS/DEL-HN1. Their targets differ by up to 2.5 deg
+    # (CA-C-N 115.917 vs 118.415, O-C-N 123.469 vs 121.016) and PTRANS carries a CD-N-C
+    # angle TRANS has no equivalent for, so picking by mol_type alone mis-restrains every
+    # X-Pro junction -- 7 of them in the QBP benchmark, where proline was 6-7x enriched
+    # among the residues MolProbity flagged.
+    (tmp_path / "a").mkdir()
+    (tmp_path / "p").mkdir()
+    (tmp_path / "list").mkdir()
+    (tmp_path / "a" / "AAA.cif").write_text(_PEPTIDE_GROUP_CIF)
+    (tmp_path / "p" / "PPP.cif").write_text(_PEPTIDE_GROUP_CIF)
+    (tmp_path / "list" / "mon_lib_list.cif").write_text(_PEPTIDE_LINK_LIST_CIF)
+    (tmp_path / "ener_lib.cif").write_text(_ENER_LIB)
+    library = monlib_geom.MonomerLibrary.load(str(tmp_path), ["AAA", "PPP"])
+
+    assert library.link_id("protein", "AAA") == "TRANS"
+    assert library.link_id("protein", "PPP") == "PTRANS"
+    # The mods follow the same split -- side 2 of an X-Pro link is DEL-HNP, not DEL-HN1.
+    assert [m.id for m in library.link_mods("protein", False, True, "PPP")] == [
+        "DEL-HNP"
+    ]
+    assert [m.id for m in library.link_mods("protein", False, True, "AAA")] == [
+        "DEL-HN1"
+    ]
+    # Side 1 is `peptide` in both entries, so it is unaffected by the second residue.
+    assert [m.id for m in library.link_mods("protein", True, False, "PPP")] == [
+        "DEL-OXT"
+    ]
+    # A residue the library does not cover cannot name a group -> the base entry.
+    assert library.link_id("protein", "QQQ") == "TRANS"
+    # Nucleic links have no group split.
+    assert library.link_id("rna", "PPP") == "p"

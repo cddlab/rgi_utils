@@ -138,7 +138,9 @@ def _link_geometry(previous, current, mol_type: str, library=None):
     from_library = (
         None
         if library is None
-        else library.link_restraints(mol_type, previous["names"], current["names"])
+        else library.link_restraints(
+            mol_type, previous["names"], current["names"], current["resname"]
+        )
     )
     if from_library is not None:
         bonds, angles, planes = from_library
@@ -298,6 +300,12 @@ def build_polymer_geometry(
                 continue
             previous["link_side1"] = current["mol_type"]
             current["link_side2"] = current["mol_type"]
+            # The peptide link id depends on the SECOND residue (PTRANS for proline),
+            # so BOTH sides must remember which residue closed the link -- side 1's
+            # own DEL-OXT is the same either way, but the lookup has to resolve the
+            # same link entry from either end.
+            previous["link_resname2"] = current["resname"]
+            current["link_resname2"] = current["resname"]
 
     library, targets = _load_library(conformer_config, residue_meta)
 

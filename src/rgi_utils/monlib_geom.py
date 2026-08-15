@@ -46,8 +46,16 @@ _MIN_PLANE_ATOMS = 4
 
 # Library link ids for the canonical polymer connections. CIS and TRANS carry
 # IDENTICAL bond+angle values (they differ only in omega, which no conformer term
-# restrains), so the trans entry serves both peptide states.
+# restrains), so the trans entry serves both peptide states -- and the same holds for
+# PCIS vs PTRANS, so the cis/trans state never has to be guessed.
 _LINK_ID = {"protein": "TRANS", "dna": "p", "rna": "p"}
+# ...but the SECOND residue's chemical group does change the peptide link. CCP4 defines a
+# separate entry per group because the nitrogen differs: proline's is in a ring with no
+# amide hydrogen (`P-peptide` -> PTRANS), an N-methylated residue carries a methyl
+# (`M-peptide` -> NMTRANS). Using plain TRANS for an X-Pro junction restrains it to
+# targets that are wrong by up to 2.5 degrees (CA-C-N 115.917 vs 118.415, O-C-N 123.469
+# vs 121.016) and silently drops the CD-N-C angle that only PTRANS defines.
+_PEPTIDE_LINK_BY_GROUP = {"PPeptide": "PTRANS", "MPeptide": "NMTRANS"}
 
 _ON_MISSING = ("fallback", "error")
 
@@ -146,7 +154,26 @@ class MonomerLibrary:
     def covers(self, resname: str | None) -> bool:
         return bool(resname) and resname in self._monlib.monomers
 
-    def link_mods(self, mol_type: str, side1: bool, side2: bool) -> list:
+    def link_id(self, mol_type: str, resname2: str | None) -> str | None:
+        """Library link id for a ``resname2``-terminated connection of ``mol_type``.
+
+        The peptide link depends on the SECOND residue's chemical group (see
+        ``_PEPTIDE_LINK_BY_GROUP``); everything else has one entry. Falls back to the
+        group-independent id when the library lacks the specialised entry, so a reduced
+        library degrades to slightly-wrong targets rather than to none at all.
+        """
+        base = _LINK_ID.get(mol_type)
+        if base is None or mol_type != "protein" or not self.covers(resname2):
+            return base
+        group = self._monlib.monomers[resname2].group
+        specialised = _PEPTIDE_LINK_BY_GROUP.get(getattr(group, "name", ""))
+        if specialised and specialised in self._monlib.links:
+            return specialised
+        return base
+
+    def link_mods(
+        self, mol_type: str, side1: bool, side2: bool, resname2: str | None = None
+    ) -> list:
         """The ``_chem_mod`` entries a polymer link applies to a residue on its side(s).
 
         CCP4's TRANS link names ``DEL-OXT`` for side 1 and ``DEL-HN1`` for side 2. Both do
@@ -155,7 +182,7 @@ class MonomerLibrary:
         ``CA-N`` 1.483 -> 1.453). Without them a peptide-bonded residue is restrained to
         zwitterion geometry.
         """
-        link_id = _LINK_ID.get(mol_type)
+        link_id = self.link_id(mol_type, resname2)
         if link_id is None or link_id not in self._monlib.links:
             return []
         link = self._monlib.links[link_id]
@@ -241,7 +268,11 @@ class MonomerLibrary:
         return bonds, angles, planes
 
     def link_restraints(
-        self, mol_type: str, prev_names: dict[str, int], curr_names: dict[str, int]
+        self,
+        mol_type: str,
+        prev_names: dict[str, int],
+        curr_names: dict[str, int],
+        resname2: str | None = None,
     ):
         """Inter-residue link bonds / angles / planes for one adjacent pair.
 
@@ -257,7 +288,7 @@ class MonomerLibrary:
         and is filtered out by the ``_MIN_PLANE_ATOMS`` check, which is correct: a 3-atom
         group is trivially planar.
         """
-        link_id = _LINK_ID.get(mol_type)
+        link_id = self.link_id(mol_type, resname2)
         if link_id is None or link_id not in self._monlib.links:
             return None
         restraints = self._monlib.links[link_id].rt
@@ -310,7 +341,9 @@ def collect(library: MonomerLibrary, residues, on_missing: str) -> LibraryTarget
         names = meta["names"]
         side1 = meta.get("link_side1")
         side2 = meta.get("link_side2")
-        mods = library.link_mods(side1 or side2 or "", bool(side1), bool(side2))
+        mods = library.link_mods(
+            side1 or side2 or "", bool(side1), bool(side2), meta.get("link_resname2")
+        )
         rb, ra, rp = library.residue_restraints(resname, names, mods)
         bonds.extend(rb)
         angles.extend(ra)
