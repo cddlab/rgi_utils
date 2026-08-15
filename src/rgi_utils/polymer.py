@@ -275,19 +275,36 @@ def build_polymer_geometry(
         )
         atom_indices.update(int(g) for g in gidx)
 
-    library, targets = _load_library(conformer_config, residue_meta)
-
-    link_bonds = []
-    link_angles = []
-    link_planes = []
     by_chain: dict[str, list[dict]] = {}
     for meta in residue_meta:
         by_chain.setdefault(meta["chain"], []).append(meta)
+    # Which side(s) of a polymer link each residue sits on, resolved BEFORE the library is
+    # read because the library targets depend on it. A monomer entry describes the FREE
+    # residue -- for an amino acid that is the zwitterion, N as -NH3+ and C as -COO- -- and
+    # the link carries `_chem_mod` records that rewrite those targets when the residue is
+    # actually peptide-bonded (CCP4's TRANS applies DEL-OXT to the first side and DEL-HN1
+    # to the second). Reading the unmodified entry restrains a whole chain to free-amino-
+    # acid geometry: N-CA 1.483 instead of 1.453, C-O 1.251 instead of 1.229, CA-C-O 117.2
+    # instead of 120.6 deg. The position dependence falls out for free -- the N-terminus is
+    # nobody's side 2 so it keeps its -NH3+, the C-terminus is nobody's side 1 so it keeps
+    # its -COO-, which is chemically what those termini are.
     for residues in by_chain.values():
         # Global atom order is the reliable component order. Modified residues are
         # atom-tokenized in some adapters, so their AtomRecord.resid values differ even
         # though ref_space_uid correctly groups them into one residue.
         residues.sort(key=lambda x: (x["order"], x["uid"]))
+        for previous, current in zip(residues, residues[1:]):
+            if current["mol_type"] != previous["mol_type"]:
+                continue
+            previous["link_side1"] = current["mol_type"]
+            current["link_side2"] = current["mol_type"]
+
+    library, targets = _load_library(conformer_config, residue_meta)
+
+    link_bonds = []
+    link_angles = []
+    link_planes = []
+    for residues in by_chain.values():
         for previous, current in zip(residues, residues[1:]):
             if current["mol_type"] != previous["mol_type"]:
                 continue

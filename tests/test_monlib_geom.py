@@ -25,6 +25,13 @@ from rgi_utils.config import RestraintsConfig
 _LIB_BOND_P_O5 = 1.777
 _LIB_BOND_O5_C5 = 1.888
 _LIB_ANGLE_P_O5_C5 = 111.0
+# Link modifications rewrite the FREE residue's own targets once it is polymer-bonded --
+# CCP4's TRANS does exactly this (DEL-OXT: C-O 1.251 -> 1.229, CA-C-O 117.191 -> 120.614;
+# DEL-HN1: CA-N 1.483 -> 1.453), because a monomer entry describes the free zwitterion.
+# Distinct values per side so a test can tell which mod reached which residue.
+_MOD_S1_BOND_O5_C5 = 1.808
+_MOD_S2_BOND_P_O5 = 1.707
+_MOD_S2_ANGLE_P_O5_C5 = 104.0
 _LIB_LINK_BOND = 1.666  # the built-in phosphodiester target is 1.607
 _LIB_LINK_ANGLE_C3_O3_P = 122.5  # built-in 119.7
 _LIB_LINK_ANGLE_O3_P_O5 = 101.5  # built-in 104.0
@@ -94,7 +101,7 @@ _chem_link.comp_id_2
 _chem_link.mod_id_2
 _chem_link.group_comp_2
 _chem_link.name
- p  .  .  DNA/RNA  .  .  DNA/RNA  'phosphodiester link'
+ p  .  MOD-S1  DNA/RNA  .  MOD-S2  DNA/RNA  'phosphodiester link'
 
 data_link_p
 loop_
@@ -119,6 +126,37 @@ _chem_link_angle.value_angle
 _chem_link_angle.value_angle_esd
  p 1 C3' 1 O3' 2 P {_LIB_LINK_ANGLE_C3_O3_P:.1f} 1.5
  p 1 O3' 2 P 2 O5' {_LIB_LINK_ANGLE_O3_P_O5:.1f} 1.5
+
+data_mod_MOD-S1
+loop_
+_chem_mod_bond.mod_id
+_chem_mod_bond.function
+_chem_mod_bond.atom_id_1
+_chem_mod_bond.atom_id_2
+_chem_mod_bond.new_type
+_chem_mod_bond.new_value_dist
+_chem_mod_bond.new_value_dist_esd
+ MOD-S1 change O5' C5' single {_MOD_S1_BOND_O5_C5:.3f} 0.011
+
+data_mod_MOD-S2
+loop_
+_chem_mod_bond.mod_id
+_chem_mod_bond.function
+_chem_mod_bond.atom_id_1
+_chem_mod_bond.atom_id_2
+_chem_mod_bond.new_type
+_chem_mod_bond.new_value_dist
+_chem_mod_bond.new_value_dist_esd
+ MOD-S2 change P O5' single {_MOD_S2_BOND_P_O5:.3f} 0.010
+loop_
+_chem_mod_angle.mod_id
+_chem_mod_angle.function
+_chem_mod_angle.atom_id_1
+_chem_mod_angle.atom_id_2
+_chem_mod_angle.atom_id_3
+_chem_mod_angle.new_value_angle
+_chem_mod_angle.new_value_angle_esd
+ MOD-S2 change P O5' C5' {_MOD_S2_ANGLE_P_O5_C5:.1f} 1.5
 """
 
 _ENER_LIB = """data_energy
@@ -242,12 +280,14 @@ def test_library_bond_and_angle_targets_replace_the_reference_conformer(library_
     spec = _setup(_NucleotideAdapter(), _config(library_dir))
     bonds, angles = _bond_targets(spec), _angle_targets(spec)
 
-    # Library values, not the 1.60 / 1.30 measured from the reference conformer.
+    # Library values, not the 1.60 / 1.30 measured from the reference conformer. Residue 1
+    # is only side 1 of the link, so P-O5' keeps the free-residue value while O5'-C5' takes
+    # MOD-S1's; residue 2 is only side 2, so the reverse (see the link-mod test below).
     assert bonds[(0, 1)] == pytest.approx(_LIB_BOND_P_O5)
-    assert bonds[(1, 2)] == pytest.approx(_LIB_BOND_O5_C5)
+    assert bonds[(1, 2)] == pytest.approx(_MOD_S1_BOND_O5_C5)
     assert angles[(0, 1, 2)] == pytest.approx(math.radians(_LIB_ANGLE_P_O5_C5))
-    # The second residue gets the same targets on its own atoms.
-    assert bonds[(5, 6)] == pytest.approx(_LIB_BOND_P_O5)
+    # The second residue gets the targets ITS side of the link prescribes.
+    assert bonds[(5, 6)] == pytest.approx(_MOD_S2_BOND_P_O5)
 
     # REPLACED, not added: the conformer-derived duplicate for a covered residue is
     # dropped, so each intra-residue pair appears exactly once.
@@ -256,6 +296,31 @@ def test_library_bond_and_angle_targets_replace_the_reference_conformer(library_
     # Hydrogens are in the library but not in the structure -> those restraints vanish
     # rather than referencing a missing atom.
     assert len(bonds) == 2 * 2 + 1  # 2 per residue + the inter-residue link
+
+
+def test_link_modifications_rewrite_the_bonded_residue_targets(library_dir):
+    # A monomer entry describes the FREE residue. For an amino acid that is the zwitterion
+    # (-NH3+ / -COO-), and CCP4's TRANS link carries `_chem_mod` records that rewrite those
+    # targets once the residue is peptide-bonded: DEL-OXT takes C-O 1.251 -> 1.229 and
+    # CA-C-O 117.191 -> 120.614, DEL-HN1 takes CA-N 1.483 -> 1.453. Skipping them restrains
+    # a whole chain to free-amino-acid geometry -- measured on QBP, that alone moved the
+    # backbone ~0.025 A off Engh-Huber and took MolProbity's rms_bond from 0.005 to 0.014.
+    #
+    # Which mod applies is POSITIONAL, and the fixture's two residues pin both ends of it:
+    # residue 1 is side 1 only (the chain's last residue is nobody's side 1, so a real
+    # C-terminus keeps its -COO-), residue 2 is side 2 only (the N-terminus keeps -NH3+).
+    spec = _setup(_NucleotideAdapter(), _config(library_dir))
+    bonds, angles = _bond_targets(spec), _angle_targets(spec)
+
+    # Residue 1: side 1 -> MOD-S1 only.
+    assert bonds[(1, 2)] == pytest.approx(_MOD_S1_BOND_O5_C5)
+    assert bonds[(0, 1)] == pytest.approx(_LIB_BOND_P_O5)  # MOD-S2 must NOT reach it
+    assert angles[(0, 1, 2)] == pytest.approx(math.radians(_LIB_ANGLE_P_O5_C5))
+
+    # Residue 2: side 2 -> MOD-S2 only, including its angle override.
+    assert bonds[(5, 6)] == pytest.approx(_MOD_S2_BOND_P_O5)
+    assert bonds[(6, 7)] == pytest.approx(_LIB_BOND_O5_C5)  # MOD-S1 must NOT reach it
+    assert angles[(5, 6, 7)] == pytest.approx(math.radians(_MOD_S2_ANGLE_P_O5_C5))
 
 
 def test_library_planes_replace_conformer_ring_perception(library_dir):

@@ -146,33 +146,88 @@ class MonomerLibrary:
     def covers(self, resname: str | None) -> bool:
         return bool(resname) and resname in self._monlib.monomers
 
-    def residue_restraints(self, resname: str, names: dict[str, int]):
+    def link_mods(self, mol_type: str, side1: bool, side2: bool) -> list:
+        """The ``_chem_mod`` entries a polymer link applies to a residue on its side(s).
+
+        CCP4's TRANS link names ``DEL-OXT`` for side 1 and ``DEL-HN1`` for side 2. Both do
+        far more than delete an atom: they REWRITE the targets the free residue carries
+        (``CA-C`` 1.531 -> 1.526, ``C-O`` 1.251 -> 1.229, ``CA-C-O`` 117.191 -> 120.614,
+        ``CA-N`` 1.483 -> 1.453). Without them a peptide-bonded residue is restrained to
+        zwitterion geometry.
+        """
+        link_id = _LINK_ID.get(mol_type)
+        if link_id is None or link_id not in self._monlib.links:
+            return []
+        link = self._monlib.links[link_id]
+        wanted = []
+        if side1:
+            wanted.append(getattr(link.side1, "mod", ""))
+        if side2:
+            wanted.append(getattr(link.side2, "mod", ""))
+        return [
+            self._monlib.modifications[m]
+            for m in wanted
+            if m in self._monlib.modifications
+        ]
+
+    def residue_restraints(self, resname: str, names: dict[str, int], mods=()):
         """Library bonds / angles / planes for one residue, in global atom indices.
 
         ``names`` maps this residue's normalised atom names to global indices; any
         library restraint naming an atom the structure does not model is skipped. That
         is what drops the hydrogens (predictors model heavy atoms only) and the 5'/3'
         terminal atoms of an internal residue, without a special case for either.
+
+        ``mods`` are the link modifications to fold in (see ``link_mods``). gemmi exposes
+        a mod's changes as a plain ``Restraints`` block, so a DELETED restraint arrives as
+        a NaN value and a CHANGED one as a finite value; deletions need no handling here
+        because the atoms they name (OXT, H2, H3) are hydrogens or terminal atoms the
+        predictor does not model, so those restraints are already skipped.
         """
         chem_comp = self._monlib.monomers[resname]
         restraints = chem_comp.rt
+        bond_overrides: dict[frozenset, float] = {}
+        angle_overrides: dict[tuple, float] = {}
+        for mod in mods:
+            for bond in mod.rt.bonds:
+                value = float(bond.value)
+                if math.isfinite(value):
+                    key = frozenset(
+                        (_normalise_name(bond.id1.atom), _normalise_name(bond.id2.atom))
+                    )
+                    bond_overrides[key] = value
+            for angle in mod.rt.angles:
+                value = float(angle.value)
+                if math.isfinite(value):
+                    ends = frozenset(
+                        (
+                            _normalise_name(angle.id1.atom),
+                            _normalise_name(angle.id3.atom),
+                        )
+                    )
+                    angle_overrides[(_normalise_name(angle.id2.atom), ends)] = value
 
         bonds = []
         for bond in restraints.bonds:
-            i = names.get(_normalise_name(bond.id1.atom))
-            j = names.get(_normalise_name(bond.id2.atom))
+            n1 = _normalise_name(bond.id1.atom)
+            n2 = _normalise_name(bond.id2.atom)
+            i, j = names.get(n1), names.get(n2)
             if i is not None and j is not None:
-                bonds.append((i, j, float(bond.value)))
+                target = bond_overrides.get(frozenset((n1, n2)), float(bond.value))
+                bonds.append((i, j, target))
 
         angles = []
         for angle in restraints.angles:
-            idx = tuple(
-                names.get(_normalise_name(a.atom))
-                for a in (angle.id1, angle.id2, angle.id3)
+            trio = tuple(
+                _normalise_name(a.atom) for a in (angle.id1, angle.id2, angle.id3)
             )
+            idx = tuple(names.get(n) for n in trio)
             if all(k is not None for k in idx):
+                target = angle_overrides.get(
+                    (trio[1], frozenset((trio[0], trio[2]))), float(angle.value)
+                )
                 # The library stores angles in DEGREES; the energy layer wants radians.
-                angles.append((*idx, math.radians(float(angle.value))))
+                angles.append((*idx, math.radians(target)))
 
         planes = []
         for plane in restraints.planes:
@@ -236,7 +291,9 @@ def collect(library: MonomerLibrary, residues, on_missing: str) -> LibraryTarget
     """Library targets for every residue the library covers.
 
     ``residues`` are the per-residue metadata dicts built by ``polymer.py``
-    (``resname`` plus ``names``: normalised atom name -> global index).
+    (``resname`` plus ``names``: normalised atom name -> global index, plus the
+    ``link_side1`` / ``link_side2`` markers saying which side(s) of a polymer link this
+    residue sits on — see ``link_mods`` for why the targets depend on that).
     """
     bonds: list[tuple[int, int, float]] = []
     angles: list[tuple[int, int, int, float]] = []
@@ -251,7 +308,10 @@ def collect(library: MonomerLibrary, residues, on_missing: str) -> LibraryTarget
             missing.add(str(resname))
             continue
         names = meta["names"]
-        rb, ra, rp = library.residue_restraints(resname, names)
+        side1 = meta.get("link_side1")
+        side2 = meta.get("link_side2")
+        mods = library.link_mods(side1 or side2 or "", bool(side1), bool(side2))
+        rb, ra, rp = library.residue_restraints(resname, names, mods)
         bonds.extend(rb)
         angles.extend(ra)
         planes.extend(rp)
