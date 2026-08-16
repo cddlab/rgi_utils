@@ -2,20 +2,6 @@ verbose: true
 gpu: true
 max_iter: 1000
 method: CG
-conformer_restraints:
-  A: true
-conformer_restraints_config:
-  start_sigma: 99999999
-  bond:
-    weight: 1
-  angle:
-    weight: 1
-  chiral:
-    weight: 1
-  plane:
-    weight: 1
-  vdw:
-    weight: 1
 rmsd_restraints_config:
 - ref_cif: 1GGG.cif
   atom_selection_ref_fit: chain A and name CA
@@ -24,6 +10,7 @@ rmsd_restraints_config:
   atom_selection_target_calc: chain A and name CA
   pairing: align
   start_sigma: 99999999
+  stop_sigma: 1.0
   harmonic:
     target_rmsd: 3.0
 - ref_cif: 1WDN.cif
@@ -33,5 +20,6 @@ rmsd_restraints_config:
   atom_selection_target_calc: chain A and name CA
   pairing: align
   start_sigma: 99999999
+  stop_sigma: 1.0
   harmonic:
     target_rmsd: 3.0
