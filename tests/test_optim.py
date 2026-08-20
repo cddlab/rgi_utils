@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import sysconfig
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -14,6 +16,15 @@ from rgi_utils.atom_context import LigandConf
 from rgi_utils.featurizer import build_spec
 from rgi_utils.group_geom_restr_data import AngleRestraintData, DihedralRestraintData
 from rgi_utils.plane_restr_data import PlaneRestraintData
+
+
+def _require_python_dev_headers():
+    """Skip inductor compilation only when Python development headers are absent."""
+    include_dirs = {sysconfig.get_path(name) for name in ("include", "platinclude")} - {
+        None
+    }
+    if not any((Path(path) / "Python.h").is_file() for path in include_dirs):
+        pytest.skip("torch.compile requires Python development headers (Python.h)")
 
 
 def _distorted_ethane():
@@ -1325,6 +1336,7 @@ def test_compiled_energy_matches_eager():
     atan2 wrap). Runs on CPU (inductor, no CUDA graph) so CI guards the invariant;
     otherwise the compiled group energy is only ever exercised by an sbatch GPU run."""
     torch = pytest.importorskip("torch")
+    _require_python_dev_headers()
     from rgi_utils.energy import torch_energy
     from rgi_utils.optim import _torch_cg_gpu as g
     from rgi_utils.spec import GroupAngleArrays, GroupDihedralArrays
