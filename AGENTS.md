@@ -25,11 +25,15 @@ GPU paths (real CUDA torch / jax devices) are exercised by the host tools via
 
 **rgi_utils** — Restraint-Guided Inference (RGI): inject distance + ligand
 conformer + RMSD restraints into a structure-prediction diffusion loop via gradient
-optimization. Shared by boltz / protenix / chai-lab / openfold-3 / esmfold2 (torch)
-and alphafold3 (jax). The end-to-end guide for integrating a new tool is the
-`implement-rgi` skill, shared from `.claude/skills/` to `.agents/skills/`. Per-tool
-as-built integration write-ups live in
-`doc/<tool>.md` (one per tool); the shared config + selection-DSL surface is `doc/config.md`.
+optimization. Shared by **seven** integrations — boltz / protenix / chai-lab / openfold-3 /
+esmfold2 / opendde (torch) and alphafold3 (jax), covering 9 model variants (boltz1+boltz2 and
+protenix v1+v2 each share one adapter). The end-to-end guide for integrating a new tool is the
+`implement-rgi` skill, shared from `.claude/skills/` to `.agents/skills/` (alongside
+`generate-rgi-config` for authoring a config, `sync-upstream`, `create-github-release`).
+Per-tool as-built integration write-ups live in `doc/<tool>.md` (one per tool); the shared
+config + selection-DSL surface is `doc/config.md`. `example/` holds ready-to-run samples —
+4 restraint types × 7 predictors, each with a `run.sh` — so reuse those fixtures instead of
+authoring new ones.
 
 Design = **3 layers + autodiff + static shapes + GPU-complete optimization**:
 
@@ -79,7 +83,14 @@ Design = **3 layers + autodiff + static shapes + GPU-complete optimization**:
    minimal-displacement split. No `pure_callback`, no scipy. On CUDA the torch CG
    runs through `optim/_torch_cg_gpu.py` — the same early-exit CG but with a `torch.compile`
    (inductor-fused, NOT cudagraph) energy+grad, so conformer/RMSD optimization is GPU-faster
-   than eager. RMSD needs the hand-rolled CG on BOTH backends (jaxopt NonlinearCG stalls on
+   than eager. Two cache invariants in `TorchRestraintOptimizer._ensure` that are easy to
+   break: (1) every per-optimizer artifact — the prepared spec, the pre-gated `_prepared_g`,
+   the custom closures and their compiled `_custom_cvg` — is keyed on **`(device, dtype)`**,
+   not device alone, because they close over device- *and* dtype-resident constants; (2) the
+   per-entry sigma/step gates are evaluated against the **host-side numpy spec arrays**
+   (`getattr(self.spec, TERM_BY_KEY[gk].spec_attr)`), never the prepared device tensors — the
+   latter costs one device-to-host sync per per-entry term per diffusion step on CUDA
+   (`on.tolist()`). RMSD needs the hand-rolled CG on BOTH backends (jaxopt NonlinearCG stalls on
    RMSD's fixed-rotation `stop_gradient` gradient). There is **no numpy
    optimizer backend** (the old scipy path was removed); `numpy_energy` remains only as
    the pure-numpy energy reference for `tests/test_backend_parity.py`. Optimization
@@ -130,6 +141,19 @@ to be reconciled with `_chiral_vol`'s atom ordering first. Uncovered residues fa
 (`on_missing: error` to refuse instead); a bad path raises. Tests: `tests/test_monlib_geom.py`
 (self-contained fixture library in tmp_path — no CCP4 install needed).
 
+**Don't add a REFERENCE-CONFORMER polymer restraint as a default "keep the backbone sane"
+layer under an RMSD restraint.** Measured 2×2 ablation (boltz2, QBP, 3 seeds, MolProbity
+medians): clashscore 4.81 unrestrained, 5.94 RMSD-only, **27.58 conformer-only, 22.91
+conformer+RMSD** — i.e. it made stereochemistry worse on a predictor that already emits
+idealised geometry. That is why `7ee8123` stripped the polymer conformer layer (the
+`conformer_restraints_config` block AND the per-chain opt-in in its seven tool-specific
+shapes) out of every `example/rmsd/` fixture, using `stop_sigma: 1.0` to heal strain instead.
+**Scope carefully: those arms used the DEFAULT reference-conformer targets, with no
+`monomer_library` key** — the ablation says nothing about library-derived targets, which are
+this section's whole point. Consequence for verification: the usual "a count must be non-zero
+or the restraint silently did nothing" rule INVERTS for those fixtures — the correct signal
+there is an absence (`conformer=False`, `n_rmsd=2`).
+
 #### `config.py`
 
 `RestraintsConfig.from_dict()` parses the shared
@@ -148,7 +172,13 @@ jax (only AF3 calls it); `minimize(coords)` → jax if `coords` is a jax array, 
 torch (numpy/torch coords both take the torch path). Resolution is lazy — `setup`
 leaves `self._backend = None` and builds the optimizer on the first
 `minimize`/`get_minimizer` (`_ensure_backend` raises if one instance is invoked under
-two backends). `gpu` selects the torch *device* (CPU when `gpu:false`, the accelerator
+two backends). **There is a THIRD construction site, easy to trip over:** a verbose
+`finalize()` on a spec carrying dynamic VdW (`vdw_config` or `active_vdw_config`) calls
+`_ensure_backend("torch")` when no optimizer exists yet, so a diagnostic-only finalize on
+numpy/torch coords permanently LOCKS that instance to torch and a later `get_minimizer()`
+raises the backend-conflict error. The jax side does not lock (it calls the module-level
+`jax_optim.dynamic_vdw_energy(spec, coords)` directly) — the asymmetry is real, not
+incidental. `gpu` selects the torch *device* (CPU when `gpu:false`, the accelerator
 when `gpu:true`), NOT the backend, so `gpu:false` runs the torch optimizer on CPU
 (moving GPU coords to CPU and back). There is no numpy optimizer (numpy is the energy
 reference only); a leftover `backend:` config key raises with a migration hint.
@@ -158,7 +188,7 @@ inert — to run AF3 restraints on CPU, run the whole process on the JAX CPU pla
 
 #### Framework adapters
 
-(`{boltz,protenix,chai,openfold3,esmfold2,alphafold3}/adapter.py` —
+(`{boltz,protenix,chai,openfold3,esmfold2,opendde,alphafold3}/adapter.py` —
 framework-free EXCEPT boltz, whose feats arrive as native torch tensors so its adapter
 imports torch (read at batch 0); the others import no framework. AF3's CCD/SMILES mol
 resolution lives in a thin in-tool shim
@@ -166,7 +196,10 @@ resolution lives in a thin in-tool shim
 data): implement `iter_atoms()` (→
 `AtomRecord(chain, resid, index)` for distance selection) and optionally
 `num_atoms()`, `get_elements()`, `iter_ligand_confs()` (→
-`LigandConf(mol, conf_coords, global_indices)` for conformer + VdW).
+`LigandConf(mol, conf_coords, global_indices)` for conformer + VdW). The three tools whose
+features arrive as a **biotite `AtomArray`** (protenix / openfold3 / opendde) share
+`_biotite_adapter.py` (`biotite_get_elements` / `biotite_ligand_confs`) rather than each
+re-deriving elements + ligand conformers — extend that module, not the three call sites.
 
 **AF3 residue names carry a gap-token hazard.** AF3 encodes `aatype` with the vocabulary that
 has a GAP entry right after `UNK` (`… 20:UNK, 21:'-', 22:A, 23:G, 24:C, 25:U, 26:DA …`), while
@@ -313,10 +346,8 @@ plane/cistrans/vdw). `mode` picks **two categories** (default `both` = both):
     every non-padding atom NOT in `active_sites` (protein / DNA/RNA / **non-restrained** ligand),
     read from the full coordinate tensor at minimize time and held fixed (it needs no
     gradient). A two-set sorted cell list is rebuilt when the ligand's measured
-    displacement exhausts the Verlet skin (see below): background build/query is normally
-    `O(B log B + L log B)`, each
-    energy evaluation is `O(L * max_neighbors)`, and working memory is linear rather
-    than `L * B`. Lives in `optim/torch_optim.py` AND `optim/jax_optim.py`
+    displacement exhausts the Verlet skin (complexity in that paragraph below); working
+    memory is linear rather than `L * B`. Lives in `optim/torch_optim.py` AND `optim/jax_optim.py`
     (`_vdw_pair_energy` is the shared fixed-width formula, ported to jnp). **torch + jax**
     (numpy is the energy reference only, so it does not run this optimizer term).
   - *Other restrained ligands* (`_build_interligand_vdw` → `VdwArrays`): two ligands that
@@ -330,8 +361,9 @@ plane/cistrans/vdw). `mode` picks **two categories** (default `both` = both):
     ≥2 ligands opted in.
 
 Both halves share `weight * clamp(d - scale*(r_i+r_j), max=0)**2` (zero gradient beyond
-contact — same maths as boltz's radius search). The fixed-background half scores its
-per-step neighbor list; restrained-ligand pairs remain statically enumerated. `mode` defaults to **`both`**
+contact — same maths as boltz's radius search). The fixed-background half scores the
+neighbour list it rebuilds on measured displacement (see the Verlet-skin paragraph below —
+NOT once per diffusion step); restrained-ligand pairs remain statically enumerated. `mode` defaults to **`both`**
 (intramolecular + intermolecular); the explicit values pick one category. **The old
 `mode: ligand_protein` is REMOVED** — it was only the fixed-background half; it now raises a
 migration hint pointing to `intermolecular` (which additionally repels other restrained
@@ -341,6 +373,13 @@ a `vdw:` block is present** (then `weight` defaults to 1.0, like every conformer
 vdw=Iintra+Jinter+Llig/Mbg/Knn` log breaks the counts down: `intra` = intramolecular, `inter`
 + `lig/bg` together = intermolecular (`inter` = restrained-ligand pairs, `lig/bg` =
 fixed background) — confirm `Jinter>0` when you expect ligand-ligand repulsion.
+The verbose `finalize vdw=` adds the static rows AND **both** optimizer-only dynamic halves on
+**both** backends (torch `TorchRestraintOptimizer.dynamic_vdw_energy`, jax the module-level
+`jax_optim.dynamic_vdw_energy`) — it is computed directly, never as `optimizer.energy - static`,
+so no float32/float64 cancellation can make it negative, and it is **intentionally UNGATED**:
+it reports the residual at the final coordinates regardless of the sigma/step window. The
+`finalize` total is `sum(bd[k] for k in BREAKDOWN_KEYS)`, so a new `_TERMS` entry lands in the
+total automatically instead of needing a hand-written sum updated.
 
 The fixed-background and restrained-polymer active-active halves list fixed-width neighbors
 out to a **Verlet skin** (`vdw.neighbor_skin`, default 2 Å) beyond the contact cutoff, and
@@ -350,7 +389,15 @@ active-active, where both do). `vdw.neighbor_rebuild_interval` (default 10) is h
 that staleness CHECK runs, not how often a rebuild happens — it also bounds the unchecked
 movement folded into the search radius. Between checks the CG state is carried across the
 block boundary, so a block that does not rebuild costs neither a re-entry evaluation nor
-the conjugate direction. Both halves use the same sort-based spatial cell-list primitive. Normal-density build time is `O(B log B + L log B)`
+the conjugate direction. `neighbor_skin` is validated `<= dmax` because the `max_neighbors`
+K-cap is applied AFTER ranking by clearance: an oversized skin would silently drop
+contacting pairs instead of raising. The **initial** build is skipped when the conformer
+sigma/step window is inactive even though another restraint still runs the optimizer (jax
+`initial_dynamic_pairs` returns static-shape zero lists under `lax.cond`); this is safe only
+because `in_win` is computed from one minimizer call's `sigma`/`step` and is therefore
+loop-invariant for that call — a step-varying conformer window would let the empty lists
+survive into the active region and VdW would silently contribute zero.
+Both halves use the same sort-based spatial cell-list primitive. Normal-density build time is `O(B log B + L log B)`
 for moving ligand/polymer atoms `L` against fixed background `B`, and `O(N log N)` for
 active-active atoms; energy evaluation is `O(L * max_neighbors)` / `O(N * max_neighbors)`.
 Cell buckets are fully traversed and hash collisions are verified, so a collapsed structure
@@ -560,6 +607,11 @@ show up in the `distances=` / `n_group_plane=` counts). Full field surface: `doc
   (not numpy-FD), the same carve-out as rmsd's stop-gradient. Verified E2E on boltz: the
   qbp 3-region angle (624/690/314 atoms) reaches 90.0° and the 4-region dihedral ±180° at
   the default `weight: 1`.
-- Top-level `import rgi_utils` must work with numpy only (no torch/jax) — keep
-  heavy imports lazy inside the backend modules.
+- Top-level `import rgi_utils` must not pull a compute backend — keep heavy imports lazy
+  inside the backend modules. Measured (2026-08-21): the eager set is **numpy + rdkit**
+  (`featurizer.py` `from rdkit import Chem`, and `__init__` imports `featurizer`); torch,
+  jax, gemmi and biopython all stay unloaded. So "numpy-only" as written elsewhere in this
+  file means "no torch/jax/gemmi/biopython" — rdkit is a hard eager dependency, not a
+  lazy one. Verify with
+  `.venv/bin/python -c "import sys, rgi_utils; print([m for m in ('torch','jax','gemmi','Bio') if m in sys.modules])"`.
 - GPU tests are marked `@pytest.mark.gpu` and excluded in CI.

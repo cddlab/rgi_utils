@@ -20,6 +20,13 @@ Restraint-Guided Inference (RGI) utilities for diffusion-based structure predict
 See each tool's guide in [`doc/`](doc/) for install / run details, and
 [`doc/config.md`](doc/config.md) for the full `restraints_config` schema.
 
+**Ready-to-run samples live in [`example/`](example/)** — 4 restraint types (`distance/`,
+`angle/`, `rmsd/`, `custom/dist-diff/`) × 7 predictors, each a real system with a `run.sh`
+that finds the matching fork's env and folds. Start there rather than from the snippets
+below: `bash example/distance/boltz-2/run.sh`. It needs the matching fork checked out as a
+sibling of `rgi_utils/` and a GPU node; see [`example/README.md`](example/README.md) for the
+per-tool prerequisites.
+
 > **Stuck writing a config?** Run the `generate-rgi-config` skill in Claude Code
 > (`/generate-rgi-config`) or Codex (`$generate-rgi-config`). It interviews you about the
 > goal, picks the right restraint type / atom selection / target / sigma window, validates
