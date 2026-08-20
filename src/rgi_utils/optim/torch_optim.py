@@ -18,6 +18,10 @@ pushed; the background is held fixed). ``vdw_neighbor_rebuild_interval`` is how 
 that check runs, not how often a rebuild happens; between checks the CG state is
 carried across the block boundary, so a block that does not rebuild costs neither a
 re-entry evaluation nor the conjugate direction.
+
+The active-active polymer half (``spec.active_vdw_config``) uses the same dynamic
+cell-list machinery, but both endpoints move and therefore each gets half the Verlet
+displacement budget.
 """
 
 from __future__ import annotations
@@ -34,7 +38,7 @@ from rgi_utils._config_util import (
     VDW_NEIGHBOR_SKIN_DEFAULT,
 )
 from rgi_utils.energy import torch_energy
-from rgi_utils.energy._terms import CONF_KEYS, PER_ENTRY_KEYS
+from rgi_utils.energy._terms import CONF_KEYS, PER_ENTRY_KEYS, TERM_BY_KEY
 from rgi_utils.optim._cg_config import (
     ARMIJO_C1,
     BACKTRACK,
@@ -70,6 +74,7 @@ class TorchRestraintOptimizer:
         self._prepared_g = {}  # cache {gate-state -> stable pre-gated prepared} (GPU CG)
         self._active_idx = None
         self._device = None
+        self._dtype = None
         self._vdw = None  # dict of device tensors for the fixed-background VdW term
         self._active_vdw = None  # dynamic active-active polymer neighbour metadata
         # custom restraints -> torch closures, built lazily in _ensure UNDER
@@ -194,7 +199,11 @@ class TorchRestraintOptimizer:
             return False, None
 
     def _ensure(self, device, dtype) -> None:
-        if self._prepared is not None and self._device == device:
+        if (
+            self._prepared is not None
+            and self._device == device
+            and self._dtype == dtype
+        ):
             return
         # Build constant tensors outside inference mode so they are normal (not
         # inference) tensors and can participate in autograd ops with the leaf.
@@ -205,15 +214,17 @@ class TorchRestraintOptimizer:
             self._prepared = torch_energy.prepare_spec(
                 self.spec, device=device, dtype=dtype
             )
-            self._prepared_g = {}  # rebuilt lazily for the new device
+            self._prepared_g = {}  # rebuilt lazily for the new device/dtype
             self._setup_vdw(device, dtype)
             from rgi_utils.custom.closure import build_terms
 
             self._custom_terms = build_terms(self.spec.custom, "torch", device=device)
             # the compiled artifacts CLOSE OVER the terms rebuilt above (and their
-            # device-resident index tensors), so they must not survive a device change
+            # device-resident index tensors), so they must not survive a device/dtype
+            # change.
             self._custom_cvg = {}
         self._device = device
+        self._dtype = dtype
         if self._custom_terms:
             logger.info(
                 "%d custom restraint(s): on CUDA they run inside a per-optimizer "
@@ -251,18 +262,19 @@ class TorchRestraintOptimizer:
                 and step <= float(self.spec.conf_stop_step)
             )
         cg_key = 1.0 if (sigma is None and step is None) else float(cg_on)
-        # per-restraint on/off for every per-entry term present (one tiny sync each),
-        # over the active sigma window AND step window.
+        # Per-restraint on/off for every per-entry term present, evaluated against the
+        # host-side spec arrays. Reading the prepared tensors here would force one
+        # device-to-host synchronization per term on CUDA via ``on.tolist()``.
         gates: dict[str, tuple] = {}
         if sigma is not None or step is not None:
             for gk in PER_ENTRY_KEYS:
                 if gk in p:
-                    pe = p[gk]
+                    array = getattr(self.spec, TERM_BY_KEY[gk].spec_attr)
                     on = None
                     if sigma is not None:
-                        on = (sigma <= pe["start_sigma"]) & (sigma >= pe["stop_sigma"])
+                        on = (sigma <= array.start_sigma) & (sigma >= array.stop_sigma)
                     if step is not None:
-                        step_on = (step >= pe["start_step"]) & (step <= pe["stop_step"])
+                        step_on = (step >= array.start_step) & (step <= array.stop_step)
                         on = step_on if on is None else (on & step_on)
                     gates[gk] = tuple(bool(b) for b in on.tolist())
         # the cache key carries EVERY gate state, so a step flipping only a group gate
@@ -824,20 +836,54 @@ class TorchRestraintOptimizer:
             return float(e)
 
     def dynamic_vdw_energy(self, coords) -> float:
-        """The dynamic fixed-background VdW term alone (>= 0); for finalize stats.
+        """The dynamic optimizer-only VdW terms (>= 0); for finalize stats.
+
+        Covers both the fixed-background and active-active polymer neighbour-list
+        halves. Neither is included in the static array energy breakdown.
 
         Computed directly (not as energy - static_total) so the reported value is
-        exact and non-negative, with no float32/float64 cancellation error.
+        exact and non-negative, with no float32/float64 cancellation error. It is
+        intentionally ungated: this reports the residual at the final coordinates.
         """
         if not self.spec.is_active():
             return 0.0
-        # _ensure builds self._vdw (via _setup_vdw); call it BEFORE the _vdw guard so a
-        # fresh optimizer reports the true VdW (matches energy()) instead of 0.0, which
-        # would read as a false "VdW satisfied" in the verbose finalize log.
+        if not isinstance(coords, torch.Tensor):
+            coords = torch.as_tensor(coords, dtype=torch.float64)
+        # _ensure builds both dynamic halves; call it before checking them so a fresh
+        # optimizer reports the true residual rather than a false zero.
         self._ensure(coords.device, coords.dtype)
-        if self._vdw is None:
+        if self._vdw is None and self._active_vdw is None:
             return 0.0
         with torch.no_grad():
             active = coords[..., self._active_idx, :]
-            bg_pos = coords[..., self._vdw["bg_global"], :]
-            return float(self._vdw_energy(active, bg_pos))
+            total = 0.0
+            if self._vdw is not None:
+                bg_pos = coords[..., self._vdw["bg_global"], :]
+                total += float(self._vdw_energy(active, bg_pos))
+            if self._active_vdw is not None:
+                from rgi_utils.optim._torch_cg_gpu import (
+                    active_vdw_pair_energy,
+                    build_active_vdw_pairs,
+                )
+
+                av = self._active_vdw
+                neighbours, pair_factor = build_active_vdw_pairs(
+                    active,
+                    av["radii"],
+                    av["polymer_mask"],
+                    av["excluded_codes"],
+                    av["dmax"],
+                    av["max_neighbors"],
+                    av["scale"],
+                )
+                total += float(
+                    active_vdw_pair_energy(
+                        active,
+                        neighbours,
+                        pair_factor,
+                        av["radii"],
+                        av["scale"],
+                        av["weight"],
+                    )
+                )
+            return total

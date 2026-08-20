@@ -55,6 +55,39 @@ def test_torch_minimize_reduces_energy():
     assert e1 < 0.5 * e0, f"{e0} -> {e1}"
 
 
+def test_torch_optimizer_rebuilds_prepared_arrays_on_dtype_change():
+    """Reusing one optimizer on one device must not retain the first coordinate dtype."""
+    torch = pytest.importorskip("torch")
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+    from rgi_utils.spec import BondArrays, RestraintSpec
+
+    spec = RestraintSpec(
+        n_active=2,
+        active_sites=np.arange(2),
+        bond=BondArrays(
+            idx=np.array([[0, 1]], dtype=np.int64),
+            r0=np.array([1.00000001]),
+            slack=np.zeros(1),
+            weight=np.ones(1),
+            half=np.zeros(1),
+            mask=np.ones(1),
+        ),
+        conf_start_sigma=float("inf"),
+    )
+    opt = TorchRestraintOptimizer(spec, max_iter=1)
+    opt.energy(torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]))
+    assert opt._prepared["bond"]["r0"].dtype == torch.float32
+
+    coords64 = torch.tensor(
+        [[0.0, 0.0, 0.0], [1.00000002, 0.0, 0.0]], dtype=torch.float64
+    )
+    reused = opt.energy(coords64)
+    fresh = TorchRestraintOptimizer(spec, max_iter=1).energy(coords64)
+
+    assert opt._prepared["bond"]["r0"].dtype == torch.float64
+    assert reused == pytest.approx(fresh, rel=1e-12, abs=1e-30)
+
+
 def test_jax_minimize_reduces_energy():
     jax = pytest.importorskip("jax")
     jax.config.update("jax_enable_x64", True)
@@ -1244,6 +1277,47 @@ def test_gated_prepared_matches_energy_gate():
     assert float(opt._gated_prepared(50.0)["bond"]["mask"].sum()) == 0.0
 
 
+def test_gated_prepared_reads_host_spec_gate_arrays():
+    """GPU pre-gating must not copy prepared device gate tensors back to the host."""
+    torch = pytest.importorskip("torch")
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+    from rgi_utils.spec import DistanceArrays, RestraintSpec
+
+    spec = RestraintSpec(
+        n_active=2,
+        active_sites=np.arange(2),
+        distance=DistanceArrays(
+            grp1_idx=np.array([[0]], dtype=np.int64),
+            grp2_idx=np.array([[1]], dtype=np.int64),
+            grp1_mask=np.ones((1, 1)),
+            grp2_mask=np.ones((1, 1)),
+            target1=np.array([2.0]),
+            target2=np.zeros(1),
+            dist_type=np.zeros(1, dtype=np.int64),
+            move_mode=np.zeros(1, dtype=np.int64),
+            weight=np.ones(1),
+            mask=np.ones(1),
+            start_sigma=np.array([5.0]),
+            stop_sigma=np.array([0.0]),
+            start_step=np.array([2.0]),
+            stop_step=np.array([4.0]),
+        ),
+    )
+    opt = TorchRestraintOptimizer(spec)
+    opt._ensure(torch.device("cpu"), torch.float64)
+    # If _gated_prepared reads these prepared tensors, this would incorrectly gate off.
+    opt._prepared["distance"]["start_sigma"] = torch.full_like(
+        opt._prepared["distance"]["start_sigma"], -1.0
+    )
+    opt._prepared["distance"]["start_step"] = torch.full_like(
+        opt._prepared["distance"]["start_step"], 100.0
+    )
+
+    assert float(opt._gated_prepared(3.0, 3)["distance"]["mask"].sum()) == 1.0
+    assert float(opt._gated_prepared(6.0, 3)["distance"]["mask"].sum()) == 0.0
+    assert float(opt._gated_prepared(3.0, 5)["distance"]["mask"].sum()) == 0.0
+
+
 def test_compiled_energy_matches_eager():
     """torch.compile of the GPU energy+grad must equal eager grad_and_value (compiling
     fuses kernels; it must NOT change the maths), incl. the detached Kabsch SVD in the
@@ -1358,6 +1432,152 @@ def test_dynamic_vdw_pair_energy_matches_optimizer():
         )
     )
     assert e_method > 0.0 and abs(e_method - e_pure) < 1e-10, (e_method, e_pure)
+
+
+def _dynamic_vdw_diagnostic_spec(active_half=False):
+    from rgi_utils.spec import ActiveVdwConfig, RestraintSpec, VdwConfig
+
+    if active_half:
+        return RestraintSpec(
+            n_active=3,
+            active_sites=np.arange(3),
+            active_vdw_config=ActiveVdwConfig(
+                weight=1.0,
+                radii=np.full(3, 1.7),
+                polymer_mask=np.array([True, False, False]),
+                excluded_codes=np.array([1], dtype=np.int64),
+                scale=0.75,
+                dmax=5.0,
+                max_neighbors=2,
+            ),
+            conf_start_sigma=float("inf"),
+        )
+    return RestraintSpec(
+        n_active=1,
+        active_sites=np.array([0]),
+        vdw_config=VdwConfig(
+            weight=1.0,
+            ligand_local=np.array([0]),
+            ligand_radii=np.array([1.7]),
+            background_global=np.array([1]),
+            background_radii=np.array([1.7]),
+            scale=0.75,
+            dmax=5.0,
+            max_neighbors=1,
+        ),
+        conf_start_sigma=float("inf"),
+    )
+
+
+@pytest.mark.parametrize("active_half", [False, True])
+def test_dynamic_vdw_energy_matches_across_backends(active_half):
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.optim.jax_optim import dynamic_vdw_energy
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+
+    spec = _dynamic_vdw_diagnostic_spec(active_half)
+    coords_np = (
+        np.array([[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, 0.0, 0.0]]])
+        if active_half
+        else np.array([[[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]]])
+    )
+    expected = (0.5 - 0.75 * 3.4) ** 2
+    e_torch = TorchRestraintOptimizer(spec, max_iter=1).dynamic_vdw_energy(
+        torch.tensor(coords_np, dtype=torch.float64)
+    )
+    e_jax = dynamic_vdw_energy(spec, jnp.asarray(coords_np))
+
+    assert e_torch == pytest.approx(expected)
+    assert e_jax == pytest.approx(expected)
+    assert e_jax == pytest.approx(e_torch, rel=1e-9)
+
+
+@pytest.mark.parametrize("backend", ["torch", "numpy", "jax"])
+def test_finalize_reports_dynamic_vdw_before_minimize(backend, capsys):
+    from rgi_utils import CombinedRestraints
+
+    spec = _dynamic_vdw_diagnostic_spec(active_half=True)
+    coords_np = np.array([[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, 0.0, 0.0]]])
+    cr = CombinedRestraints()
+    cr.config.verbose = True
+    cr.spec = spec
+    if backend == "torch":
+        torch = pytest.importorskip("torch")
+
+        coords = torch.tensor(coords_np, dtype=torch.float64)
+    elif backend == "jax":
+        jax = pytest.importorskip("jax")
+        jax.config.update("jax_enable_x64", True)
+        import jax.numpy as jnp
+
+        coords = jnp.asarray(coords_np)
+    else:
+        coords = coords_np
+
+    cr.finalize(coords, istep=7)
+    output = capsys.readouterr().out
+
+    assert "finalize (step 7)" in output
+    assert "vdw=4.20250" in output
+    assert "total=4.20250" in output
+
+
+@pytest.mark.parametrize("active_half", [False, True])
+def test_jax_skips_dynamic_pair_build_outside_conformer_window(
+    monkeypatch, active_half
+):
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+
+    from rgi_utils.optim import jax_optim
+    from rgi_utils.spec import DistanceArrays
+
+    spec = _dynamic_vdw_diagnostic_spec(active_half=active_half)
+    spec.conf_start_sigma = 1.0
+    spec.distance = DistanceArrays(
+        grp1_idx=np.array([[0]], dtype=np.int64),
+        grp2_idx=np.array([[0]], dtype=np.int64),
+        grp1_mask=np.ones((1, 1)),
+        grp2_mask=np.ones((1, 1)),
+        target1=np.zeros(1),
+        target2=np.zeros(1),
+        dist_type=np.zeros(1, dtype=np.int64),
+        move_mode=np.zeros(1, dtype=np.int64),
+        weight=np.ones(1),
+        mask=np.ones(1),
+        start_sigma=np.array([float("inf")]),
+        stop_sigma=np.array([-1.0]),
+        start_step=np.array([float("-inf")]),
+        stop_step=np.array([float("inf")]),
+    )
+    callbacks = []
+    builder_name = (
+        "_build_active_vdw_pairs" if active_half else "_build_fixed_vdw_pairs"
+    )
+    original = getattr(jax_optim, builder_name)
+
+    def counted(*args, **kwargs):
+        jax.debug.callback(lambda: callbacks.append(1))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(jax_optim, builder_name, counted)
+    minimize = jax.jit(jax_optim.make_minimizer(spec, max_iter=2))
+    coords = jnp.asarray(
+        [[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, 0.0, 0.0]]]
+        if active_half
+        else [[[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]]]
+    )
+
+    minimize(coords, 2.0).block_until_ready()
+    assert callbacks == []
+
+    minimize(coords, 0.5).block_until_ready()
+    assert callbacks
 
 
 def _vdw_and_custom_spec(n_bg: int = 1):

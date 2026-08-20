@@ -637,6 +637,43 @@ def make_minimizer(
                     active_factor,
                 )
 
+            def empty_dynamic_pairs(a):
+                """Static-shape zero neighbour lists for an inactive VdW window."""
+                n_batch = a.reshape((-1, a.shape[-2], 3)).shape[0]
+                fixed_neighbours = fixed_mask = None
+                active_neighbours = active_factor = None
+                if has_vdw:
+                    n_neighbour = min(vdw_max_neighbors, bg_pos.shape[-2])
+                    shape = (
+                        n_batch,
+                        vdw_lig_local.shape[0],
+                        n_neighbour,
+                    )
+                    fixed_neighbours = jnp.zeros(shape, dtype=jnp.int32)
+                    fixed_mask = jnp.zeros(shape, dtype=a.dtype)
+                if has_active_vdw:
+                    n_neighbour = min(active_vdw_max_neighbors, max(0, a.shape[-2] - 1))
+                    shape = (n_batch, a.shape[-2], n_neighbour)
+                    active_neighbours = jnp.zeros(shape, dtype=jnp.int32)
+                    active_factor = jnp.zeros(shape, dtype=a.dtype)
+                return (
+                    fixed_neighbours,
+                    fixed_mask,
+                    active_neighbours,
+                    active_factor,
+                )
+
+            def initial_dynamic_pairs(a, fixed_cutoff, active_cutoff):
+                # Another restraint can keep _descend active after the conformer window
+                # closes. Avoid the O(N log N) cell-list build when both dynamic VdW
+                # weights are zero while preserving the exact static carry shapes.
+                return jax.lax.cond(
+                    in_win,
+                    lambda x: build_dynamic_pairs(x, fixed_cutoff, active_cutoff),
+                    empty_dynamic_pairs,
+                    a,
+                )
+
             def energy_fn(
                 a,
                 fixed_neighbours,
@@ -702,7 +739,7 @@ def make_minimizer(
                 # Build once BEFORE the loop: the carry then has concrete shapes and there
                 # is no "block 0 must always build" special case. (Seeding the references
                 # with inf does not work -- inf - inf is nan and nan > T is False.)
-                _n0, _m0, _a0, _f0 = build_dynamic_pairs(
+                _n0, _m0, _a0, _f0 = initial_dynamic_pairs(
                     active, fixed_cutoff, active_cutoff
                 )
                 # The CG state's dtypes must match the loop carry EXACTLY (fori_loop demands
@@ -826,7 +863,7 @@ def make_minimizer(
                     max_atom_step=step_cap,
                 )
             else:
-                pairs = build_dynamic_pairs(
+                pairs = initial_dynamic_pairs(
                     active,
                     vdw_dmax if has_vdw else None,
                     active_vdw_dmax if has_active_vdw else None,
@@ -871,3 +908,73 @@ def energy_of(spec, coords) -> float:
     prepared = jax_energy.prepare_spec(spec)
     active = coords[..., active_idx, :]
     return float(jax_energy.total_energy(active, prepared))
+
+
+def dynamic_vdw_energy(spec, coords) -> float:
+    """Return both optimizer-only VdW residuals for host-side diagnostics."""
+    if not spec.is_active():
+        return 0.0
+    vc = getattr(spec, "vdw_config", None)
+    ac = getattr(spec, "active_vdw_config", None)
+    has_vdw = vc is not None and vc.weight > 0
+    has_active_vdw = ac is not None and ac.weight > 0
+    if not (has_vdw or has_active_vdw):
+        return 0.0
+
+    coords = jnp.asarray(coords)
+    active = coords[..., jnp.asarray(spec.active_sites, dtype=jnp.int32), :]
+    dtype = active.dtype
+    total = 0.0
+    if has_vdw:
+        lig_local = jnp.asarray(vc.ligand_local, dtype=jnp.int32)
+        lig_r = jnp.asarray(vc.ligand_radii, dtype=dtype)
+        bg_r = jnp.asarray(vc.background_radii, dtype=dtype)
+        scale = jnp.asarray(float(vc.scale), dtype=dtype)
+        bg_pos = coords[..., jnp.asarray(vc.background_global, dtype=jnp.int32), :]
+        neighbours, pair_mask = _build_fixed_vdw_pairs(
+            active,
+            bg_pos,
+            lig_local,
+            jnp.asarray(float(vc.dmax), dtype=dtype),
+            int(vc.max_neighbors),
+            lig_r,
+            bg_r,
+            scale,
+        )
+        total += float(
+            _vdw_pair_energy(
+                active,
+                bg_pos,
+                lig_local,
+                neighbours,
+                pair_mask,
+                lig_r,
+                bg_r,
+                scale,
+                jnp.asarray(float(vc.weight), dtype=dtype),
+            )
+        )
+    if has_active_vdw:
+        check_active_vdw_int32_safe(int(ac.radii.shape[0]))
+        radii = jnp.asarray(ac.radii, dtype=dtype)
+        scale = jnp.asarray(float(ac.scale), dtype=dtype)
+        neighbours, pair_factor = _build_active_vdw_pairs(
+            active,
+            radii,
+            jnp.asarray(ac.polymer_mask, dtype=bool),
+            jnp.asarray(ac.excluded_codes, dtype=jnp.int32),
+            jnp.asarray(float(ac.dmax), dtype=dtype),
+            int(ac.max_neighbors),
+            scale,
+        )
+        total += float(
+            _active_vdw_pair_energy(
+                active,
+                neighbours,
+                pair_factor,
+                radii,
+                scale,
+                jnp.asarray(float(ac.weight), dtype=dtype),
+            )
+        )
+    return total

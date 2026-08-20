@@ -883,6 +883,8 @@ E = w \sum_{(i,j)} \min\big(0,\; d_{ij} - \text{scale}\cdot(r_i + r_j)\big)^2,
 
 where $d_{ij}$ is the pair distance and $r_i, r_j$ are their VdW radii. Static ligand pairs are
 enumerated from topology; `dmax` is the baseline cutoff for dynamic neighbor searches.
+The verbose `finalize` `vdw=` value includes these static rows and both optimizer-only dynamic
+halves on Torch and JAX.
 
 ### Van der Waals modes
 
@@ -912,6 +914,8 @@ migration error pointing to `intermolecular`.
 With `method: CG`, the two fixed-width dynamic neighbor lists — moving ligand/polymer atoms
 against the fixed background, and restrained polymer active-active pairs — are listed out to a
 **Verlet skin** and rebuilt only when the atoms have actually moved far enough to invalidate them.
+The initial lists are skipped when the conformer sigma/step window is inactive, even if another
+restraint keeps the optimizer active for that diffusion step.
 `neighbor_skin` (default 2.0 Å) is both the extra listed radius and the displacement budget: a
 rebuild fires when the largest per-atom displacement since the last build exceeds `neighbor_skin`
 (fixed background, where only the ligand moves) or `neighbor_skin / 2` (active-active, where both

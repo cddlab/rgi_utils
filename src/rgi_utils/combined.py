@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 
 from rgi_utils.config import RestraintsConfig
-from rgi_utils.energy._terms import PER_ENTRY_KEYS, iter_spec_terms
+from rgi_utils.energy._terms import BREAKDOWN_KEYS, PER_ENTRY_KEYS, iter_spec_terms
 from rgi_utils.featurizer import _conf_weight, build_spec
 from rgi_utils.polymer import build_polymer_geometry
 
@@ -559,39 +559,31 @@ class CombinedRestraints:
             return
         try:
             bd = self._restraint_breakdown(coords)
-            total = (
-                bd["bond"]
-                + bd["angle"]
-                + bd["chiral"]
-                + bd.get("plane", 0.0)
-                + bd["cistrans"]
-                + bd["vdw"]
-                + bd["distance"]
-                + bd.get("rmsd", 0.0)
-                + bd.get("group_angle", 0.0)
-                + bd.get("group_dihedral", 0.0)
-                + bd.get("group_improper", 0.0)
-                + bd.get("group_plane", 0.0)
-            )
+            total = sum(bd[key] for key in BREAKDOWN_KEYS)
             # custom restraints are closures (not in the array breakdown) — evaluate each
             # at the final coords and report by name. A 0.0 here with custom > 0 in the
             # setup spec means SATISFIED (cross-check the setup `custom=N` count).
             custom_bd = self._custom_breakdown(coords)
             total += sum(custom_bd.values())
-            # The dynamic fixed-background VdW (spec.vdw_config) is applied only inside
-            # the torch optimizer and is absent from the static per-term breakdown
-            # above (energy_breakdown reads only spec.vdw). Add it directly (it is
-            # >= 0 by construction) — NOT as (optimizer.energy - static total), which
-            # would mix the float64 static breakdown with the float32 optimizer energy
-            # and leave the static terms' rounding error in the result (even negative).
-            if (
-                (self._backend or self._infer_backend(coords)) == "torch"
-                and getattr(self.spec, "vdw_config", None) is not None
-                and self._optimizer is not None
-            ):
+            # Dynamic VdW is optimizer-only and absent from the array breakdown. Both
+            # backends implement the fixed-background and active-active polymer halves.
+            backend = self._backend or self._infer_backend(coords)
+            has_dynamic_vdw = (
+                getattr(self.spec, "vdw_config", None) is not None
+                or getattr(self.spec, "active_vdw_config", None) is not None
+            )
+            dyn_vdw = 0.0
+            if has_dynamic_vdw and backend == "torch":
+                # A diagnostic-only finalize may run before the first minimize call.
+                if self._optimizer is None:
+                    self._ensure_backend("torch")
                 dyn_vdw = float(self._optimizer.dynamic_vdw_energy(coords))
-                bd["vdw"] += dyn_vdw
-                total += dyn_vdw
+            elif has_dynamic_vdw and backend == "jax":
+                from rgi_utils.optim.jax_optim import dynamic_vdw_energy
+
+                dyn_vdw = float(dynamic_vdw_energy(self.spec, coords))
+            bd["vdw"] += dyn_vdw
+            total += dyn_vdw
             msg = (
                 f"[rgi_utils] finalize (step {istep}): "
                 f"bond={bd['bond']:.5f} angle={bd['angle']:.5f} "
