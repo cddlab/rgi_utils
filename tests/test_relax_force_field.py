@@ -212,9 +212,7 @@ def test_stereo_validation_detects_ez_and_chiral_inversions():
 
 
 @pytest.mark.parametrize("force_field", ["uff", "mmff94", "mmff94s"])
-def test_stereo_inversion_retries_from_an_etkdg_seed(
-    monkeypatch, caplog, force_field
-):
+def test_stereo_inversion_retries_from_an_etkdg_seed(monkeypatch, caplog, force_field):
     trans, trans_coords = _embed("OC(=O)/C=C/C(=O)O")
     _cis, cis_coords = _embed(r"OC(=O)/C=C\C(=O)O")
     calls = 0
