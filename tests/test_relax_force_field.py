@@ -14,8 +14,16 @@ import pytest
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
+import rgi_utils._mol_build as mol_build
 from rgi_utils import CombinedRestraints
-from rgi_utils._mol_build import RelaxError, ff_relax, parse_relax_force_field
+from rgi_utils._mol_build import (
+    RelaxError,
+    _embedded_heavy_coords,
+    _expected_stereo,
+    _stereo_mismatch_counts,
+    ff_relax,
+    parse_relax_force_field,
+)
 from rgi_utils.atom_context import AtomRecord, LigandConf
 from rgi_utils.config import RestraintsConfig
 from rgi_utils.featurizer import _extract_conformer, build_spec
@@ -31,6 +39,11 @@ def _embed(smiles, seed=7):
 
 def _bond_snapshot(mol):
     return [(b.GetIsAromatic(), str(b.GetBondType())) for b in mol.GetBonds()]
+
+
+def _stereo_mismatches(reference_mol, reference_coords, candidate_coords):
+    expected = _expected_stereo(reference_mol, reference_coords)
+    return expected, _stereo_mismatch_counts(reference_mol, candidate_coords, expected)
 
 
 # --------------------------------------------------------------------------- config
@@ -169,6 +182,96 @@ def test_none_keeps_the_cached_conformer_exactly():
         r0 != pytest.approx(expected[(g0, g1)], abs=1e-6)
         for g0, g1, r0, _esd in relaxed
     )
+
+
+def test_bad_coordinate_count_keeps_uff_soft_but_mmff_explicit():
+    mol, coords = _embed("CC(=O)NC")
+    assert ff_relax(mol, coords[:-1], "uff") is None
+    with pytest.raises(RelaxError, match="coordinate count"):
+        ff_relax(mol, coords[:-1], "mmff94")
+
+
+# -------------------------------------------------------- stereo-preserving retries
+
+
+def test_stereo_validation_detects_ez_and_chiral_inversions():
+    trans, trans_coords = _embed("OC(=O)/C=C/C(=O)O")
+    cis, cis_coords = _embed(r"OC(=O)/C=C\C(=O)O")
+    assert [a.GetAtomicNum() for a in trans.GetAtoms()] == [
+        a.GetAtomicNum() for a in cis.GetAtoms()
+    ]
+    expected, mismatch = _stereo_mismatches(trans, trans_coords, cis_coords)
+    assert len(expected[1]) == 1
+    assert mismatch == (0, 1)
+
+    left, left_coords = _embed("N[C@@H](C)C(=O)O")
+    right, right_coords = _embed("N[C@H](C)C(=O)O")
+    expected, mismatch = _stereo_mismatches(left, left_coords, right_coords)
+    assert len(expected[0]) == 1
+    assert mismatch == (1, 0)
+
+
+@pytest.mark.parametrize("force_field", ["uff", "mmff94", "mmff94s"])
+def test_stereo_inversion_retries_from_an_etkdg_seed(
+    monkeypatch, caplog, force_field
+):
+    trans, trans_coords = _embed("OC(=O)/C=C/C(=O)O")
+    _cis, cis_coords = _embed(r"OC(=O)/C=C\C(=O)O")
+    calls = 0
+
+    def fake_relax_once(_mol, coords, _force_field):
+        nonlocal calls
+        calls += 1
+        return cis_coords if calls == 1 else np.asarray(coords, dtype=np.float64)
+
+    monkeypatch.setattr(mol_build, "_ff_relax_once", fake_relax_once)
+    out = ff_relax(trans, trans_coords, force_field)
+    expected = _expected_stereo(trans, trans_coords)
+    assert out is not None
+    assert _stereo_mismatch_counts(trans, out, expected) == (0, 0)
+    assert calls == 2
+    assert "stereo retry succeeded" in caplog.text
+
+
+@pytest.mark.parametrize("force_field", ["uff", "mmff94"])
+def test_all_stereo_retries_fail_with_existing_force_field_policy(
+    monkeypatch, force_field
+):
+    trans, trans_coords = _embed("OC(=O)/C=C/C(=O)O")
+    _cis, cis_coords = _embed(r"OC(=O)/C=C\C(=O)O")
+
+    monkeypatch.setattr(
+        mol_build,
+        "_ff_relax_once",
+        lambda _mol, _coords, _force_field: cis_coords,
+    )
+    if force_field == "uff":
+        assert ff_relax(trans, trans_coords, force_field) is None
+    else:
+        with pytest.raises(RelaxError, match="could not preserve"):
+            ff_relax(trans, trans_coords, force_field)
+
+
+def test_axt_real_uff_ez_flip_retries_to_correct_stereo():
+    smiles = (
+        "CC1=C(/C=C/C(C)=C/C=C/C(C)=C/C=C/C=C(C)/C=C/C=C(C)/C=C/"
+        "C2=C(C)C(=O)[C@@H](O)CC2(C)C)C(C)(C)C[C@H](O)C1=O"
+    )
+    mol = Chem.MolFromSmiles(smiles)
+    assert mol is not None
+    coords = _embedded_heavy_coords(mol, 6)
+    assert coords is not None
+    expected = _expected_stereo(mol, coords)
+    assert len(expected[0]) == 2
+    assert len(expected[1]) == 9
+
+    inverted = mol_build._ff_relax_once(mol, coords, "uff")
+    assert inverted is not None
+    assert _stereo_mismatch_counts(mol, inverted, expected) == (0, 1)
+
+    retried = ff_relax(mol, coords, "uff")
+    assert retried is not None
+    assert _stereo_mismatch_counts(mol, retried, expected) == (0, 0)
 
 
 # --------------------------------------------------------------- the two RDKit traps

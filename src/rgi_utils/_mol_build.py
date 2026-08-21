@@ -18,6 +18,11 @@ logger = logging.getLogger(__name__)
 # it disables the relax so the targets come straight off the tool's cached conformer.
 _RELAX_FORCE_FIELDS = ("uff", "mmff94", "mmff94s", "none")
 
+# A force-field minimum can rarely cross a stereochemical barrier (observed for one
+# long polyene). Retry from deterministic ETKDG embeddings only after that happens;
+# normal relaxations retain their existing start and never pay the embedding cost.
+_STEREO_RETRY_SEEDS = tuple(range(0xF00D, 0xF011))
+
 
 class RelaxError(ValueError):
     """A force-field relax the user EXPLICITLY asked for could not be performed.
@@ -177,6 +182,154 @@ def build_ligand_mol(elements, coords, bonds_local, perceive_bonds=False):
     return mol
 
 
+def _embed_molecule(mol, random_seed: int):
+    """Return ``(H-added mol, conformer id)`` from a stereo-aware ETKDG embed."""
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    mh = Chem.AddHs(Chem.Mol(mol))
+    params = AllChem.ETKDGv3()
+    params.randomSeed = int(random_seed)
+    cid = AllChem.EmbedMolecule(mh, params)
+    if cid == -1:
+        params.useRandomCoords = True
+        cid = AllChem.EmbedMolecule(mh, params)
+    if cid == -1:
+        return None
+    return mh, cid
+
+
+def _coords_from_mol(mol, coords):
+    """Copy ``mol`` and replace its conformers with heavy-atom ``coords``."""
+    from rdkit import Chem
+
+    out = Chem.Mol(mol)
+    coords = list(coords)
+    if len(coords) != out.GetNumAtoms():
+        return None
+    conf = Chem.Conformer(out.GetNumAtoms())
+    for i, pos in enumerate(coords):
+        conf.SetAtomPosition(i, (float(pos[0]), float(pos[1]), float(pos[2])))
+    out.RemoveAllConformers()
+    out.AddConformer(conf, assignId=True)
+    return out
+
+
+def _eligible_stereo_sites(mol):
+    """Atom/bond indices whose stereochemistry is protected by conformer terms."""
+    from rdkit import Chem
+
+    chiral_tags = {
+        Chem.ChiralType.CHI_TETRAHEDRAL_CW,
+        Chem.ChiralType.CHI_TETRAHEDRAL_CCW,
+    }
+    atoms = {
+        atom.GetIdx() for atom in mol.GetAtoms() if atom.GetChiralTag() in chiral_tags
+    }
+    try:
+        Chem.FastFindRings(mol)
+    except Exception:
+        pass
+    bonds = set()
+    for bond in mol.GetBonds():
+        if (
+            bond.GetBondType() != Chem.BondType.DOUBLE
+            or bond.GetIsAromatic()
+            or bond.IsInRing()
+        ):
+            continue
+        first, second = bond.GetBeginAtom(), bond.GetEndAtom()
+        if not any(n.GetIdx() != second.GetIdx() for n in first.GetNeighbors()):
+            continue
+        if not any(n.GetIdx() != first.GetIdx() for n in second.GetNeighbors()):
+            continue
+        i, j = first.GetIdx(), second.GetIdx()
+        bonds.add((min(i, j), max(i, j)))
+    return atoms, bonds
+
+
+def _cip_labels(mol):
+    """Return atom and bond CIP labels already encoded on ``mol``."""
+    from rdkit.Chem import rdCIPLabeler
+
+    try:
+        rdCIPLabeler.AssignCIPLabels(mol)
+    except Exception:
+        pass
+    atoms = {
+        atom.GetIdx(): atom.GetProp("_CIPCode")
+        for atom in mol.GetAtoms()
+        if atom.HasProp("_CIPCode")
+    }
+    bonds = {}
+    for bond in mol.GetBonds():
+        if not bond.HasProp("_CIPCode"):
+            continue
+        i, j = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+        bonds[(min(i, j), max(i, j))] = bond.GetProp("_CIPCode")
+    return atoms, bonds
+
+
+def _graph_stereo_labels(mol):
+    """CIP labels from graph-defined ``@``/``@@`` and double-bond stereo."""
+    from rdkit import Chem
+
+    out = Chem.Mol(mol)
+    try:
+        Chem.AssignStereochemistry(out, cleanIt=False, force=True)
+    except Exception:
+        pass
+    return _cip_labels(out)
+
+
+def _coordinate_stereo_labels(mol, coords):
+    """CIP labels perceived afresh from a heavy-atom 3D conformer."""
+    from rdkit import Chem
+
+    out = _coords_from_mol(mol, coords)
+    if out is None:
+        return {}, {}
+    try:
+        Chem.RemoveStereochemistry(out)
+        Chem.AssignStereochemistryFrom3D(out)
+    except Exception:
+        return {}, {}
+    return _cip_labels(out)
+
+
+def _expected_stereo(mol, coords):
+    """Expected protected stereo, preferring graph labels over input-coordinate labels."""
+    atom_sites, bond_sites = _eligible_stereo_sites(mol)
+    graph_atoms, graph_bonds = _graph_stereo_labels(mol)
+    coord_atoms, coord_bonds = _coordinate_stereo_labels(mol, coords)
+    atoms = {
+        i: graph_atoms.get(i, coord_atoms.get(i))
+        for i in atom_sites
+        if graph_atoms.get(i, coord_atoms.get(i)) is not None
+    }
+    bonds = {
+        key: graph_bonds.get(key, coord_bonds.get(key))
+        for key in bond_sites
+        if graph_bonds.get(key, coord_bonds.get(key)) is not None
+    }
+    return atoms, bonds
+
+
+def _stereo_mismatch_counts(mol, coords, expected):
+    """Number of expected chiral atoms / E/Z bonds not reproduced by ``coords``."""
+    expected_atoms, expected_bonds = expected
+    if not expected_atoms and not expected_bonds:
+        return 0, 0
+    actual_atoms, actual_bonds = _coordinate_stereo_labels(mol, coords)
+    atom_mismatches = sum(
+        actual_atoms.get(i) != code for i, code in expected_atoms.items()
+    )
+    bond_mismatches = sum(
+        actual_bonds.get(key) != code for key, code in expected_bonds.items()
+    )
+    return atom_mismatches, bond_mismatches
+
+
 def generate_ideal_conformer(mol, target_mol=None):
     """Stereo-preserving ETKDGv3 + UFF ideal conformer for ``mol`` (whose chiral tags +
     bond E/Z are ALREADY correct, e.g. from SMILES). Returns an (n_heavy, 3) float64
@@ -202,15 +355,10 @@ def generate_ideal_conformer(mol, target_mol=None):
     from rdkit.Chem import AllChem
 
     try:
-        mh = Chem.AddHs(mol)  # explicit H gives a sensible 3D embedding
-        params = AllChem.ETKDGv3()
-        params.randomSeed = 0xF00D  # deterministic target geometry across runs
-        cid = AllChem.EmbedMolecule(mh, params)
-        if cid == -1:  # retry with random coords for hard cases
-            params.useRandomCoords = True
-            cid = AllChem.EmbedMolecule(mh, params)
-        if cid == -1:
+        embedded = _embed_molecule(mol, _STEREO_RETRY_SEEDS[0])
+        if embedded is None:
             return None
+        mh, cid = embedded
         try:
             AllChem.UFFOptimizeMolecule(mh, confId=cid, maxIters=1000)
         except Exception:  # a geometry-only target doesn't need a clean FF result
@@ -238,6 +386,66 @@ def generate_ideal_conformer(mol, target_mol=None):
         return None
 
 
+def _ff_relax_once(mol, coords, force_field):
+    """One force-field minimization with the established UFF/MMFF failure policy."""
+    import numpy as np
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    ff = str(force_field).lower()
+    coords_array = np.asarray(coords, dtype=np.float64)
+    m = _coords_from_mol(mol, coords_array)
+    if m is None:
+        if ff.startswith("mmff"):
+            raise RelaxError(
+                f"relax_force_field.ligand={force_field!r}: coordinate count "
+                f"{len(coords_array)} does not match the ligand's "
+                f"{mol.GetNumAtoms()} atoms"
+            )
+        return None
+    mh = Chem.AddHs(m, addCoords=True)  # Hs placed from heavy-atom geometry
+    if ff == "uff":
+        if AllChem.UFFOptimizeMolecule(mh, maxIters=200) not in (0, 1):
+            return None  # not converged / no force field -> keep the tool's conformer
+    else:
+        # Pre-check on the COPY: a clearer message than the bare rc == -1 that a
+        # metal-containing (or otherwise un-typeable) ligand would otherwise produce.
+        variant = "MMFF94s" if ff == "mmff94s" else "MMFF94"
+        if not AllChem.MMFFHasAllMoleculeParams(mh):
+            raise RelaxError(
+                f"relax_force_field.ligand={force_field!r}: RDKit has no {variant} "
+                "parameters for this ligand (MMFF covers no metals, unlike UFF). Use "
+                "relax_force_field: {ligand: uff}, or {ligand: none} to skip the "
+                "relax entirely."
+            )
+        rc = AllChem.MMFFOptimizeMolecule(mh, maxIters=200, mmffVariant=variant)
+        if rc == -1:
+            raise RelaxError(
+                f"relax_force_field.ligand={force_field!r}: {variant} force-field "
+                "setup failed for this ligand. Use relax_force_field: "
+                "{ligand: uff}, or {ligand: none} to skip the relax entirely."
+            )
+    mh = Chem.RemoveHs(mh)
+    if mh.GetNumAtoms() != mol.GetNumAtoms():
+        return None
+    return np.asarray(mh.GetConformer(0).GetPositions(), dtype=np.float64)
+
+
+def _embedded_heavy_coords(mol, random_seed):
+    """Stereo-aware ETKDG retry coordinates in the original heavy-atom order."""
+    import numpy as np
+    from rdkit import Chem
+
+    embedded = _embed_molecule(mol, random_seed)
+    if embedded is None:
+        return None
+    mh, _ = embedded
+    heavy = Chem.RemoveHs(mh)
+    if heavy.GetNumAtoms() != mol.GetNumAtoms():
+        return None
+    return np.asarray(heavy.GetConformer(0).GetPositions(), dtype=np.float64)
+
+
 def ff_relax(mol, coords, force_field="uff"):
     """Force-field-relax ``coords`` (a conformer of ``mol``) to ideal bond/angle geometry
     while KEEPING the input fold.
@@ -248,8 +456,12 @@ def ff_relax(mol, coords, force_field="uff"):
     Kekule-localized aromatic rings, stretched bonds and bent angles relax to their
     force-field-ideal values. Used to derive bond/angle restraint TARGETS that are
     consistent across tools (every tool's cached conformer otherwise carries its own
-    bond/angle idiosyncrasies). Stereo is preserved (local minimisation from a fixed
-    start). Returns heavy-atom coords in ``mol`` atom order, or None on failure.
+    bond/angle idiosyncrasies). The result is checked against graph-defined
+    stereochemistry (falling back to the input 3D conformer where the graph has no
+    label). If a rare force-field crossing changes a protected tetrahedral centre or
+    acyclic double-bond E/Z label, the relax is retried from deterministic stereo-aware
+    ETKDG embeddings. Returns heavy-atom coords in ``mol`` atom order, or None on
+    failure.
 
     ``force_field`` (``conformer_restraints_config.relax_force_field.ligand``):
     ``"uff"`` (default) / ``"mmff94"`` / ``"mmff94s"``. Neither is uniformly better --
@@ -281,49 +493,51 @@ def ff_relax(mol, coords, force_field="uff"):
     only flips rc to 0. So rc=1 is accepted, and raising the budget would buy nothing while
     moving every existing UFF target.
     """
-    import numpy as np
-    from rdkit import Chem
-    from rdkit.Chem import AllChem
-
     ff = str(force_field).lower()
     try:
-        coords = np.asarray(coords, dtype=np.float64)
-        m = Chem.Mol(mol)  # deep copy: shields the caller from MMFF's kekulization
-        conf = Chem.Conformer(m.GetNumAtoms())
-        for i in range(m.GetNumAtoms()):
-            conf.SetAtomPosition(
-                i, (float(coords[i, 0]), float(coords[i, 1]), float(coords[i, 2]))
-            )
-        m.RemoveAllConformers()
-        m.AddConformer(conf, assignId=True)
-        mh = Chem.AddHs(m, addCoords=True)  # Hs placed from heavy-atom geometry
-        if ff == "uff":
-            if AllChem.UFFOptimizeMolecule(mh, maxIters=200) not in (0, 1):
-                return (
-                    None  # not converged / no force field -> keep the tool's conformer
-                )
-        else:
-            # Pre-check on the COPY: a clearer message than the bare rc == -1 that a
-            # metal-containing (or otherwise un-typeable) ligand would otherwise produce.
-            variant = "MMFF94s" if ff == "mmff94s" else "MMFF94"
-            if not AllChem.MMFFHasAllMoleculeParams(mh):
-                raise RelaxError(
-                    f"relax_force_field.ligand={force_field!r}: RDKit has no {variant} "
-                    "parameters for this ligand (MMFF covers no metals, unlike UFF). Use "
-                    "relax_force_field: {ligand: uff}, or {ligand: none} to skip the "
-                    "relax entirely."
-                )
-            rc = AllChem.MMFFOptimizeMolecule(mh, maxIters=200, mmffVariant=variant)
-            if rc == -1:
-                raise RelaxError(
-                    f"relax_force_field.ligand={force_field!r}: {variant} force-field "
-                    "setup failed for this ligand. Use relax_force_field: "
-                    "{ligand: uff}, or {ligand: none} to skip the relax entirely."
-                )
-        mh = Chem.RemoveHs(mh)
-        if mh.GetNumAtoms() != mol.GetNumAtoms():
+        expected = _expected_stereo(mol, coords)
+        relaxed = _ff_relax_once(mol, coords, ff)
+        if relaxed is None:
             return None
-        return np.asarray(mh.GetConformer(0).GetPositions(), dtype=np.float64)
+        mismatches = _stereo_mismatch_counts(mol, relaxed, expected)
+        if mismatches == (0, 0):
+            return relaxed
+
+        logger.warning(
+            "force-field relax changed ligand stereochemistry "
+            "(chiral=%d, E/Z=%d); retrying from ETKDG",
+            mismatches[0],
+            mismatches[1],
+        )
+        last_mismatches = mismatches
+        for random_seed in _STEREO_RETRY_SEEDS:
+            candidate = _embedded_heavy_coords(mol, random_seed)
+            if candidate is None:
+                continue
+            retried = _ff_relax_once(mol, candidate, ff)
+            if retried is None:
+                continue
+            last_mismatches = _stereo_mismatch_counts(mol, retried, expected)
+            if last_mismatches == (0, 0):
+                logger.warning(
+                    "force-field stereo retry succeeded with ETKDG seed %d",
+                    random_seed,
+                )
+                return retried
+
+        message = (
+            "force-field relax could not preserve ligand stereochemistry after "
+            f"{len(_STEREO_RETRY_SEEDS)} ETKDG retries "
+            f"(chiral={last_mismatches[0]}, E/Z={last_mismatches[1]})"
+        )
+        if ff.startswith("mmff"):
+            raise RelaxError(
+                f"relax_force_field.ligand={force_field!r}: {message}. Use "
+                "relax_force_field: {ligand: uff}, or {ligand: none} to skip the "
+                "relax entirely."
+            )
+        logger.warning("%s; using the unrelaxed conformer", message)
+        return None
     except RelaxError:
         raise
     except Exception as exc:

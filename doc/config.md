@@ -842,6 +842,17 @@ gives bond lengths identical to 3 decimals.
 
 Behaviour worth knowing:
 
+- **Relaxation cannot silently change defined stereochemistry.** After relaxation, RGI compares
+  graph-defined tetrahedral chirality and acyclic non-aromatic double-bond E/Z labels with labels
+  perceived from the relaxed 3D coordinates. A mismatch triggers up to four deterministic,
+  stereo-aware ETKDG re-embeddings followed by the selected force field. If every retry fails,
+  UFF keeps the predictor conformer and an explicitly selected MMFF raises, following the same
+  failure policy as other relaxation errors.
+- **CCD input does not imply `none`.** Several predictors regenerate a random RDKit conformer even
+  when the user supplied a CCD code, and other CCD caches carry non-ideal local geometry. The
+  default therefore remains UFF for both CCD and SMILES ligands. Use
+  `relax_force_field: {ligand: none}` only when the supplied reference coordinates themselves are
+  the intended targets.
 - **MMFF raises where UFF falls back.** UFF is the default nobody asked for, so a failure quietly
   keeps the cached conformer. `mmff94`/`mmff94s` are only ever reached because you set them, so any
   failure raises instead of producing un-relaxed targets that look like MMFF ones. This is not

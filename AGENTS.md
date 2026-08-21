@@ -236,7 +236,12 @@ UFF is the unrequested default so it soft-fails to the cached conformer (`return
 explicit `mmff*` raises `RelaxError` — including on an unsanitized mol, where RDKit's own
 `RuntimeError` is re-wrapped rather than swallowed. `maxIters=200` is shared and should stay: all
 three force fields report rc=1 there on ATP but the geometry is converged (identical to 3 decimals
-at 2000/20000 iterations), and moving it would shift every existing UFF target.
+at 2000/20000 iterations), and moving it would shift every existing UFF target. The result is
+stereo-checked against graph-defined chirality/E/Z (input 3D fills missing labels); a mismatch
+retries four deterministic ETKDG seeds before applying that same UFF/MMFF policy. Do not skip UFF
+solely because the input used a CCD code: several predictors regenerate CCD `ref_pos`, and cached
+CCD geometry is not uniformly ideal. Trusted coordinates can opt out explicitly with
+`relax_force_field: {ligand: none}`.
 
 #### Standalone plane restraints (`plane_restr_data.py`)
 
