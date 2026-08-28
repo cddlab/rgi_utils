@@ -1,7 +1,8 @@
 # RGI documentation
 
 Use the tool-specific guide for installation, config placement, and the run command. Use the
-shared [`restraints_config` reference](config.md) for restraint semantics and defaults.
+shared [`restraints_config` reference](config.md) for restraint semantics and defaults. See the
+[FAQ](FAQ.md) for common failure modes and troubleshooting guidance.
 
 ## Tool guides
 

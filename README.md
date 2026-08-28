@@ -18,7 +18,8 @@ Restraint-Guided Inference (RGI) utilities for diffusion-based structure predict
 | **OpenDDE v1**  | opendde     | torch   | [`doc/opendde_restr.md`](doc/opendde_restr.md)       |
 
 See each tool's guide in [`doc/`](doc/) for install / run details, and
-[`doc/config.md`](doc/config.md) for the full `restraints_config` schema.
+[`doc/config.md`](doc/config.md) for the full `restraints_config` schema. For common failure modes
+and troubleshooting guidance, see the [`FAQ`](doc/FAQ.md).
 
 **Ready-to-run samples live in [`example/`](example/)** — 4 restraint types (`distance/`,
 `angle/`, `rmsd/`, `custom/dist-diff/`) × 7 predictors, each a real system with a `run.sh`
