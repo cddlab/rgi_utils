@@ -15,6 +15,8 @@ restraint as a coherent structural change rather than local noise.
 Possible remedies are:
 
 - Move domains or other suitable atom groups instead of individual atoms.
+- If necessary, use `move` to choose which `atom_selection` groups are allowed to move; the
+  other selected groups are pinned for that restraint.
 - Combine the distance restraint with conformer restraints.
 - Set `stop_sigma` so that the restraint is released during the final denoising steps.
 
