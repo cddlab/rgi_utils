@@ -11,4 +11,4 @@ source "$WS/protenix_restr/.venv/bin/activate"
 cd "$HERE"
 # protenix must run on sm_89 (e.g. RTX 4090); Blackwell emits silent all-NaN coords.
 protenix pred -i adk_72.85.json -o out \
-    --use_default_params true --use_msa true --seeds 0 --step 200 --sample 1 --cycle 4
+    --use_default_params true --use_msa true --seeds 0 --step 200 --sample 1 --cycle 10

@@ -41,7 +41,7 @@ def main() -> None:
     result = ESMFold2InputBuilder().fold(
         model,
         spi,
-        num_loops=3,
+        num_loops=20,
         num_sampling_steps=200,
         seed=0,
         restraints_config=RESTRAINTS_CONFIG,

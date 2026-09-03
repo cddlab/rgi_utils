@@ -13,4 +13,4 @@ export CHAI_DOWNLOADS_DIR="${CHAI_DOWNLOADS_DIR:-$HOME/.cache/chai}"
 python -m chai_lab.main fold adk_72.85.fasta out \
     --restraints-config-path adk_72.85.yaml \
     --num-diffn-samples 1 --seed 0 \
-    --use-msa-server --use-templates-server --no-use-esm-embeddings
+    --use-msa-server --use-templates-server
