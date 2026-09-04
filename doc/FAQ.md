@@ -40,6 +40,18 @@ activation timing according to the scale of the desired structural change and an
 correction that is required. See [Sigma gating](config.md#sigma-gating-start_sigma--stop_sigma)
 for configuration details.
 
+## Why did enabling RGI slow down inference?
+
+RGI minimizes the restraint energy at every diffusion step where restraints are active, so it is
+generally more computationally expensive than standard guidance. The cost increases as the number
+of restraints grows, both from evaluating the additional restraints and from resolving conflicts
+among them. Conformer and RMSD restraints are especially prone to longer runtimes because they
+often involve many restrained terms or atoms.
+
+Consider reducing the number of restraints, using `start_sigma` and `stop_sigma` to limit the
+diffusion steps on which they are active, and ensuring that GPU execution and JIT compilation are
+enabled appropriately for your integration.
+
 ## Where can I ask questions or report bugs about RGI?
 
 Please use [GitHub Issues](https://github.com/cddlab/rgi_utils/issues).
