@@ -17,8 +17,10 @@ import sys
 import numpy as np
 import pytest
 from rdkit import Chem
+from rdkit.Chem import AllChem
 
 from rgi_utils._biotite_adapter import biotite_get_elements, biotite_ligand_confs
+from rgi_utils._mol_build import _expected_stereo
 from rgi_utils._moltype import MOLTYPE_BY_ID
 from rgi_utils.alphafold3.adapter import AF3RestraintAdapter
 from rgi_utils.atom_context import decode_atom_name
@@ -37,6 +39,24 @@ def test_decode_atom_name():
 def test_moltype_by_id():
     # boltz/esm enum order: PROTEIN=0 DNA=1 RNA=2 NONPOLYMER=3
     assert MOLTYPE_BY_ID == {0: "protein", 1: "dna", 2: "rna", 3: "ligand"}
+
+
+_STEREO_SMILES = "F/C=C/Cl"
+
+
+def _stereo_graph():
+    mol = Chem.MolFromSmiles(_STEREO_SMILES)
+    assert mol is not None
+    return mol
+
+
+def _assert_source_e_stereo(ligand_conf):
+    assert ligand_conf.stereo_mol is not None
+    _atoms, bonds = _expected_stereo(
+        ligand_conf.stereo_mol,
+        np.zeros((ligand_conf.stereo_mol.GetNumAtoms(), 3)),
+    )
+    assert list(bonds.values()) == ["E"]
 
 
 # --- AF3 framework-free adapter --------------------------------------------------
@@ -220,6 +240,35 @@ def test_boltz_atom_metadata_uses_bulk_reads(monkeypatch):
     assert calls == []
 
 
+def test_boltz_ligand_retains_source_stereo():
+    from types import SimpleNamespace
+
+    torch = pytest.importorskip("torch")
+    from rgi_utils.boltz.adapter import BoltzFeatsAdapter
+
+    source = Chem.AddHs(_stereo_graph())
+    assert AllChem.EmbedMolecule(source, randomSeed=7) == 0
+    source = Chem.RemoveHs(source)
+    n_atom = source.GetNumAtoms()
+    identity = torch.eye(n_atom).unsqueeze(0)
+    feats = {
+        "atom_to_token": identity,
+        "asym_id": torch.full((1, n_atom), 7),
+        "atom_pad_mask": torch.ones((1, n_atom), dtype=torch.bool),
+        "ref_element": torch.tensor(
+            [[a.GetAtomicNum() for a in source.GetAtoms()]], dtype=torch.long
+        ),
+        "ref_conformer_restraint": torch.ones((1, n_atom), dtype=torch.bool),
+        "record": [
+            SimpleNamespace(chains=[SimpleNamespace(chain_id=7, chain_name="B")])
+        ],
+        "ligand_mols": {7: source},
+    }
+    ligand = list(BoltzFeatsAdapter(feats).iter_ligand_confs())
+    assert len(ligand) == 1
+    _assert_source_e_stereo(ligand[0])
+
+
 def test_af3_adapter_imports_no_alphafold3():
     # the whole point of the split: the rgi_utils adapter must not pull in alphafold3
     assert "alphafold3" not in sys.modules
@@ -263,6 +312,31 @@ def test_af3_iter_ligand_confs_smiles():
     assert lc.conformer_restraints is True
 
 
+def test_af3_smiles_ligand_retains_source_stereo():
+    source = _stereo_graph()
+    n_atom = source.GetNumAtoms()
+    names = np.stack(
+        [_enc(f"{a.GetSymbol()}{i + 1}") for i, a in enumerate(source.GetAtoms())]
+    )
+    batch = {
+        "asym_id": np.ones(n_atom, dtype=np.int64),
+        "ref_mask": np.ones((n_atom, 1), dtype=np.int64),
+        "ref_pos": np.zeros((n_atom, 1, 3), dtype=np.float64),
+        "ref_atom_name_chars": names[:, None, :],
+        "ref_element": np.array(
+            [[a.GetAtomicNum()] for a in source.GetAtoms()], dtype=np.int64
+        ),
+        "is_protein": np.zeros(n_atom, dtype=bool),
+        "is_dna": np.zeros(n_atom, dtype=bool),
+        "is_rna": np.zeros(n_atom, dtype=bool),
+        "aatype": np.zeros(n_atom, dtype=np.int64),
+    }
+    adapter = AF3RestraintAdapter(
+        batch, {"B": 1}, _POLY, ligand_mols=[("B", source, True)]
+    )
+    _assert_source_e_stereo(list(adapter.iter_ligand_confs())[0])
+
+
 def test_af3_iter_ligand_confs_ccd_leaving_atom_drop():
     """CCD ligand: by-name mapping; an atom absent from the structure (C2) is dropped
     and the mol is subset to the kept atom (C1)."""
@@ -283,6 +357,44 @@ def test_af3_iter_ligand_confs_ccd_leaving_atom_drop():
     assert lc.global_indices.tolist() == [3]
     assert lc.mol.GetNumAtoms() == 1
     assert lc.mol.GetAtomWithIdx(0).GetProp("atom_name") == "C1"
+
+
+def test_esmfold2_adapter_retains_source_stereo():
+    from types import SimpleNamespace
+
+    from rgi_utils.esmfold2.adapter import ESMFold2Adapter
+
+    source = _stereo_graph()
+    names = ["F1", "C1", "C2", "CL1"]
+    token_bonds = np.zeros((4, 4), dtype=np.float32)
+    orders = []
+    for bond in source.GetBonds():
+        i, j = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+        token_bonds[i, j] = token_bonds[j, i] = 1
+        orders.append((names[i], names[j], int(bond.GetBondTypeAsDouble())))
+    features = {
+        "asym_id": np.ones((1, 4), dtype=np.int64),
+        "token_attention_mask": np.ones((1, 4), dtype=np.int64),
+        "mol_type": np.full((1, 4), 3, dtype=np.int64),
+        "atom_to_token": np.arange(4, dtype=np.int64)[None],
+        "atom_attention_mask": np.ones((1, 4), dtype=np.int64),
+        "ref_pos": np.zeros((1, 4, 3), dtype=np.float64),
+        "ref_element": np.array(
+            [[atom.GetAtomicNum() for atom in source.GetAtoms()]], dtype=np.int64
+        ),
+        "ref_atom_name_chars": np.stack([_enc(name) for name in names])[None],
+        "token_bonds": token_bonds[None],
+    }
+    chain = SimpleNamespace(
+        asym_id=1,
+        chain_id="B",
+        ligand_bond_orders=orders,
+        conformer_restraints=True,
+        source_smiles=_STEREO_SMILES,
+    )
+    ligand = list(ESMFold2Adapter(features, [chain]).iter_ligand_confs())
+    assert len(ligand) == 1
+    _assert_source_e_stereo(ligand[0])
 
 
 # --- biotite shared core (protenix/openfold) -------------------------------------
@@ -323,6 +435,31 @@ def _fake_aa(**extra):
         hetero=[True, True, False],
         molecule_type_id=[3, 3, 0],  # 3 == LIGAND
         **extra,
+    )
+
+
+def _stereo_aa():
+    source = _stereo_graph()
+    return _FakeAtomArray(
+        element=[atom.GetSymbol() for atom in source.GetAtoms()],
+        coord=[[-1, 1, 0], [0, 0, 0], [1, 0, 0], [2, -1, 0]],
+        bonds=[
+            [
+                bond.GetBeginAtomIdx(),
+                bond.GetEndAtomIdx(),
+                int(bond.GetBondTypeAsDouble()),
+            ]
+            for bond in source.GetBonds()
+        ],
+        annots=["molecule_type_id", "conformer_restraints"],
+        label_asym_id=["L"] * 4,
+        chain_id=["L"] * 4,
+        hetero=[True] * 4,
+        molecule_type_id=[3] * 4,
+        mol_type=["ligand"] * 4,
+        atom_name=["F1", "C1", "C2", "CL1"],
+        res_name=["UNL"] * 4,
+        conformer_restraints=[True] * 4,
     )
 
 
@@ -425,6 +562,20 @@ def test_protenix_adapter_delegation():
     assert confs[0].conformer_restraints is False  # protenix default OFF
 
 
+def test_protenix_adapter_retains_source_stereo():
+    from rgi_utils.protenix.adapter import ProtenixAdapter
+
+    aa = _stereo_aa()
+    adapter = ProtenixAdapter(
+        {
+            "atom_array": aa,
+            "atom_to_token_idx": np.zeros((1, 4)),
+            "smiles_by_chain": {"L": _STEREO_SMILES},
+        }
+    )
+    _assert_source_e_stereo(list(adapter.iter_ligand_confs())[0])
+
+
 def test_openfold3_adapter_delegation():
     from rgi_utils.openfold3.adapter import Openfold3Adapter
 
@@ -460,6 +611,19 @@ def test_openfold3_adapter_delegation():
     ad_optin = Openfold3Adapter(aa_optin, num_atoms=5, ref_coords=aa_optin.coord)
     confs_optin = list(ad_optin.iter_ligand_confs())
     assert confs_optin[0].conformer_restraints is True
+
+
+def test_openfold3_adapter_retains_source_stereo():
+    from rgi_utils.openfold3.adapter import Openfold3Adapter
+
+    aa = _stereo_aa()
+    adapter = Openfold3Adapter(
+        aa,
+        num_atoms=4,
+        ref_coords=aa.coord,
+        smiles_by_chain={"L": _STEREO_SMILES},
+    )
+    _assert_source_e_stereo(list(adapter.iter_ligand_confs())[0])
 
 
 def test_opendde_adapter_uses_residue_level_tokens_and_ref_pos():
@@ -507,6 +671,22 @@ def test_opendde_adapter_uses_residue_level_tokens_and_ref_pos():
     assert np.array_equal(ligand[0].conf_coords, ref_pos[2:])
     assert ligand[0].mol.GetBondWithIdx(0).GetBondTypeAsDouble() == 2.0
     assert ligand[0].conformer_restraints is True
+
+
+def test_opendde_adapter_retains_source_stereo():
+    from rgi_utils.opendde.adapter import OpenDDEAdapter
+
+    aa = _stereo_aa()
+    adapter = OpenDDEAdapter(
+        {
+            "atom_array": aa,
+            "atom_to_token_idx": np.arange(4)[None],
+            "ref_pos": aa.coord[None],
+            "ref_space_uid": np.zeros((1, 4), dtype=np.int64),
+            "smiles_by_chain": {"L": _STEREO_SMILES},
+        }
+    )
+    _assert_source_e_stereo(list(adapter.iter_ligand_confs())[0])
 
 
 def test_opendde_adapter_imports_no_tool_or_torch():

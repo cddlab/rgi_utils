@@ -14,7 +14,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import numpy as np
+from rdkit import Chem
 
+from rgi_utils._mol_build import _expected_stereo
 from rgi_utils.chai.adapter import ChaiStructureAdapter
 
 
@@ -94,3 +96,33 @@ def test_chai_padding_atoms_skipped():
     ad = ChaiStructureAdapter(sc, num_atoms=3)
     recs = list(ad.iter_atoms())
     assert [r.index for r in recs] == [0, 2]  # padded atom 1 dropped
+
+
+def test_chai_ligand_retains_source_stereo():
+    smiles = "F/C=C/Cl"
+    source = Chem.MolFromSmiles(smiles)
+    sc = _fake_context(
+        token_chains=["L"] * 4,
+        token_entity=[3] * 4,
+        token_resname=["LIG"] * 4,
+        atom_names=["F1", "C1", "C2", "CL1"],
+    )
+    sc.atom_ref_pos = np.array(
+        [[-1, 1, 0], [0, 0, 0], [1, 0, 0], [2, -1, 0]], dtype=float
+    )
+    sc.atom_ref_element = np.array(
+        [atom.GetAtomicNum() for atom in source.GetAtoms()], dtype=np.int64
+    )
+    adapter = ChaiStructureAdapter(
+        sc,
+        num_atoms=4,
+        smiles_by_subchain={"L": smiles},
+        conf_restraints_by_subchain={"L": True},
+    )
+    ligand = list(adapter.iter_ligand_confs())
+    assert len(ligand) == 1
+    assert ligand[0].stereo_mol is not None
+    _atoms, bonds = _expected_stereo(
+        ligand[0].stereo_mol, np.zeros((4, 3), dtype=float)
+    )
+    assert list(bonds.values()) == ["E"]

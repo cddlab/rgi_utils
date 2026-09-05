@@ -266,4 +266,5 @@ class BoltzFeatsAdapter:
                 conf_coords=conf_coords,
                 global_indices=global_indices,
                 conformer_restraints=conf_restr,
+                stereo_mol=mol,
             )

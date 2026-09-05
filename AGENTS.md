@@ -197,7 +197,8 @@ resolution lives in a thin in-tool shim
 data): implement `iter_atoms()` (→
 `AtomRecord(chain, resid, index)` for distance selection) and optionally
 `num_atoms()`, `get_elements()`, `iter_ligand_confs()` (→
-`LigandConf(mol, conf_coords, global_indices)` for conformer + VdW). The three tools whose
+`LigandConf(mol, conf_coords, global_indices, stereo_mol=...)` for conformer + VdW;
+`stereo_mol` is the optional source SMILES graph renumbered to coordinate order). The three tools whose
 features arrive as a **biotite `AtomArray`** (protenix / openfold3 / opendde) share
 `_biotite_adapter.py` (`biotite_get_elements` / `biotite_ligand_confs`) rather than each
 re-deriving elements + ligand conformers — extend that module, not the three call sites.
@@ -240,8 +241,12 @@ explicit `mmff*` raises `RelaxError` — including on an unsanitized mol, where 
 `RuntimeError` is re-wrapped rather than swallowed. `maxIters=200` is shared and should stay: all
 three force fields report rc=1 there on ATP but the geometry is converged (identical to 3 decimals
 at 2000/20000 iterations), and moving it would shift every existing UFF target. The result is
-stereo-checked against graph-defined chirality/E/Z (input 3D fills missing labels); a mismatch
-retries four deterministic ETKDG seeds before applying that same UFF/MMFF policy. Do not skip UFF
+stereo-checked against source-graph chirality/E/Z retained separately as `LigandConf.stereo_mol`
+(input 3D fills missing labels); a mismatch retries at most four deterministic ETKDG seeds before
+applying that same UFF/MMFF policy. An already-wrong predictor reference raises if all four fail,
+because falling back would enforce the wrong stereoisomer; a correct pre-relaxation reference keeps
+the established safe UFF fallback. Stereo validation is independent of the ordinary `has_orders`
+relax guard, so saturated chiral SMILES are covered too. Do not skip UFF
 solely because the input used a CCD code: several predictors regenerate CCD `ref_pos`, and cached
 CCD geometry is not uniformly ideal. Trusted coordinates can opt out explicitly with
 `relax_force_field: {ligand: none}`.

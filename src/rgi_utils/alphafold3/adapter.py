@@ -265,6 +265,10 @@ class AF3RestraintAdapter:
             )
             if mol is None or len(flat_indices) == 0:
                 continue
+            # Preserve source graph stereo before reference-coordinate perception can
+            # modify the working mol's tags. Atom order already matches flat_indices.
+            stereo_mol = Chem.Mol(mol)
+            stereo_mol.RemoveAllConformers()
             conf_crds = pos_flat[flat_indices]  # (n_atoms, 3) reference coords
             # A SMILES mol carries no 3D geometry, so chiral tags exist only if the
             # SMILES annotated them (@/@@); the featurizer keys chiral restraints on
@@ -304,6 +308,7 @@ class AF3RestraintAdapter:
                 # opted-in: ligands that set conformer_restraints=False are dropped by
                 # the shim. Pass True explicitly (LigandConf defaults to False).
                 conformer_restraints=True,
+                stereo_mol=stereo_mol,
             )
 
     # --- flat-index mapping (framework-free) -----------------------------------

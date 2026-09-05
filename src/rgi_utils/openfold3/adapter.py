@@ -30,6 +30,7 @@ from typing import Iterator
 import numpy as np
 
 from rgi_utils._biotite_adapter import biotite_get_elements, biotite_ligand_confs
+from rgi_utils._mol_build import align_stereo_mol
 from rgi_utils.atom_context import AtomRecord, LigandConf
 
 logger = logging.getLogger(__name__)
@@ -59,12 +60,15 @@ class Openfold3Adapter:
     so conformer restraints would be degenerate — a warning is logged).
     """
 
-    def __init__(self, atom_array, num_atoms: int, ref_coords=None) -> None:
+    def __init__(
+        self, atom_array, num_atoms: int, ref_coords=None, smiles_by_chain=None
+    ) -> None:
         self.atom_array = atom_array
         self._n_atom = int(num_atoms)
         self._ref_coords = (
             None if ref_coords is None else np.asarray(ref_coords, dtype=np.float64)
         )
+        self._smiles_by_chain = dict(smiles_by_chain or {})
 
     # --- ligand identity ------------------------------------------------------
     def _ligand_mask(self) -> np.ndarray:
@@ -173,6 +177,28 @@ class Openfold3Adapter:
                 "atom_array.coord which OpenFold zeroes — bond/angle/chiral "
                 "restraints will be degenerate. Pass batch['ref_pos'] to fix."
             )
+
+        def _post_build(chain_id, mol, coords, idxs, _elements, _bonds):
+            smiles = self._smiles_by_chain.get(str(chain_id))
+            if smiles is None:
+                return mol, coords, None
+            from rdkit import Chem
+
+            source_mol = Chem.MolFromSmiles(smiles)
+            stereo_mol = (
+                align_stereo_mol(source_mol, mol) if source_mol is not None else None
+            )
+            categories = aa.get_annotation_categories()
+            stereo_required = "conformer_restraints" in categories and bool(
+                np.asarray(aa.conformer_restraints, dtype=bool)[idxs].any()
+            )
+            if stereo_mol is None and stereo_required:
+                raise ValueError(
+                    f"OpenFold3 chain {chain_id}: cannot map source SMILES "
+                    "stereochemistry to the model atom order"
+                )
+            return mol, coords, stereo_mol
+
         # openfold marks ligand atoms via molecule_type_id (see _ligand_mask); chains
         # are chain_id. Per-ligand opt-in: a ligand is restrained only when its input
         # chain set conformer_restraints: true, threaded in as a per-atom AtomArray
@@ -184,5 +210,5 @@ class Openfold3Adapter:
             chain_attr="chain_id",
             coords_all=coords_all,
             conf_rest_default=False,
-            post_build=None,
+            post_build=_post_build,
         )

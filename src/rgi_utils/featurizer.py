@@ -29,7 +29,7 @@ from rgi_utils._config_util import (
     VDW_SCALE_DEFAULT,
     validate_vdw_config,
 )
-from rgi_utils._mol_build import ff_relax, parse_relax_force_field
+from rgi_utils._mol_build import ff_relax, parse_relax_force_field, repair_stereo
 from rgi_utils.atom_context import LigandConf
 from rgi_utils.spec import (
     DIST_TYPE_CODES,
@@ -142,6 +142,8 @@ def _extract_conformer(
 
     for li, lc in enumerate(ligand_confs):
         mol = lc.mol
+        stereo_mol = getattr(lc, "stereo_mol", None)
+        stereo_topology = stereo_mol if stereo_mol is not None else mol
         crds = np.asarray(lc.conf_coords, dtype=np.float64)
         gidx = np.asarray(lc.global_indices, dtype=np.int64)
         # Derive the bond/angle/chiral/cistrans TARGETS from a force-field-relaxed copy of
@@ -180,9 +182,19 @@ def _extract_conformer(
                 "(same skip, no error) or {ligand: none}."
             )
         if do_relax and has_orders:
-            _relaxed = ff_relax(mol, crds, ff)
+            _relaxed = ff_relax(mol, crds, ff, stereo_mol=stereo_mol)
             if _relaxed is not None and len(_relaxed) == len(crds):
                 crds = _relaxed
+        elif stereo_mol is not None:
+            # Stereo validation is independent of the ordinary relax guard. This
+            # covers saturated chiral ligands (no aromatic/double bond) and explicit
+            # relax_force_field=none without changing already-correct coordinates.
+            crds = repair_stereo(
+                mol,
+                crds,
+                stereo_mol,
+                force_field=ff if do_relax else "none",
+            )
 
         for b in mol.GetBonds():
             ai, aj = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
@@ -201,7 +213,7 @@ def _extract_conformer(
                 )
             )
 
-        for atom in mol.GetAtoms():
+        for atom in stereo_topology.GetAtoms():
             if atom.GetChiralTag() not in _CHIRAL_TAGS:
                 continue
             ci = atom.GetIdx()
@@ -225,10 +237,10 @@ def _extract_conformer(
         # + connectivity, both consistent across tools; `not IsInRing()` excludes
         # aromatic/ring double bonds (incl. Kekule rings) which cannot isomerise.
         try:
-            Chem.FastFindRings(mol)  # ensure IsInRing() has ring info
+            Chem.FastFindRings(stereo_topology)  # ensure IsInRing() has ring info
         except Exception:
             pass
-        for b in mol.GetBonds():
+        for b in stereo_topology.GetBonds():
             if b.GetBondType() != Chem.BondType.DOUBLE:
                 continue
             if b.GetIsAromatic() or b.IsInRing():

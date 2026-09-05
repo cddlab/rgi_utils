@@ -18,11 +18,15 @@ import rgi_utils._mol_build as mol_build
 from rgi_utils import CombinedRestraints
 from rgi_utils._mol_build import (
     RelaxError,
+    StereoGenerationError,
     _embedded_heavy_coords,
     _expected_stereo,
     _stereo_mismatch_counts,
+    align_stereo_mol,
+    build_ligand_mol,
     ff_relax,
     parse_relax_force_field,
+    repair_stereo,
 )
 from rgi_utils.atom_context import AtomRecord, LigandConf
 from rgi_utils.config import RestraintsConfig
@@ -270,6 +274,98 @@ def test_axt_real_uff_ez_flip_retries_to_correct_stereo():
     retried = ff_relax(mol, coords, "uff")
     assert retried is not None
     assert _stereo_mismatch_counts(mol, retried, expected) == (0, 0)
+
+
+def _coordinate_built_mol(graph_mol, coords):
+    elements = [atom.GetSymbol() for atom in graph_mol.GetAtoms()]
+    bonds = [
+        (
+            bond.GetBeginAtomIdx(),
+            bond.GetEndAtomIdx(),
+            int(bond.GetBondTypeAsDouble()),
+        )
+        for bond in graph_mol.GetBonds()
+    ]
+    return build_ligand_mol(elements, coords, bonds)
+
+
+def test_source_stereo_mol_detects_an_already_inverted_reference(monkeypatch):
+    source, source_coords = _embed("OC(=O)/C=C/C(=O)O")
+    _cis, cis_coords = _embed(r"OC(=O)/C=C\C(=O)O")
+    working = _coordinate_built_mol(source, cis_coords)
+    expected = _expected_stereo(source, source_coords)
+    assert _stereo_mismatch_counts(source, cis_coords, expected) == (0, 1)
+
+    calls = 0
+
+    def fake_relax_once(_mol, coords, _force_field):
+        nonlocal calls
+        calls += 1
+        return cis_coords if calls == 1 else np.asarray(coords, dtype=np.float64)
+
+    monkeypatch.setattr(mol_build, "_ff_relax_once", fake_relax_once)
+    monkeypatch.setattr(
+        mol_build,
+        "_embedded_heavy_coords",
+        lambda _mol, _seed: source_coords,
+    )
+    out = ff_relax(working, cis_coords, "uff", stereo_mol=source)
+    assert _stereo_mismatch_counts(source, out, expected) == (0, 0)
+    assert calls == 2
+
+
+def test_source_stereo_failure_stops_after_four_regenerations(monkeypatch):
+    source, source_coords = _embed("OC(=O)/C=C/C(=O)O")
+    _cis, cis_coords = _embed(r"OC(=O)/C=C\C(=O)O")
+    working = _coordinate_built_mol(source, cis_coords)
+    relax_calls = 0
+    embed_calls = 0
+
+    def always_wrong(_mol, _coords, _force_field):
+        nonlocal relax_calls
+        relax_calls += 1
+        return cis_coords
+
+    def correct_embedding(_mol, _seed):
+        nonlocal embed_calls
+        embed_calls += 1
+        return source_coords
+
+    monkeypatch.setattr(mol_build, "_ff_relax_once", always_wrong)
+    monkeypatch.setattr(mol_build, "_embedded_heavy_coords", correct_embedding)
+    with pytest.raises(StereoGenerationError, match="after 4 ETKDG"):
+        ff_relax(working, cis_coords, "uff", stereo_mol=source)
+    assert relax_calls == 5  # one local relax plus four regenerated candidates
+    assert embed_calls == 4
+
+
+def test_saturated_chiral_reference_is_repaired_without_normal_relax():
+    source, source_coords = _embed("F[C@](Cl)(Br)I")
+    _opposite, opposite_coords = _embed("F[C@@](Cl)(Br)I")
+    working = _coordinate_built_mol(source, opposite_coords)
+    assert not any(
+        bond.GetIsAromatic() or bond.GetBondType() == Chem.BondType.DOUBLE
+        for bond in working.GetBonds()
+    )
+    expected = _expected_stereo(source, source_coords)
+    assert _stereo_mismatch_counts(source, opposite_coords, expected) == (1, 0)
+
+    repaired = repair_stereo(working, opposite_coords, source, force_field="none")
+    assert _stereo_mismatch_counts(source, repaired, expected) == (0, 0)
+
+
+def test_align_stereo_mol_preserves_labels_in_target_order():
+    source = Chem.MolFromSmiles("F[C@](Cl)(Br)I")
+    target = Chem.RenumberAtoms(source, [1, 4, 0, 3, 2])
+    aligned = align_stereo_mol(source, target)
+    assert aligned is not None
+    assert [a.GetAtomicNum() for a in aligned.GetAtoms()] == [
+        a.GetAtomicNum() for a in target.GetAtoms()
+    ]
+    source_labels, _ = _expected_stereo(source, np.zeros((source.GetNumAtoms(), 3)))
+    aligned_labels, _ = _expected_stereo(aligned, np.zeros((aligned.GetNumAtoms(), 3)))
+    assert len(source_labels) == len(aligned_labels) == 1
+    assert next(iter(source_labels.values())) == next(iter(aligned_labels.values()))
 
 
 # --------------------------------------------------------------- the two RDKit traps

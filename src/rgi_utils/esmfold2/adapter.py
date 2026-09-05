@@ -37,6 +37,7 @@ from typing import Iterator
 
 import numpy as np
 
+from rgi_utils._mol_build import align_stereo_mol
 from rgi_utils._mol_build import build_ligand_mol as _build_ligand_mol
 from rgi_utils._moltype import MOLTYPE_BY_ID
 from rgi_utils.atom_context import AtomRecord, LigandConf, decode_atom_name
@@ -130,6 +131,13 @@ class ESMFold2Adapter:
         self._asym_to_conf_restraints = {
             int(c.asym_id): bool(getattr(c, "conformer_restraints", False))
             for c in (chain_infos or [])
+        }
+        # Original SMILES retains graph-defined @/@@ and E/Z after ESM's tokenizer
+        # has reduced the ligand metadata to coordinates plus bond orders.
+        self._asym_to_smiles = {
+            int(c.asym_id): str(c.source_smiles)
+            for c in (chain_infos or [])
+            if getattr(c, "source_smiles", None) is not None
         }
         self._tok_ordinal = self._compute_token_ordinals()
 
@@ -259,6 +267,24 @@ class ESMFold2Adapter:
                 if self._token_bonds[toks[li], toks[lj]] > 0
             ]
             mol = _build_ligand_mol(elements, coords, bonds_local)
+            stereo_mol = None
+            smiles = self._asym_to_smiles.get(int(asym))
+            if smiles is not None:
+                from rdkit import Chem
+
+                source_mol = Chem.MolFromSmiles(smiles)
+                stereo_mol = (
+                    align_stereo_mol(source_mol, mol)
+                    if source_mol is not None
+                    else None
+                )
+                if stereo_mol is None and self._asym_to_conf_restraints.get(
+                    int(asym), False
+                ):
+                    raise ValueError(
+                        f"ESMFold2 chain {self._asym_to_name.get(asym, asym)}: "
+                        "cannot map source SMILES stereochemistry to the model atom order"
+                    )
             yield LigandConf(
                 mol=mol,
                 conf_coords=coords,
@@ -267,4 +293,5 @@ class ESMFold2Adapter:
                 conformer_restraints=self._asym_to_conf_restraints.get(
                     int(asym), False
                 ),
+                stereo_mol=stereo_mol,
             )

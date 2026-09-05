@@ -32,6 +32,10 @@ class RelaxError(ValueError):
     """
 
 
+class StereoGenerationError(ValueError):
+    """Raised when source-defined stereochemistry cannot be regenerated safely."""
+
+
 def parse_relax_force_field(conformer_config: dict | None) -> str:
     """Validated ligand ``relax_force_field``; ``"uff"`` when omitted.
 
@@ -180,6 +184,74 @@ def build_ligand_mol(elements, coords, bonds_local, perceive_bonds=False):
     except Exception:
         pass
     return mol
+
+
+def align_stereo_mol(source_mol, target_mol, source_to_target=None):
+    """Return a source-graph mol renumbered into ``target_mol`` atom order.
+
+    ``source_mol`` supplies graph-defined tetrahedral and double-bond stereo (normally
+    from the user's SMILES). ``target_mol`` fixes the coordinate-tensor atom order. The
+    returned molecule has no conformer: callers provide coordinates separately.
+
+    ``source_to_target[i]`` may be supplied when an adapter has an authoritative name-
+    based mapping. Otherwise an index-preserving topology match is preferred, followed
+    by an RDKit substructure match. ``None`` means that no safe complete mapping exists.
+    """
+    from rdkit import Chem
+
+    try:
+        source = Chem.RemoveAllHs(Chem.Mol(source_mol))
+        target = Chem.RemoveAllHs(Chem.Mol(target_mol))
+        n_atom = source.GetNumAtoms()
+        if n_atom != target.GetNumAtoms():
+            return None
+
+        source_pairs = {
+            tuple(sorted((b.GetBeginAtomIdx(), b.GetEndAtomIdx())))
+            for b in source.GetBonds()
+        }
+        target_pairs = {
+            tuple(sorted((b.GetBeginAtomIdx(), b.GetEndAtomIdx())))
+            for b in target.GetBonds()
+        }
+        same_elements = all(
+            source.GetAtomWithIdx(i).GetAtomicNum()
+            == target.GetAtomWithIdx(i).GetAtomicNum()
+            for i in range(n_atom)
+        )
+        if source_to_target is None:
+            if same_elements and source_pairs == target_pairs:
+                mapping = tuple(range(n_atom))
+            else:
+                mapping = tuple(target.GetSubstructMatch(source, useChirality=False))
+        else:
+            mapping = tuple(int(i) for i in source_to_target)
+
+        if len(mapping) != n_atom or set(mapping) != set(range(n_atom)):
+            return None
+        if any(
+            source.GetAtomWithIdx(source_idx).GetAtomicNum()
+            != target.GetAtomWithIdx(target_idx).GetAtomicNum()
+            for source_idx, target_idx in enumerate(mapping)
+        ):
+            return None
+
+        # RenumberAtoms expects ``new_index -> old_index``; mapping is
+        # ``source_index -> target_index``.
+        new_to_old = [0] * n_atom
+        for source_idx, target_idx in enumerate(mapping):
+            new_to_old[target_idx] = source_idx
+        aligned = Chem.RenumberAtoms(source, new_to_old)
+        aligned.RemoveAllConformers()
+        aligned_pairs = {
+            tuple(sorted((b.GetBeginAtomIdx(), b.GetEndAtomIdx())))
+            for b in aligned.GetBonds()
+        }
+        if aligned_pairs != target_pairs:
+            return None
+        return aligned
+    except Exception:
+        return None
 
 
 def _embed_molecule(mol, random_seed: int):
@@ -446,7 +518,72 @@ def _embedded_heavy_coords(mol, random_seed):
     return np.asarray(heavy.GetConformer(0).GetPositions(), dtype=np.float64)
 
 
-def ff_relax(mol, coords, force_field="uff"):
+def _retry_stereo_embeddings(stereo_mol, expected, force_field):
+    """Try the four deterministic stereo-aware embeddings and return diagnostics."""
+    import numpy as np
+
+    last_mismatches = (len(expected[0]), len(expected[1]))
+    for random_seed in _STEREO_RETRY_SEEDS:
+        candidate = _embedded_heavy_coords(stereo_mol, random_seed)
+        if candidate is None:
+            continue
+        if str(force_field).lower() != "none":
+            # The source mol carries the authoritative stereo flags and chemistry in
+            # coordinate order. Using a coordinate-rebuilt working mol here could feed
+            # its already-inverted bond stereo back into AddHs/UFF.
+            candidate = _ff_relax_once(stereo_mol, candidate, force_field)
+            if candidate is None:
+                continue
+        candidate = np.asarray(candidate, dtype=np.float64)
+        last_mismatches = _stereo_mismatch_counts(stereo_mol, candidate, expected)
+        if last_mismatches == (0, 0):
+            return candidate, last_mismatches, random_seed
+    return None, last_mismatches, None
+
+
+def repair_stereo(mol, coords, stereo_mol, force_field="uff"):
+    """Return ``coords`` unchanged when source stereo matches, else regenerate it.
+
+    This path is independent of the ordinary force-field-relaxation guard. It therefore
+    also protects saturated chiral ligands, whose all-single topology historically made
+    the featurizer skip normal relaxation. A mismatch gets at most four deterministic
+    ETKDG attempts. With ``force_field='none'`` the candidates are not relaxed.
+    """
+    import numpy as np
+
+    coords_array = np.asarray(coords, dtype=np.float64)
+    if (
+        stereo_mol.GetNumAtoms() != mol.GetNumAtoms()
+        or len(coords_array) != mol.GetNumAtoms()
+    ):
+        raise StereoGenerationError(
+            "stereo_mol, ligand mol and coordinate atom counts must match"
+        )
+    expected = _expected_stereo(stereo_mol, coords_array)
+    mismatches = _stereo_mismatch_counts(stereo_mol, coords_array, expected)
+    if mismatches == (0, 0):
+        return coords_array
+
+    logger.warning(
+        "ligand reference disagrees with source stereochemistry "
+        "(chiral=%d, E/Z=%d); regenerating from ETKDG",
+        mismatches[0],
+        mismatches[1],
+    )
+    repaired, last_mismatches, seed = _retry_stereo_embeddings(
+        stereo_mol, expected, force_field
+    )
+    if repaired is not None:
+        logger.warning("stereo regeneration succeeded with ETKDG seed %d", seed)
+        return repaired
+    raise StereoGenerationError(
+        "ligand reference disagrees with source stereochemistry and could not be "
+        f"regenerated after {len(_STEREO_RETRY_SEEDS)} ETKDG attempts "
+        f"(chiral={last_mismatches[0]}, E/Z={last_mismatches[1]})"
+    )
+
+
+def ff_relax(mol, coords, force_field="uff", *, stereo_mol=None):
     """Force-field-relax ``coords`` (a conformer of ``mol``) to ideal bond/angle geometry
     while KEEPING the input fold.
 
@@ -458,10 +595,13 @@ def ff_relax(mol, coords, force_field="uff"):
     consistent across tools (every tool's cached conformer otherwise carries its own
     bond/angle idiosyncrasies). The result is checked against graph-defined
     stereochemistry (falling back to the input 3D conformer where the graph has no
-    label). If a rare force-field crossing changes a protected tetrahedral centre or
-    acyclic double-bond E/Z label, the relax is retried from deterministic stereo-aware
-    ETKDG embeddings. Returns heavy-atom coords in ``mol`` atom order, or None on
-    failure.
+    label). ``stereo_mol``, when supplied, is a source-graph molecule in ``mol`` atom
+    order; it keeps the user's SMILES @/@@ and E/Z labels authoritative even when a
+    framework rebuilt ``mol`` from already-inverted reference coordinates. If a rare
+    force-field crossing changes a protected tetrahedral centre or acyclic double-bond
+    E/Z label, or the input reference already disagrees with ``stereo_mol``, the relax is
+    retried from at most four deterministic stereo-aware ETKDG embeddings. Returns
+    heavy-atom coords in ``mol`` atom order, or None on a safe UFF fallback.
 
     ``force_field`` (``conformer_restraints_config.relax_force_field.ligand``):
     ``"uff"`` (default) / ``"mmff94"`` / ``"mmff94s"``. Neither is uniformly better --
@@ -495,35 +635,38 @@ def ff_relax(mol, coords, force_field="uff"):
     """
     ff = str(force_field).lower()
     try:
-        expected = _expected_stereo(mol, coords)
+        check_mol = stereo_mol if stereo_mol is not None else mol
+        if check_mol.GetNumAtoms() != mol.GetNumAtoms():
+            raise StereoGenerationError(
+                "stereo_mol atom count does not match the ligand coordinate order"
+            )
+        expected = _expected_stereo(check_mol, coords)
+        input_mismatches = _stereo_mismatch_counts(check_mol, coords, expected)
         relaxed = _ff_relax_once(mol, coords, ff)
         if relaxed is None:
-            return None
-        mismatches = _stereo_mismatch_counts(mol, relaxed, expected)
-        if mismatches == (0, 0):
-            return relaxed
+            if input_mismatches == (0, 0):
+                return None
+            mismatches = input_mismatches
+        else:
+            mismatches = _stereo_mismatch_counts(check_mol, relaxed, expected)
+            if mismatches == (0, 0):
+                return relaxed
 
         logger.warning(
-            "force-field relax changed ligand stereochemistry "
+            "force-field target disagrees with source stereochemistry "
             "(chiral=%d, E/Z=%d); retrying from ETKDG",
             mismatches[0],
             mismatches[1],
         )
-        last_mismatches = mismatches
-        for random_seed in _STEREO_RETRY_SEEDS:
-            candidate = _embedded_heavy_coords(mol, random_seed)
-            if candidate is None:
-                continue
-            retried = _ff_relax_once(mol, candidate, ff)
-            if retried is None:
-                continue
-            last_mismatches = _stereo_mismatch_counts(mol, retried, expected)
-            if last_mismatches == (0, 0):
-                logger.warning(
-                    "force-field stereo retry succeeded with ETKDG seed %d",
-                    random_seed,
-                )
-                return retried
+        retried, last_mismatches, seed = _retry_stereo_embeddings(
+            check_mol, expected, ff
+        )
+        if retried is not None:
+            logger.warning(
+                "force-field stereo retry succeeded with ETKDG seed %d",
+                seed,
+            )
+            return retried
 
         message = (
             "force-field relax could not preserve ligand stereochemistry after "
@@ -536,8 +679,12 @@ def ff_relax(mol, coords, force_field="uff"):
                 "relax_force_field: {ligand: uff}, or {ligand: none} to skip the "
                 "relax entirely."
             )
+        if input_mismatches != (0, 0):
+            raise StereoGenerationError(message)
         logger.warning("%s; using the unrelaxed conformer", message)
         return None
+    except StereoGenerationError:
+        raise
     except RelaxError:
         raise
     except Exception as exc:

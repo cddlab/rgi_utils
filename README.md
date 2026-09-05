@@ -321,8 +321,17 @@ class MyAdapter:
     def get_elements(self): ...                      # (num_atoms,) atomic numbers, 0 = padding
     def iter_ligand_confs(self) -> Iterator[LigandConf]:
         for lig in self.ligands:                     # one LigandConf per ligand
-            yield LigandConf(mol, conf_coords, global_indices)
+            yield LigandConf(
+                mol,
+                conf_coords,
+                global_indices,
+                stereo_mol=source_mol_in_coordinate_order,
+            )
 ```
+
+For a SMILES ligand, pass its source-graph molecule as `stereo_mol` after renumbering it
+to `mol`/`global_indices` order. This keeps the input `@`/`@@` and E/Z labels available
+when the framework's reference conformer has already inverted them.
 
 Tool-side adapters are tiny — see `src/rgi_utils/{boltz,protenix,chai,openfold3,opendde}/adapter.py`
 for worked examples, and the shared `implement-rgi` skill under `.claude/skills/` and

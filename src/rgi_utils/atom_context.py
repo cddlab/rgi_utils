@@ -71,6 +71,12 @@ class LigandConf:
     # Per-chain opt-in: conformer restraints are built only when this is True. Every
     # tool gets the flag from the ligand sequence input (chai uses its chain sidecar).
     conformer_restraints: bool = False
+    # Optional source-graph molecule in the same atom order as ``mol``. For SMILES
+    # inputs this retains the original @/@@ and E/Z annotations even when a tool
+    # rebuilds ``mol`` from reference coordinates. The featurizer uses it only for
+    # stereochemistry validation/recovery; bond, angle, plane and VdW topology still
+    # come from ``mol``. None preserves the historical coordinate-derived fallback.
+    stereo_mol: "Chem.Mol | None" = None
 
 
 def decode_atom_name(codes) -> str | None:

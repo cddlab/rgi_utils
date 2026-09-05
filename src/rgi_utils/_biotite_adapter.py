@@ -58,8 +58,8 @@ def biotite_ligand_confs(
         ``conformer_restraints`` annotation (protenix + openfold both False -> the
         per-ligand flag is required; each tool sets the annotation from its input).
       - ``post_build(chain_id, mol, coords, idxs, elements_all, bonds_local) ->
-        (mol, coords)``: optional hook to replace the target geometry per ligand
-        (protenix rebuilds a stereo-correct SMILES ideal conformer); None = identity.
+        (mol, coords[, stereo_mol])``: optional hook to replace the target geometry
+        and attach a source-stereo mol in target atom order; None = identity.
 
     A monatomic ion (1 atom, 0 bonds) still yields a ``LigandConf`` (no bond/angle/
     chiral terms, but it joins fixed-background VdW), matching boltz.
@@ -91,10 +91,13 @@ def biotite_ligand_confs(
         ]
         coords = coords_all[idxs]
         mol = _build_ligand_mol(elements_all[idxs], coords, bonds_local)
+        stereo_mol = None
         if post_build is not None:
-            mol, coords = post_build(
-                chain_id, mol, coords, idxs, elements_all, bonds_local
-            )
+            result = post_build(chain_id, mol, coords, idxs, elements_all, bonds_local)
+            if len(result) == 2:
+                mol, coords = result
+            else:
+                mol, coords, stereo_mol = result
         conf_rest = conf_rest_default
         if conf_rest_annot is not None:
             conf_rest = bool(conf_rest_annot[idxs].any())
@@ -103,4 +106,5 @@ def biotite_ligand_confs(
             conf_coords=coords,
             global_indices=idxs.astype(np.int64),
             conformer_restraints=conf_rest,
+            stereo_mol=stereo_mol,
         )

@@ -19,6 +19,7 @@ from typing import Iterator
 
 import numpy as np
 
+from rgi_utils._mol_build import align_stereo_mol as _align_stereo_mol
 from rgi_utils._mol_build import build_ligand_mol as _build_ligand_mol
 from rgi_utils._mol_build import generate_ideal_conformer as _generate_ideal_conformer
 from rgi_utils.atom_context import AtomRecord, LigandConf
@@ -173,8 +174,9 @@ class ChaiStructureAdapter:
         Kekule lets SanitizeMol re-perceive aromaticity AND get the correct valence/H --
         mirrors protenix's json_parser bond emission (the "other tool" this matches).
 
-        Returns None on incomplete name match -> caller falls back to perceive_bonds, so
-        a naming-convention drift degrades gracefully instead of corrupting the restraint.
+        Returns ``(mol, stereo_mol)``. ``stereo_mol`` retains the source graph's
+        stereochemistry in chai atom order. An incomplete name match returns
+        ``(None, None)`` so an opted-out ligand may still use the geometry fallback.
         """
         from collections import defaultdict
 
@@ -182,7 +184,7 @@ class ChaiStructureAdapter:
 
         base = Chem.MolFromSmiles(smiles)
         if base is None or base.GetNumAtoms() != len(idxs):
-            return None
+            return None, None
         nbase = base.GetNumAtoms()
         cnt: dict = defaultdict(int)
         base_name: dict[int, str] = {}
@@ -193,7 +195,7 @@ class ChaiStructureAdapter:
                 base_name[i] = (s + str(cnt[s])).upper()
         names = getattr(self.sc, "atom_ref_name", None)
         if names is None:
-            return None
+            return None, None
 
         def _norm(nm: object) -> str:
             # chai atom names are <elem><counter>_<copy> (C1_1); drop the trailing
@@ -209,7 +211,7 @@ class ChaiStructureAdapter:
             bi: name_to_local[nm] for bi, nm in base_name.items() if nm in name_to_local
         }
         if len(base_to_local) != nbase:
-            return None  # incomplete name match -> safe fallback
+            return None, None
         # Kekulize a copy so aromatic bonds become explicit single/double (1/2); atom
         # indices are unchanged, so base_to_local still maps. Fall back to as-is orders
         # on a non-kekulizable (exotic-valence) mol.
@@ -226,11 +228,11 @@ class ChaiStructureAdapter:
             )
             for b in kmol.GetBonds()
         ]
-        return _build_ligand_mol(elements, coords, bonds_local)
+        mol = _build_ligand_mol(elements, coords, bonds_local)
+        mapping = [base_to_local[i] for i in range(nbase)]
+        return mol, _align_stereo_mol(base, mol, source_to_target=mapping)
 
     def iter_ligand_confs(self) -> Iterator[LigandConf]:
-        from rdkit import Chem
-
         sc = self.sc
         if sc is None:
             return
@@ -264,27 +266,40 @@ class ChaiStructureAdapter:
             # target. Fall back to perceive_bonds only if SMILES is absent / unmatched.
             smiles = self._smiles_by_subchain.get(str(ch))
             mol = None
+            stereo_mol = None
+            stereo_required = bool(
+                self._conf_restraints_by_subchain.get(str(ch), False)
+            )
             if smiles is not None:
-                mol = self._mol_from_smiles(smiles, idxs, ref_elem[idxs], coords)
+                mol, stereo_mol = self._mol_from_smiles(
+                    smiles, idxs, ref_elem[idxs], coords
+                )
+                if stereo_mol is None and stereo_required:
+                    raise ValueError(
+                        f"chai ligand {ch}: cannot map source SMILES "
+                        "stereochemistry to the model atom order"
+                    )
             if mol is not None:
                 # Replace the target geometry with a stereo-correct ETKDG ideal conformer
                 # (mirrors protenix): chai's atom_ref_pos can carry the WRONG enantiomer
                 # (e.g. 6fck) and the chiral restraint then faithfully enforces it --
                 # finalize chiral=0 yet the prediction's CIP disagrees with the SMILES.
-                # MolFromSmiles holds the intended stereo; generate_ideal_conformer
-                # reorders it to mol's atom order. Rebuild the mol on the ideal coords so
-                # its chiral tags AND the featurizer's chiral-volume sign read correct.
+                # stereo_mol holds the intended stereo in chai atom order. Rebuild the
+                # topology on the ideal coords so the featurizer sees matching geometry.
                 # Falls back to the model conformer when the embed / atom-order match
                 # fails (e.g. a charged ring the rebuild can't reproduce, like an N-oxide).
-                base = Chem.MolFromSmiles(smiles)
                 ideal = (
-                    _generate_ideal_conformer(base, target_mol=mol)
-                    if base is not None
+                    _generate_ideal_conformer(stereo_mol)
+                    if stereo_mol is not None
                     else None
                 )
                 if ideal is not None and len(ideal) == len(idxs):
                     coords = ideal
-                    mol = self._mol_from_smiles(smiles, idxs, ref_elem[idxs], ideal)
+                    mol, rebuilt_stereo_mol = self._mol_from_smiles(
+                        smiles, idxs, ref_elem[idxs], ideal
+                    )
+                    if rebuilt_stereo_mol is not None:
+                        stereo_mol = rebuilt_stereo_mol
                     logger.info("chai ligand %s: stereo-correct ETKDG target", ch)
                 else:
                     logger.info(
@@ -300,4 +315,5 @@ class ChaiStructureAdapter:
                 conformer_restraints=self._conf_restraints_by_subchain.get(
                     str(ch), False
                 ),
+                stereo_mol=stereo_mol,
             )

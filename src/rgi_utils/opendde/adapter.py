@@ -15,6 +15,7 @@ from typing import Iterator
 import numpy as np
 
 from rgi_utils._biotite_adapter import biotite_get_elements, biotite_ligand_confs
+from rgi_utils._mol_build import align_stereo_mol
 from rgi_utils._mol_build import build_ligand_mol as _build_ligand_mol
 from rgi_utils.atom_context import AtomRecord, LigandConf
 
@@ -125,19 +126,33 @@ class OpenDDEAdapter:
             from rgi_utils._mol_build import generate_ideal_conformer
 
             source_mol = Chem.MolFromSmiles(smiles)
-            ideal = (
-                generate_ideal_conformer(source_mol, target_mol=mol)
-                if source_mol is not None
-                else None
+            stereo_mol = (
+                align_stereo_mol(source_mol, mol) if source_mol is not None else None
             )
+            categories = aa.get_annotation_categories()
+            stereo_required = "conformer_restraints" in categories and bool(
+                np.asarray(aa.conformer_restraints, dtype=bool)[idxs].any()
+            )
+            if stereo_mol is None:
+                if stereo_required:
+                    raise ValueError(
+                        f"OpenDDE chain {chain_id}: cannot map source SMILES "
+                        "stereochemistry to the model atom order"
+                    )
+                return mol, coords, None
+            ideal = generate_ideal_conformer(stereo_mol)
             if ideal is not None and len(ideal) == len(idxs):
-                return _build_ligand_mol(elements_all[idxs], ideal, bonds_local), ideal
+                return (
+                    _build_ligand_mol(elements_all[idxs], ideal, bonds_local),
+                    ideal,
+                    stereo_mol,
+                )
             logger.warning(
                 "OpenDDE chain %s: SMILES ETKDG failed; using ref_pos as the "
                 "restraint target",
                 chain_id,
             )
-            return mol, coords
+            return mol, coords, stereo_mol
 
         mol_types = np.asarray(aa.mol_type)
         yield from biotite_ligand_confs(

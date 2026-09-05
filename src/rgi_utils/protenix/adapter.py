@@ -20,6 +20,7 @@ from typing import Iterator
 import numpy as np
 
 from rgi_utils._biotite_adapter import biotite_get_elements, biotite_ligand_confs
+from rgi_utils._mol_build import align_stereo_mol
 from rgi_utils._mol_build import build_ligand_mol as _build_ligand_mol
 from rgi_utils.atom_context import AtomRecord, LigandConf
 
@@ -142,20 +143,31 @@ class ProtenixAdapter:
             from rgi_utils._mol_build import generate_ideal_conformer
 
             smol = Chem.MolFromSmiles(smiles)  # carries the SMILES stereo
-            # target_mol=mol fixes the atom order to atom_array (global_indices) order.
-            ideal = (
-                generate_ideal_conformer(smol, target_mol=mol)
-                if smol is not None
-                else None
+            stereo_mol = align_stereo_mol(smol, mol) if smol is not None else None
+            categories = aa.get_annotation_categories()
+            stereo_required = "conformer_restraints" in categories and bool(
+                np.asarray(aa.conformer_restraints, dtype=bool)[idxs].any()
             )
+            if stereo_mol is None:
+                if stereo_required:
+                    raise ValueError(
+                        f"protenix chain {chain_id}: cannot map source SMILES "
+                        "stereochemistry to the model atom order"
+                    )
+                return mol, coords, None
+            ideal = generate_ideal_conformer(stereo_mol)
             if ideal is not None and len(ideal) == len(idxs):
-                return _build_ligand_mol(elements_all[idxs], ideal, bonds_local), ideal
+                return (
+                    _build_ligand_mol(elements_all[idxs], ideal, bonds_local),
+                    ideal,
+                    stereo_mol,
+                )
             logger.warning(
                 "protenix chain %s: SMILES ETKDG failed; using model coords "
                 "as the restraint target",
                 chain_id,
             )
-            return mol, coords
+            return mol, coords, stereo_mol
 
         # protenix marks ligand atoms with biotite hetero; chains are label_asym_id;
         # the conformer target is atom_array.coord (overridden per-SMILES-ligand in
