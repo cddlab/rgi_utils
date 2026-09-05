@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from rgi_utils import monlib_geom
+from rgi_utils._atom_names import normalise_atom_name as _normalise_name
 from rgi_utils._mol_build import build_ligand_mol
 from rgi_utils._moltype import polymer_type
 from rgi_utils.atom_context import LigandConf
@@ -125,10 +126,6 @@ _NUCLEIC_LINK = _LinkGeometry(
         (("O5'", _CURR), ("P", _CURR), ("O3'", _PREV), 100.661),
     ),
 )
-
-
-def _normalise_name(name: str | None) -> str:
-    return (name or "").strip().upper().replace("*", "'")
 
 
 def _is_enabled_polymer(record) -> bool:
@@ -250,10 +247,26 @@ def build_polymer_geometry(
         uid_for_key = {}
         for record in records:
             g = int(record.index)
-            if _is_enabled_polymer(record) and 0 <= g < n:
+            if polymer_type(record.mol_type, record.resname) is not None and 0 <= g < n:
                 ptype = polymer_type(record.mol_type, record.resname)
                 key = (record.chain, int(record.resid), ptype)
                 ref_uid[g] = uid_for_key.setdefault(key, len(uid_for_key))
+
+    # Preserve adjacency in the complete structure before excluding disabled residues.
+    # Token ordinals cannot encode this: modified residues may use one token per atom.
+    source_order = {}
+    for record in records:
+        g = int(record.index)
+        if not 0 <= g < n or polymer_type(record.mol_type, record.resname) is None:
+            continue
+        uid = int(ref_uid[g])
+        if uid >= 0:
+            order = source_order.setdefault(record.chain, {})
+            order[uid] = min(order.get(uid, g), g)
+    adjacent = set()
+    for order in source_order.values():
+        uids = sorted(order, key=order.get)
+        adjacent.update(zip(uids, uids[1:]))
 
     by_uid: dict[int, list] = {}
     for record in records:
@@ -323,7 +336,10 @@ def build_polymer_geometry(
         # though ref_space_uid correctly groups them into one residue.
         residues.sort(key=lambda x: (x["order"], x["uid"]))
         for previous, current in zip(residues, residues[1:]):
-            if current["mol_type"] != previous["mol_type"]:
+            if (
+                current["mol_type"] != previous["mol_type"]
+                or (previous["uid"], current["uid"]) not in adjacent
+            ):
                 continue
             previous["link_side1"] = current["mol_type"]
             current["link_side2"] = current["mol_type"]
@@ -341,7 +357,10 @@ def build_polymer_geometry(
     link_planes = []
     for residues in by_chain.values():
         for previous, current in zip(residues, residues[1:]):
-            if current["mol_type"] != previous["mol_type"]:
+            if (
+                current["mol_type"] != previous["mol_type"]
+                or (previous["uid"], current["uid"]) not in adjacent
+            ):
                 continue
             bonds, angles, planes = _link_geometry(
                 previous, current, current["mol_type"], library

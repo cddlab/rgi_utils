@@ -116,10 +116,108 @@ def test_af3_nucleic_resnames_survive_either_residue_vocabulary(vocabulary):
     assert [r.resname for r in ad.iter_atoms()] == ["A", "U"]
 
 
+@pytest.mark.parametrize(
+    "aatype,name", [(22, "A"), (23, "G"), (24, "C"), (26, "DA"), (27, "DG")]
+)
+@pytest.mark.parametrize("vocabulary", [_POLY_GAPLESS, _POLY_WITH_GAP])
+def test_af3_vocabulary_resolution_does_not_depend_on_base_composition(
+    aatype, name, vocabulary
+):
+    batch = _af3_nucleotide_batch()
+    batch["aatype"][:] = aatype
+    if name.startswith("D"):
+        batch["is_rna"][:] = False
+        batch["is_dna"][:] = True
+    adapter = AF3RestraintAdapter(batch, {"A": 1}, vocabulary, ligand_mols=[])
+    assert [record.resname for record in adapter.iter_atoms()] == [name, name]
+
+
+def test_af3_subset_preserves_chemistry_properties_and_coordinate_order():
+    source = Chem.MolFromSmiles("C[N+](C)(C)[13CH3].F/C=C/Cl.N[C@@H](C)C(=O)O.[Cl-]")
+    source.SetProp("source", "fixture")
+    source.SetProp("identifier", "00123")
+    source.SetIntProp("integer", 7)
+    source.SetBoolProp("boolean", True)
+    source.SetDoubleProp("real", 2.5)
+    for atom in source.GetAtoms():
+        atom.SetProp("atom_name", f"A{atom.GetIdx()}")
+    source.GetBondWithIdx(0).SetProp("source_bond", "retained")
+    conformer = Chem.Conformer(source.GetNumAtoms())
+    for i in range(source.GetNumAtoms()):
+        conformer.SetAtomPosition(i, (float(i), 0.0, 0.0))
+    source.AddConformer(conformer)
+    before = Chem.MolToSmiles(source)
+    kept = list(reversed(range(source.GetNumAtoms() - 1)))
+    result = AF3RestraintAdapter._subset_mol(source, kept, Chem)
+    assert Chem.MolToSmiles(source) == before
+    assert Chem.GetFormalCharge(result) == 1
+    assert result.GetProp("source") == "fixture"
+    assert result.GetProp("identifier") == "00123"
+    assert result.GetIntProp("integer") == 7
+    assert result.GetBoolProp("boolean") is True
+    assert result.GetDoubleProp("real") == 2.5
+    for new, old in enumerate(kept):
+        atom, original = result.GetAtomWithIdx(new), source.GetAtomWithIdx(old)
+        assert atom.GetAtomicNum() == original.GetAtomicNum()
+        assert atom.GetIsotope() == original.GetIsotope()
+        assert atom.GetFormalCharge() == original.GetFormalCharge()
+        assert atom.GetProp("atom_name") == original.GetProp("atom_name")
+    np.testing.assert_array_equal(result.GetConformer().GetPositions()[:, 0], kept)
+    expected = Chem.RWMol(source)
+    expected.RemoveAtom(source.GetNumAtoms() - 1)
+    assert Chem.MolToSmiles(result) == Chem.MolToSmiles(expected.GetMol())
+    assert any(b.HasProp("source_bond") for b in result.GetBonds())
+
+
 def test_af3_protein_only_batch_keeps_the_vocabulary_as_given():
     # Nothing below the gap moves, so a protein/ligand batch must not be "corrected".
     ad = AF3RestraintAdapter(_af3_batch(), {"A": 1, "B": 2}, _POLY, ligand_mols=[])
     assert ad._name_shift == 0
+
+
+def test_boltz_atom_metadata_uses_bulk_reads(monkeypatch):
+    from types import SimpleNamespace
+
+    torch = pytest.importorskip("torch")
+    from rgi_utils.boltz.adapter import BoltzFeatsAdapter
+
+    tokens = torch.tensor([0, 0, 1, 2, 3, 4, 0])
+    mapping = torch.nn.functional.one_hot(tokens, num_classes=5).float()
+    feats = {
+        "atom_to_token": torch.stack([mapping, mapping]),
+        "asym_id": torch.tensor([[7, 7, 9, 9, 9], [99, 99, 99, 99, 99]]),
+        "atom_pad_mask": torch.tensor([[1, 1, 1, 1, 1, 1, 0]] * 2),
+        "mol_type": torch.tensor([[0, 0, 1, 1, 1]] * 2),
+        "ref_conformer_restraint": torch.tensor([[0, 0, 0, 1, 1, 1, 0]] * 2),
+        "record": [
+            SimpleNamespace(
+                chains=[
+                    SimpleNamespace(chain_id=7, chain_name="A"),
+                    SimpleNamespace(chain_id=9, chain_name="B"),
+                ]
+            )
+        ],
+    }
+    calls = []
+    original_item = torch.Tensor.item
+
+    def counted_item(tensor, *args):
+        calls.append(None)
+        return original_item(tensor, *args)
+
+    monkeypatch.setattr(torch.Tensor, "item", counted_item)
+    adapter = BoltzFeatsAdapter(feats)
+    records = list(adapter.iter_atoms())
+    assert list(adapter.iter_atoms()) == records
+    assert [(r.chain, r.resid, r.index, r.conformer_restraints) for r in records] == [
+        ("A", 1, 0, False),
+        ("A", 1, 1, False),
+        ("A", 2, 2, False),
+        ("B", 1, 3, True),
+        ("B", 2, 4, True),
+        ("B", 3, 5, True),
+    ]
+    assert calls == []
 
 
 def test_af3_adapter_imports_no_alphafold3():

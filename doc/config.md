@@ -66,7 +66,7 @@ types (base-pair expands into distance and plane restraints under the hood).
 | `verbose` | bool | `false` | Log the built spec (per-restraint counts) at setup and per-term energies at finalize. Strongly recommended — it is how you confirm a restraint was actually built. |
 | `gpu` | bool | `true` | Torch **device**: `true` = accelerator (default), `false` = CPU. It does **not** change the backend. (Inert for AF3, which always runs the JAX minimizer on the model's device.) Accepts `true/false` and the strings `1/0/yes/no/on/off`. |
 | `method` | str | `"CG"` | Optimizer: `"CG"` (nonlinear conjugate gradient) or `"l-bfgs"` (opt-in). |
-| `max_iter` | int | `100` | Max optimizer iterations per denoising step. The examples use 1000 (2000 for AF3). |
+| `max_iter` | int | `100` | Nonnegative maximum optimizer iterations per denoising step. The examples use 1000 (2000 for AF3). |
 
 **There is no `backend` key** — the compute backend (torch / jax) is **inferred from how the
 engine is invoked**, not configured: a JAX tool (AF3) grabs the pure minimizer via
@@ -76,6 +76,11 @@ torch *device*.) There is no numpy optimizer (numpy is the energy reference only
 
 **There is no top-level `start_sigma` / `stop_sigma`** — setting one at the top level raises. They
 are per-restraint (see below).
+
+Parsing rejects multiple penalty-type blocks on one entry, fractional or boolean
+`move` indices, malformed blocks, and nonfinite weights, targets or slacks. Activation
+windows may use infinite bounds but cannot contain NaN or be empty. These checks run
+before any adapter or reference-structure processing.
 
 ## Computational cost (current implementation)
 
@@ -712,8 +717,8 @@ plus `CA-C-N`, `O-C-N`, and `C-N-CA` angles; and DNA/RNA `O3'-P` phosphodiester 
 reference conformer. Together these prevent an RMSD restraint from repairing a selected residue while
 breaking the covalent link to its neighbor. Polymer `plane` **is** built (opt-in via the `plane`
 sub-block): residue-local aromatic rings — His/Phe/Tyr/Trp side chains and nucleic-acid bases — plus
-the protein **peptide plane**, the canonical inter-residue 5-atom group `{C, CA, O}` (previous
-residue) `+ {N, CA}` (current), scored by the best-fit-plane `plane` term (this replaces the old
+the protein **peptide plane**, the canonical inter-residue four-atom group `{C, CA, O}` (previous
+residue) `+ {N}` (current), scored by the best-fit-plane `plane` term (this replaces the old
 peptide-plane zero-volume impropers that rode the `chiral` term — so a `chiral`-only config no longer
 flattens the peptide plane; add a `plane` sub-block). Polymer `cistrans` remains a ligand-only term.
 
@@ -786,9 +791,9 @@ Behaviour worth knowing:
   its two fused SSSR rings and leaves the exocyclic atoms unrestrained: one group per residue
   instead of ~1.5.
 - **Links too**: the `TRANS` (peptide) and `p` (phosphodiester) link entries supply the
-  inter-residue bond and angle targets, replacing the built-in table (which differs by up to ~3°,
-  e.g. `O3'-P-O5'` 104.0° built-in vs 100.7° library). The peptide **plane** stays built-in: its
-  5-atom omega group is a stronger restraint than the library's 4-atom `CA-C-N-O`.
+  inter-residue bond, angle and plane targets. The built-in fallback follows the same
+  definitions; its peptide plane is the four-atom `{CA, C, O}(previous) + {N}(current)`
+  group, which leaves omega free.
 - **`chiral` is unchanged** — still reference-conformer volumes. Only the sign protects
   stereochemistry, and the library's `ChiralityType` convention would have to be reconciled with
   the internal atom ordering first.
@@ -938,7 +943,10 @@ checks, `M = max_atom_step * neighbor_rebuild_interval`, which is folded into th
 CG restarts its search direction only on an actual rebuild; between checks its state is carried
 across the block boundary, so a block that does not rebuild costs neither a re-entry energy
 evaluation nor the conjugate direction. Energy evaluation remains `O(L * max_neighbors)` /
-`O(N * max_neighbors)`; `method: l-bfgs` keeps the previous one-list-per-diffusion-step behavior.
+`O(N * max_neighbors)`. With `method: l-bfgs`, both lists are rebuilt at every
+objective evaluation, including line-search trials, because its steps have no CG displacement bound.
+For both solvers and energy diagnostics, the search radius is at least the largest contact
+distance `scale * (r_i + r_j)`, even when `dmax` is smaller.
 
 `max_atom_step` (default 0.1 Å) caps each atom's accepted displacement in one CG iteration whenever
 VdW is active. The line search uses the capped displacement in its Armijo test, so increasing

@@ -205,3 +205,9 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Regenerable example predictions and downloaded RMSD references
+/example/**/out/
+/example/**/out_*.cif
+/example/rmsd/*/1GGG.cif
+/example/rmsd/*/1WDN.cif

@@ -140,19 +140,49 @@ class _ThrowingElementsAdapter(MockAdapter):
 
 def test_get_elements_failure_loud_only_when_vdw_requested(caplog):
     """B3: a broken get_elements() must not silently drop a REQUESTED VdW term.
-    weight 0 (default) -> tolerate (warn + continue); weight > 0 -> re-raise."""
+    No conformer terms -> skip the read; requested VdW -> re-raise."""
     atoms = [AtomRecord("A", 1, 0), AtomRecord("A", 2, 1)]
-    # (a) VdW OFF (default): tolerate the failure -> warn and continue, no raise.
+    # (a) No conformer terms: elements are unnecessary.
     cr = CombinedRestraints()
     cr.set_config({})
     with caplog.at_level(logging.WARNING):
         cr.setup(_ThrowingElementsAdapter(atoms))  # must NOT raise
-    assert any("get_elements failed" in r.getMessage() for r in caplog.records)
+    assert not any("get_elements failed" in r.getMessage() for r in caplog.records)
     # (b) VdW requested (weight > 0): the failure is fatal -> re-raise the real error.
     cr = CombinedRestraints()
     cr.set_config({"conformer_restraints_config": {"vdw": {"weight": 1.0}}})
     with pytest.raises(RuntimeError, match="boom"):
         cr.setup(_ThrowingElementsAdapter(atoms))
+
+
+@pytest.mark.parametrize("conformer", [{}, {"bond": {"weight": 0}}, {"start_sigma": 1}])
+def test_setup_skips_unused_conformer_adapter_work(conformer):
+    class ExpensiveAdapter(MockAdapter):
+        def iter_ligand_confs(self):
+            raise AssertionError("unused ligand construction")
+
+        def get_elements(self):
+            raise AssertionError("unused element extraction")
+
+        def get_reference_positions(self):
+            raise AssertionError("unused polymer geometry")
+
+    cr = CombinedRestraints()
+    cr.setup(
+        ExpensiveAdapter([AtomRecord("A", 1, 0), AtomRecord("B", 1, 1)]),
+        config={
+            "conformer_restraints_config": conformer,
+            "distance_restraints_config": [
+                {
+                    "atom_selection1": "chain A",
+                    "atom_selection2": "chain B",
+                    "harmonic": {"target_distance": 3},
+                }
+            ],
+        },
+    )
+    assert cr.spec.distance is not None
+    assert cr.spec.has_conformer() is False
 
 
 def test_distance_resolve_and_minimize():
@@ -573,23 +603,21 @@ def test_rmsd_stop_sigma_above_start_raises(tmp_path):
     pdb = tmp_path / "ref.pdb"
     _write_pdb(pdb, ref)
     cr = CombinedRestraints()
-    cr.set_config(
-        {
-            "rmsd_restraints_config": [
-                {
-                    "ref_pdb": str(pdb),
-                    "harmonic": {"target_rmsd": 0.0},
-                    "atom_selection_ref": "chain A",
-                    "atom_selection_target": "chain A",
-                    "start_sigma": 1.0,
-                    "stop_sigma": 5.0,  # > start_sigma -> empty active window
-                }
-            ],
-        }
-    )
+    config = {
+        "rmsd_restraints_config": [
+            {
+                "ref_pdb": str(pdb),
+                "harmonic": {"target_rmsd": 0.0},
+                "atom_selection_ref": "chain A",
+                "atom_selection_target": "chain A",
+                "start_sigma": 1.0,
+                "stop_sigma": 5.0,  # > start_sigma -> empty active window
+            }
+        ],
+    }
     atoms = [AtomRecord("A", i + 1, i) for i in range(n)]
     with pytest.raises(ValueError, match="stop_sigma > start_sigma"):
-        cr.setup(MockAdapter(atoms))
+        cr.setup(MockAdapter(atoms), config=config)
 
 
 def test_distance_move_mode_parsing():
@@ -689,19 +717,17 @@ def test_distance_stop_sigma_above_start_raises():
     """Empty window (stop_sigma > start_sigma) on a DISTANCE restraint must RAISE,
     mirroring the rmsd / conformer checks in _warn_never_active."""
     cr = CombinedRestraints()
-    cr.set_config(
-        {
-            "distance_restraints_config": [
-                {
-                    "atom_selection1": "chain A",
-                    "atom_selection2": "chain B",
-                    "start_sigma": 1.0,
-                    "stop_sigma": 5.0,  # > start_sigma -> empty window
-                    "harmonic": {"target_distance": 5.0},
-                }
-            ],
-        }
-    )
+    config = {
+        "distance_restraints_config": [
+            {
+                "atom_selection1": "chain A",
+                "atom_selection2": "chain B",
+                "start_sigma": 1.0,
+                "stop_sigma": 5.0,  # > start_sigma -> empty window
+                "harmonic": {"target_distance": 5.0},
+            }
+        ],
+    }
     atoms = [
         AtomRecord("A", 1, 0),
         AtomRecord("A", 2, 1),
@@ -709,7 +735,7 @@ def test_distance_stop_sigma_above_start_raises():
         AtomRecord("B", 2, 3),
     ]
     with pytest.raises(ValueError, match="stop_sigma > start_sigma"):
-        cr.setup(MockAdapter(atoms))
+        cr.setup(MockAdapter(atoms), config=config)
 
 
 def test_distance_step_window_gates_e2e():
@@ -769,19 +795,17 @@ def test_distance_empty_step_window_raises():
     """Empty STEP window (stop_step < start_step) on a DISTANCE restraint must RAISE,
     mirroring the empty sigma-window check in _warn_never_active."""
     cr = CombinedRestraints()
-    cr.set_config(
-        {
-            "distance_restraints_config": [
-                {
-                    "atom_selection1": "chain A",
-                    "atom_selection2": "chain B",
-                    "start_step": 50,
-                    "stop_step": 10,  # < start_step -> empty step window
-                    "harmonic": {"target_distance": 5.0},
-                }
-            ],
-        }
-    )
+    config = {
+        "distance_restraints_config": [
+            {
+                "atom_selection1": "chain A",
+                "atom_selection2": "chain B",
+                "start_step": 50,
+                "stop_step": 10,  # < start_step -> empty step window
+                "harmonic": {"target_distance": 5.0},
+            }
+        ],
+    }
     atoms = [
         AtomRecord("A", 1, 0),
         AtomRecord("A", 2, 1),
@@ -789,7 +813,7 @@ def test_distance_empty_step_window_raises():
         AtomRecord("B", 2, 3),
     ]
     with pytest.raises(ValueError, match="stop_step < start_step"):
-        cr.setup(MockAdapter(atoms))
+        cr.setup(MockAdapter(atoms), config=config)
 
 
 def test_conformer_stop_sigma_above_start_raises():
@@ -802,18 +826,16 @@ def test_conformer_stop_sigma_above_start_raises():
     n = m.GetNumAtoms()
     atoms = [AtomRecord("A", i + 1, i) for i in range(n)]
     cr = CombinedRestraints()
-    cr.set_config(
-        {
-            "conformer_restraints_config": {
-                "start_sigma": 1.0,
-                "stop_sigma": 5.0,  # > conf_start_sigma -> empty window
-                "bond": {"weight": 1.0},
-            },
-        }
-    )
+    config = {
+        "conformer_restraints_config": {
+            "start_sigma": 1.0,
+            "stop_sigma": 5.0,  # > conf_start_sigma -> empty window
+            "bond": {"weight": 1.0},
+        },
+    }
     lc = LigandConf(m, c, np.arange(n), conformer_restraints=True)
     with pytest.raises(ValueError, match="conf_stop_sigma > conf_start_sigma"):
-        cr.setup(MockAdapter(atoms, [lc]))
+        cr.setup(MockAdapter(atoms, [lc]), config=config)
 
 
 def _custom_window_atoms():
@@ -830,42 +852,38 @@ def test_custom_stop_sigma_above_start_raises():
     the distance/rmsd/conformer checks in _warn_never_active. Without the guard the custom
     restraint is a silent no-op whose ungated finalize energy reads as satisfied."""
     cr = CombinedRestraints()
-    cr.set_config(
-        {
-            "custom_restraints_config": [
-                {
-                    "name": "c",
-                    "energy": "harmonic(distance(A, B), 5.0)",
-                    "selections": {"A": "chain A", "B": "chain B"},
-                    "start_sigma": 1.0,
-                    "stop_sigma": 5.0,  # > start_sigma -> empty window
-                }
-            ],
-        }
-    )
+    config = {
+        "custom_restraints_config": [
+            {
+                "name": "c",
+                "energy": "harmonic(distance(A, B), 5.0)",
+                "selections": {"A": "chain A", "B": "chain B"},
+                "start_sigma": 1.0,
+                "stop_sigma": 5.0,  # > start_sigma -> empty window
+            }
+        ],
+    }
     with pytest.raises(ValueError, match="stop_sigma > start_sigma"):
-        cr.setup(MockAdapter(_custom_window_atoms()))
+        cr.setup(MockAdapter(_custom_window_atoms()), config=config)
 
 
 def test_custom_empty_step_window_raises():
     """Empty STEP window (stop_step < start_step) on a CUSTOM restraint must RAISE, the
     step-axis analogue of the sigma check above."""
     cr = CombinedRestraints()
-    cr.set_config(
-        {
-            "custom_restraints_config": [
-                {
-                    "name": "c",
-                    "energy": "harmonic(distance(A, B), 5.0)",
-                    "selections": {"A": "chain A", "B": "chain B"},
-                    "start_step": 50,
-                    "stop_step": 10,  # < start_step -> empty step window
-                }
-            ],
-        }
-    )
+    config = {
+        "custom_restraints_config": [
+            {
+                "name": "c",
+                "energy": "harmonic(distance(A, B), 5.0)",
+                "selections": {"A": "chain A", "B": "chain B"},
+                "start_step": 50,
+                "stop_step": 10,  # < start_step -> empty step window
+            }
+        ],
+    }
     with pytest.raises(ValueError, match="stop_step < start_step"):
-        cr.setup(MockAdapter(_custom_window_atoms()))
+        cr.setup(MockAdapter(_custom_window_atoms()), config=config)
 
 
 def test_rmsd_count_mismatch_raises(tmp_path):

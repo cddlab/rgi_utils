@@ -37,6 +37,8 @@ class BoltzFeatsAdapter:
         self.token_names = token_names
         self._asym_id_atom = None
         self._atom_to_token = None
+        self._atom_token_indices = None
+        self._atom_records = None
         self._pad0 = None  # per-atom real-atom mask (True=real), batch 0
 
     def _per_atom(self):
@@ -44,15 +46,9 @@ class BoltzFeatsAdapter:
         pad mask for batch 0."""
         if self._asym_id_atom is None:
             feats = self.feats
-            asym_id_token = feats["asym_id"]
-            atom_to_token = feats["atom_to_token"]
-            asym_id_atom = (
-                torch.bmm(atom_to_token.float(), asym_id_token.unsqueeze(-1).float())
-                .squeeze(-1)
-                .long()
-            )
-            self._asym_id_atom = asym_id_atom[0]
-            self._atom_to_token = atom_to_token[0]
+            self._atom_to_token = feats["atom_to_token"][0]
+            self._atom_token_indices = self._atom_to_token.argmax(dim=-1)
+            self._asym_id_atom = feats["asym_id"][0][self._atom_token_indices].long()
             # boltz pads the atom dim to a multiple of the window size; padding atoms
             # get asym_id=0 and an all-zero atom_to_token row, so without this mask
             # they would be emitted as chain-0 / residue-ordinal-1 and corrupt any
@@ -69,7 +65,16 @@ class BoltzFeatsAdapter:
         residue 5 of chain B in every framework (consistent with protenix's
         per-chain res_id and AF3) — not a cumulative global token index.
         """
-        asym_id_atom_b0, atom_to_token_b0 = self._per_atom()
+        if self._atom_records is None:
+            self._atom_records = tuple(self._build_atom_records())
+        yield from self._atom_records
+
+    def _build_atom_records(self):
+        """Transfer metadata in bulk once per structure, without per-atom CUDA syncs."""
+        asym_id_atom_b0, _ = self._per_atom()
+        atom_chains = asym_id_atom_b0.detach().cpu().numpy()
+        token_indices = self._atom_token_indices.detach().cpu().numpy()
+        real_atoms = self._pad0.detach().cpu().numpy()
         record = self.feats["record"]
         name_of = self._atom_name_lookup()
         # per-token molecule type (batch 0) -> normalized string; absent -> None
@@ -89,18 +94,14 @@ class BoltzFeatsAdapter:
         ref_conf_restr = self.feats.get("ref_conformer_restraint")
         if ref_conf_restr is not None:
             rcr0 = ref_conf_restr[0] if ref_conf_restr.dim() > 1 else ref_conf_restr
+            rcr0 = rcr0.detach().cpu().numpy()
         else:
             rcr0 = None
         for chain in record[0].chains:
             chain_id = chain.chain_id
             # exclude padding atoms (else they surface as chain-0 / resid 1)
-            chain_sites = torch.where((asym_id_atom_b0 == chain_id) & self._pad0)[
-                0
-            ].tolist()
-            toks = [
-                int(torch.argmax(atom_to_token_b0[gidx, :]).item())
-                for gidx in chain_sites
-            ]
+            chain_sites = np.flatnonzero((atom_chains == chain_id) & real_atoms)
+            toks = token_indices[chain_sites].tolist()
             # rank this chain's tokens -> per-chain 1-based ordinal. boltz emits a
             # chain's atoms in ascending token order, so sorted-token-index equals
             # first-appearance order, matching the other adapters' resid convention.
@@ -117,9 +118,7 @@ class BoltzFeatsAdapter:
                         if res_type_idx is None
                         else self.token_names[int(res_type_idx[t])]
                     ),
-                    conformer_restraints=(
-                        False if rcr0 is None else bool(rcr0[gidx].item())
-                    ),
+                    conformer_restraints=(False if rcr0 is None else bool(rcr0[gidx])),
                 )
 
     def _atom_name_lookup(self):

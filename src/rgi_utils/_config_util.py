@@ -30,6 +30,19 @@ VDW_NEIGHBOR_REBUILD_INTERVAL_DEFAULT = 10
 VDW_NEIGHBOR_SKIN_DEFAULT = 2.0
 
 
+def finite_float(value, label: str) -> float:
+    """Parse a finite scalar, rejecting booleans and nonnumeric values."""
+    try:
+        if isinstance(value, bool):
+            raise ValueError
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"{label} must be a finite number") from None
+    if not math.isfinite(parsed):
+        raise ValueError(f"{label} must be finite")
+    return parsed
+
+
 def validate_vdw_config(conformer_config: dict | None) -> None:
     """Validate the nested conformer ``vdw`` block without importing array libraries."""
     cfg = conformer_config or {}
@@ -136,6 +149,8 @@ def warn_unknown_keys(
     ``harmonic`` / ``flat-bottomed`` are themselves keys), so this is a soft warning,
     not a hard reject like the top-level section whitelist in ``config.py``.
     """
+    if not isinstance(config, dict):
+        raise ValueError(f"{label} must be a mapping")
     unknown = set(config) - set(known)
     if unknown:
         logger.warning(
@@ -152,14 +167,14 @@ _STEP_WINDOW_KEYS = ("start_step", "stop_step")
 
 
 def check_window_exclusive(config: dict, label: str = "restraint entry") -> None:
-    """Raise if an entry mixes the sigma-window and the step-window gate keys.
+    """Validate gate exclusivity, numeric bounds and a nonempty active window.
 
     A restraint is gated on EITHER the noise level (``start_sigma`` / ``stop_sigma``) OR
     the diffusion step index (``start_step`` / ``stop_step``) — the two are mutually
     exclusive. Mixing them is a config error, not a silent precedence rule,
     so this raises rather than warning. Shared by every restraint type so the rule (and
     its message) can't diverge across distance / rmsd / angle / dihedral / conformer /
-    custom.
+    custom. Infinite bounds are allowed; NaN and inverted windows are rejected.
     """
     has_sigma = any(k in config for k in _SIGMA_WINDOW_KEYS)
     has_step = any(k in config for k in _STEP_WINDOW_KEYS)
@@ -169,6 +184,37 @@ def check_window_exclusive(config: dict, label: str = "restraint entry") -> None
             f"step-window (start_step/stop_step), not both — they are mutually exclusive "
             f"gates (noise level vs diffusion step index)."
         )
+    bounds = {}
+    for key, default in (
+        ("start_sigma", float("inf")),
+        ("stop_sigma", -1.0),
+        ("start_step", float("-inf")),
+        ("stop_step", float("inf")),
+    ):
+        value = config.get(key)
+        try:
+            if isinstance(value, bool):
+                raise ValueError
+            bounds[key] = default if value is None else float(value)
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError(f"{label}: {key} must be numeric") from None
+        if math.isnan(bounds[key]):
+            raise ValueError(f"{label}: {key} must not be NaN")
+    prefix = "conf_" if label == "conformer_restraints_config" else ""
+    for stop, op, start, empty in (
+        (
+            "stop_sigma",
+            ">",
+            "start_sigma",
+            bounds["stop_sigma"] > bounds["start_sigma"],
+        ),
+        ("stop_step", "<", "start_step", bounds["stop_step"] < bounds["start_step"]),
+    ):
+        if empty:
+            raise ValueError(
+                f"{label}: {prefix}{stop} {op} {prefix}{start}, so the active window "
+                "is EMPTY and the restraint NEVER activates"
+            )
 
 
 def apply_window_params(obj, config: dict, label: str) -> None:
@@ -194,7 +240,7 @@ def apply_window_params(obj, config: dict, label: str) -> None:
     """
     check_window_exclusive(config, label)
     _w = config.get("weight")
-    obj.weight = 1.0 if _w is None else float(_w)
+    obj.weight = 1.0 if _w is None else finite_float(_w, f"{label} weight")
     for key in _SIGMA_WINDOW_KEYS + _STEP_WINDOW_KEYS:
         value = config.get(key)
         if value is not None:
@@ -234,8 +280,13 @@ def parse_move_indices(mv, n_groups: int) -> set[int] | None:
     else:
         items = [mv]  # a bare int / float
     try:
-        idx = {int(x) for x in items}
-    except (TypeError, ValueError):
+        idx = set()
+        for x in items:
+            parsed = int(x)
+            if isinstance(x, bool) or (not isinstance(x, str) and x != parsed):
+                raise ValueError
+            idx.add(parsed)
+    except (TypeError, ValueError, OverflowError):
         raise ValueError(
             f"'move' must be 'all'/'both' or group indices 1..{n_groups} (got {mv!r})"
         )
@@ -257,19 +308,25 @@ def parse_geom_type(config: dict, base: str, conv):
     ``(geom_type_str, target1, target2)`` (the unused bound -> 0.0), or
     ``(None, None, None)`` if no type block is present. The flat-bottomed ``t1 < t2``
     ordering check runs on the RAW (pre-conv) values — it is monotone under ``conv``.
-    Mirrors ``DistanceData``'s own type parse so the four types stay in lockstep.
+    Shared with ``DistanceData`` so the four types stay in lockstep.
     """
+    types = ("harmonic", "flat-bottomed", "flat-bottomed1", "flat-bottomed2")
+    present = [key for key in types if key in config]
+    if len(present) > 1:
+        raise ValueError(f"restraint type blocks are mutually exclusive: {present}")
+    if present and not isinstance(config[present[0]], dict):
+        raise ValueError(f"{present[0]} must be a mapping")
     if "harmonic" in config:
         t = config["harmonic"].get(base)
         if t is None:
             raise ValueError(f"harmonic needs {base}")
-        return "harmonic", conv(t), 0.0
+        return "harmonic", conv(finite_float(t, base)), 0.0
     if "flat-bottomed" in config:
         t1 = config["flat-bottomed"].get(f"{base}1")
         t2 = config["flat-bottomed"].get(f"{base}2")
         if t1 is None or t2 is None:
             raise ValueError(f"flat-bottomed needs {base}1 and {base}2")
-        t1, t2 = float(t1), float(t2)
+        t1, t2 = finite_float(t1, f"{base}1"), finite_float(t2, f"{base}2")
         if t1 >= t2:
             raise ValueError(f"{base}1 must be smaller than {base}2")
         return "flat-bottomed", conv(t1), conv(t2)
@@ -277,10 +334,10 @@ def parse_geom_type(config: dict, base: str, conv):
         t1 = config["flat-bottomed1"].get(f"{base}1")
         if t1 is None:
             raise ValueError(f"flat-bottomed1 needs {base}1")
-        return "flat-bottomed1", conv(t1), 0.0
+        return "flat-bottomed1", conv(finite_float(t1, f"{base}1")), 0.0
     if "flat-bottomed2" in config:
         t2 = config["flat-bottomed2"].get(f"{base}2")
         if t2 is None:
             raise ValueError(f"flat-bottomed2 needs {base}2")
-        return "flat-bottomed2", 0.0, conv(t2)
+        return "flat-bottomed2", 0.0, conv(finite_float(t2, f"{base}2"))
     return None, None, None

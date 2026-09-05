@@ -135,8 +135,8 @@ class CisTransArrays:
 class VdwArrays:
     """VdW repulsion for non-bonded pairs (lower-bound only).
 
-    The torch backend recomputes ``idx``/``r_min`` every step via a radius
-    search; this struct carries the static fallback / jax form.
+    Static intramolecular and inter-ligand pairs, shared by all energy backends.
+    Optimizer-only dynamic pairs use VdwConfig and ActiveVdwConfig instead.
     """
 
     idx: np.ndarray  # (n_vdw, 2) int
@@ -157,7 +157,7 @@ class VdwConfig:
     neighbour list between bounded iteration blocks, so only the ligand is pushed out
     of contacts while the optimised variable set stays limited to ``active_sites``. The
     penalty is
-    ``clamp(d - scale*(r_i+r_j), max=0)**2`` summed over pairs within ``dmax`` —
+    ``clamp(d - scale*(r_i+r_j), max=0)**2`` summed over candidate pairs —
     identical maths to ``vdw_energy``, only the pair list is dynamic.
     """
 
@@ -169,6 +169,15 @@ class VdwConfig:
     scale: float = VDW_SCALE_DEFAULT
     dmax: float = 5.0
     max_neighbors: int = 32
+
+    @property
+    def search_radius(self) -> float:
+        """Baseline search radius covering every possible contact."""
+        contact = float(self.scale) * (
+            float(np.max(self.ligand_radii, initial=0))
+            + float(np.max(self.background_radii, initial=0))
+        )
+        return max(float(self.dmax), contact)
 
 
 @dataclass
@@ -187,6 +196,12 @@ class ActiveVdwConfig:
     scale: float = VDW_SCALE_DEFAULT
     dmax: float = 5.0
     max_neighbors: int = 32
+
+    @property
+    def search_radius(self) -> float:
+        """Baseline search radius covering every possible contact."""
+        contact = 2 * float(self.scale) * float(np.max(self.radii, initial=0))
+        return max(float(self.dmax), contact)
 
 
 # Largest positive value an int32 can hold; the JAX pair-code encoding lives in int32.

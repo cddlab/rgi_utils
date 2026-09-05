@@ -125,6 +125,41 @@ def _config():
     }
 
 
+@pytest.mark.parametrize(
+    "uids,atom_tokens", [(False, False), (True, False), (True, True)]
+)
+def test_disabled_polymer_residue_breaks_link_adjacency(uids, atom_tokens):
+    from types import SimpleNamespace
+
+    from rgi_utils.polymer import build_polymer_geometry
+
+    records = [
+        AtomRecord(
+            "A",
+            i + 1 if atom_tokens else i // 5 + 1,
+            i,
+            name=_ALA_NAMES[i % 5],
+            mol_type="protein",
+            resname="ALA",
+            conformer_restraints=not 5 <= i < 10,
+        )
+        for i in range(15)
+    ]
+    adapter = SimpleNamespace(
+        iter_atoms=lambda: iter(records),
+        get_elements=lambda: np.tile([7, 6, 6, 8, 6], 3),
+        get_reference_positions=lambda: np.tile(_ALA_COORDS, (3, 1)),
+    )
+    if uids:
+        # Deliberately nonconsecutive UIDs: adjacency comes from source order.
+        adapter.get_reference_space_uid = lambda: np.repeat([2, 9, 30], 5)
+    geometry = build_polymer_geometry(adapter, {"bond": {}, "angle": {}, "plane": {}})
+    assert len(geometry.residue_confs) == 2
+    assert geometry.link_bonds == []
+    assert geometry.link_angles == []
+    assert geometry.link_planes == []
+
+
 def test_protein_builds_peptide_link_plane_and_vdw_exclusions():
     restr = CombinedRestraints()
     restr.setup(_PolymerAdapter("protein", _ALA_NAMES, _ALA_COORDS), config=_config())

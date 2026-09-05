@@ -27,6 +27,235 @@ def _require_python_dev_headers():
         pytest.skip("torch.compile requires Python development headers (Python.h)")
 
 
+def _distance_objective(custom=None):
+    """One moving atom, one anchor, and two initially distant background atoms."""
+    from rgi_utils.atom_context import AtomRecord
+    from rgi_utils.combined import CombinedRestraints
+
+    atoms = [AtomRecord("A", i + 1, i) for i in range(4)]
+    config = {
+        "distance_restraints_config": [
+            {
+                "atom_selection1": "index 0",
+                "atom_selection2": "index 1",
+                "move": 1,
+                "harmonic": {"target_distance": 2.0},
+            }
+        ],
+    }
+    if custom is not None:
+        config["custom_restraints_config"] = [
+            {
+                "energy": "sqrt(distance(A, B) - 5)",
+                "selections": {"A": "index 0", "B": "index 1"},
+                **custom,
+            }
+        ]
+    restr = CombinedRestraints()
+    restr.setup(SimpleNamespace(iter_atoms=lambda: iter(atoms)), config=config)
+    return restr.spec
+
+
+@pytest.mark.parametrize(
+    "backend", ["torch", "jax", pytest.param("torch_cuda", marks=pytest.mark.gpu)]
+)
+@pytest.mark.parametrize("method", ["CG", "l-bfgs"])
+@pytest.mark.parametrize("dynamic", [False, "fixed", "active"])
+def test_solver_objective_tracks_new_contacts(backend, method, dynamic):
+    """A line search must score contacts absent from its initial neighbour list."""
+    from rgi_utils.spec import ActiveVdwConfig, VdwConfig
+
+    spec = _distance_objective()
+    spec.vdw_neighbor_skin = 0.0
+    coords = np.array(
+        [[0.0, 0.0, 0.0], [12.0, 0.0, 0.0], [10.0, 0.0, 0.0], [14.0, 0.0, 0.0]]
+    )
+    if dynamic == "fixed":
+        spec.vdw_config = VdwConfig(
+            weight=10.0,
+            ligand_local=np.array([0]),
+            ligand_radii=np.array([1.7]),
+            background_global=np.array([2, 3]),
+            background_radii=np.full(2, 1.7),
+            dmax=0.5,
+        )
+    elif dynamic == "active":
+        # Backgrounds remain free endpoints here; the same stale-list bug applies.
+        spec.n_active = 4
+        spec.active_sites = np.arange(4)
+        spec.active_vdw_config = ActiveVdwConfig(
+            weight=10.0,
+            radii=np.full(4, 1.7),
+            polymer_mask=np.array([True, False, False, False]),
+            excluded_codes=np.array([1], dtype=np.int64),
+            dmax=0.5,
+        )
+    if backend.startswith("torch"):
+        torch = pytest.importorskip("torch")
+        from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+
+        device = "cuda" if backend == "torch_cuda" else "cpu"
+        if device == "cuda" and not torch.cuda.is_available():
+            pytest.skip("no cuda device")
+        optimizer = TorchRestraintOptimizer(spec, method=method, max_iter=200)
+        out = (
+            optimizer.minimize(torch.tensor(coords, dtype=torch.float64, device=device))
+            .cpu()
+            .numpy()
+        )
+        residual = optimizer.dynamic_vdw_energy(torch.tensor(out, device=device))
+    else:
+        jax = pytest.importorskip("jax")
+        if method == "l-bfgs":
+            pytest.importorskip("jaxopt")
+        jax.config.update("jax_enable_x64", True)
+        import jax.numpy as jnp
+
+        from rgi_utils.optim.jax_optim import dynamic_vdw_energy, make_minimizer
+
+        out = np.asarray(
+            jax.jit(make_minimizer(spec, method=method, max_iter=200))(
+                jnp.asarray(coords), 0.0
+            )
+        )
+        residual = dynamic_vdw_energy(spec, out)
+    assert np.isfinite(out).all()
+    assert out[0, 0] > 1
+    np.testing.assert_array_equal(out[1], coords[1])
+    if dynamic:
+        # Dense direct contact scoring is independent of the neighbour-list builder.
+        distances = np.linalg.norm(out[0] - out[2:], axis=-1)
+        dense = 10 * np.square(np.minimum(distances - 2.55, 0)).sum()
+        assert residual == pytest.approx(dense, abs=1e-5)
+        assert residual < 10.0
+        if dynamic == "fixed":
+            np.testing.assert_array_equal(out[2:], coords[2:])
+            # CG and L-BFGS may choose different local minima around the two obstacles.
+            # Either must be stationary for the full, directly evaluated objective.
+            anchor_delta = out[0] - out[1]
+            anchor_distance = np.linalg.norm(anchor_delta)
+            gradient = 2 * (anchor_distance - 2) * anchor_delta / anchor_distance
+            gradient += (
+                20
+                * np.minimum(distances - 2.55, 0)[:, None]
+                * (out[0] - out[2:])
+                / distances[:, None]
+            ).sum(axis=0)
+            assert np.linalg.norm(gradient) < 1e-3
+    else:
+        assert np.linalg.norm(out[0] - out[1]) == pytest.approx(2.0, abs=1e-5)
+
+
+@pytest.mark.parametrize("backend", ["torch", "jax", "torch_compiled"])
+@pytest.mark.parametrize(
+    "disabled", [{"start_sigma": 0.0}, {"start_step": 5}, {"weight": 0.0}]
+)
+def test_disabled_undefined_custom_does_not_block_distance(backend, disabled):
+    spec = _distance_objective(disabled)
+    coords = np.zeros((4, 3))
+    coords[1, 0] = 3
+    if backend.startswith("torch"):
+        torch = pytest.importorskip("torch")
+        from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+
+        opt = TorchRestraintOptimizer(spec, max_iter=50)
+        out = torch.tensor(coords, dtype=torch.float64)
+        if backend == "torch_compiled":
+            _require_python_dev_headers()
+            opt._ensure(out.device, out.dtype)
+            active = out[spec.active_sites].clone().requires_grad_(True)
+            ok, _ = opt._minimize_custom_gpu(active, 1.0, 0, 50, None, None)
+            assert ok, "compiled path unexpectedly fell back to eager"
+            out[spec.active_sites] = active.detach()
+        else:
+            opt.minimize(out, sigma=1.0, step=0)
+        out = out.numpy()
+    else:
+        jax = pytest.importorskip("jax")
+        jax.config.update("jax_enable_x64", True)
+        import jax.numpy as jnp
+
+        from rgi_utils.optim.jax_optim import make_minimizer
+
+        out = np.asarray(
+            jax.jit(make_minimizer(spec, max_iter=50))(jnp.asarray(coords), 1.0, 0)
+        )
+    assert np.isfinite(out).all()
+    assert np.linalg.norm(out[0] - out[1]) == pytest.approx(2.0, abs=1e-5)
+
+
+@pytest.mark.gpu
+def test_gpu_custom_nan_gate_and_dtype_cache():
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("no cuda device")
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+
+    spec = _distance_objective({"start_sigma": 0})
+    optimizer = TorchRestraintOptimizer(spec, max_iter=50)
+    for dtype in (torch.float32, torch.float64):
+        for sigma, distance in ((1.0, 3.0), (0.0, 6.0), (1.0, 3.0)):
+            coords = torch.zeros((4, 3), device="cuda", dtype=dtype)
+            coords[1, 0] = distance
+            optimizer.minimize(coords, sigma=sigma, step=0)
+            if sigma == 1.0:
+                assert float(torch.linalg.norm(coords[0] - coords[1])) == pytest.approx(
+                    2.0, abs=1e-5
+                )
+            assert torch.isfinite(coords).all()
+            assert optimizer._dtype == dtype
+            assert optimizer._custom_cvg
+            assert all(value is not False for value in optimizer._custom_cvg.values())
+        assert {key[1] for key in optimizer._custom_cvg} == {(), (0,)}
+
+
+def test_torch_scatter_accepts_autograd_leaf_and_fixed_background():
+    torch = pytest.importorskip("torch")
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+    from rgi_utils.spec import VdwConfig
+
+    spec = _distance_objective()
+    spec.vdw_config = VdwConfig(
+        weight=1.0,
+        ligand_local=np.array([0]),
+        ligand_radii=np.array([1.7]),
+        background_global=np.array([2]),
+        background_radii=np.array([1.7]),
+    )
+    coords = torch.tensor(
+        [[0.0, 0.0, 0.0], [3.0, 0.0, 0.0], [-2.0, 0.0, 0.0], [20.0, 0.0, 0.0]],
+        dtype=torch.float64,
+        requires_grad=True,
+    )
+    optimizer = TorchRestraintOptimizer(spec)
+    before = optimizer.energy(coords)
+    assert optimizer.minimize(coords) is coords
+    assert optimizer.energy(coords) < before
+    assert coords.is_leaf and coords.requires_grad and coords.grad is None
+
+
+def test_total_diagnostics_include_custom_and_both_dynamic_halves():
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    from rgi_utils.custom.closure import build_terms
+    from rgi_utils.energy import numpy_energy
+    from rgi_utils.optim.jax_optim import dynamic_vdw_energy, energy_of
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+
+    spec, coords = _vdw_and_custom_spec()
+    active = coords[..., spec.active_sites, :]
+    static = numpy_energy.total_energy(active, numpy_energy.prepare_spec(spec))
+    custom = sum(c(active) for *_meta, c in build_terms(spec.custom, "numpy"))
+    dynamic = dynamic_vdw_energy(spec, coords)
+    assert custom > 0 and dynamic > 0
+    expected = static + custom + dynamic
+    assert energy_of(spec, coords) == pytest.approx(expected, rel=1e-7)
+    assert TorchRestraintOptimizer(spec).energy(torch.tensor(coords)) == pytest.approx(
+        expected, rel=1e-7
+    )
+
+
 def _distorted_ethane():
     m = Chem.MolFromSmiles("CC")
     m = Chem.AddHs(m)
@@ -1446,6 +1675,29 @@ def test_dynamic_vdw_pair_energy_matches_optimizer():
     assert e_method > 0.0 and abs(e_method - e_pure) < 1e-10, (e_method, e_pure)
 
 
+@pytest.mark.parametrize("active_half", [False, True])
+def test_dynamic_vdw_diagnostics_cover_contacts_beyond_dmax(active_half):
+    torch = pytest.importorskip("torch")
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    from rgi_utils.optim.jax_optim import dynamic_vdw_energy
+    from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
+
+    spec = _dynamic_vdw_diagnostic_spec(active_half)
+    config = spec.active_vdw_config if active_half else spec.vdw_config
+    config.dmax = 0.5
+    if active_half:
+        # 0-1 is covalently excluded, leaving just the 0-2 contact.
+        coords = np.array([[0.0, 0.0, 0.0], [20.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+    else:
+        coords = np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+    expected = (2.55 - 2.0) ** 2
+    assert TorchRestraintOptimizer(spec).energy(torch.tensor(coords)) == pytest.approx(
+        expected, abs=1e-7
+    )
+    assert dynamic_vdw_energy(spec, coords) == pytest.approx(expected, abs=1e-7)
+
+
 def _dynamic_vdw_diagnostic_spec(active_half=False):
     from rgi_utils.spec import ActiveVdwConfig, RestraintSpec, VdwConfig
 
@@ -1714,6 +1966,7 @@ def test_compiled_vdw_energy_matches_eager(mode):
     VdW terms (fixed background / active-active neighbour list), which the CPU suite
     otherwise never runs through inductor at all. Skips where no compile toolchain."""
     torch = pytest.importorskip("torch")
+    _require_python_dev_headers()
     from rgi_utils.optim import _torch_cg_gpu as g
     from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
 
@@ -1727,11 +1980,8 @@ def test_compiled_vdw_energy_matches_eager(mode):
     base = g._ENERGY_BY_MODE[mode]
     extra = extras[mode]
     ge, ve = torch.func.grad_and_value(base, argnums=0)(active, prepared, *extra)
-    try:
-        comp = torch.compile(torch.func.grad_and_value(base, argnums=0))
-        gc, vc = comp(active, prepared, *extra)
-    except Exception as exc:  # no C++ toolchain / unsupported inductor env
-        pytest.skip(f"torch.compile unavailable: {exc}")
+    comp = torch.compile(torch.func.grad_and_value(base, argnums=0))
+    gc, vc = comp(active, prepared, *extra)
     assert float(ve) > 0.0, "degenerate fixture: the VdW term contributes nothing"
     assert torch.allclose(ge, gc, atol=1e-8), (ge - gc).abs().max()
     assert abs(float(ve) - float(vc)) < 1e-8
@@ -1745,6 +1995,7 @@ def test_custom_compiled_energy_includes_vdw(mode):
     compiled artifact at all and the whole CG dropped to eager on CUDA; the risk of the
     fix is a mis-assembled argument tuple, which this cross-check catches."""
     torch = pytest.importorskip("torch")
+    _require_python_dev_headers()
     from rgi_utils.energy import torch_energy
     from rgi_utils.optim._torch_cg_gpu import active_vdw_pair_energy
     from rgi_utils.optim.torch_optim import TorchRestraintOptimizer
@@ -1755,15 +2006,9 @@ def test_custom_compiled_energy_includes_vdw(mode):
     opt._ensure(coords.device, coords.dtype)
     active, bg_pos, extras = _mode_args(opt, coords)
     prepared = opt._gated_prepared(None, None)
-    gates = torch.ones(len(opt._custom_terms), dtype=coords.dtype)
-
     cvg = opt._get_custom_cvg(mode)
-    if cvg is None:
-        pytest.skip("torch.compile unavailable")
-    try:
-        _grad, value = cvg(active, prepared, gates, *extras[mode])
-    except Exception as exc:
-        pytest.skip(f"torch.compile unavailable: {exc}")
+    assert cvg is not None
+    _grad, value = cvg(active, prepared, *extras[mode])
 
     # independent reference: exactly what the eager `energy_fn` in minimize() sums
     ref = torch_energy.total_energy(active, prepared, None, None)

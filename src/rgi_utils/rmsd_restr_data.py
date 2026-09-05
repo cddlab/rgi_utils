@@ -83,6 +83,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from rgi_utils._align import pair_residues
+from rgi_utils._atom_names import normalise_atom_name
 from rgi_utils._config_util import (
     apply_window_params,
     coerce_bool,
@@ -214,7 +215,7 @@ def pair_target_to_ref(
         # mispair atoms, so reject an ambiguous reference loudly instead.
         refmap = {}
         for r in ref:
-            k = (r.chain, r.resid, r.name)
+            k = (r.chain, r.resid, normalise_atom_name(r.name))
             if k in refmap:
                 raise ValueError(
                     f"rmsd {tag}: duplicate reference atom {k} in {ref_path!r} — "
@@ -238,9 +239,9 @@ def pair_target_to_ref(
                         f"resid {a.resid}) aligned to a gap in ref {ref_path!r} (no "
                         f"corresponding residue); set best_effort:true to skip gaps"
                     )
-                key = (a.chain, mapped, a.name)
+                key = (a.chain, mapped, normalise_atom_name(a.name))
             else:
-                key = (a.chain, a.resid, a.name)
+                key = (a.chain, a.resid, normalise_atom_name(a.name))
             if key not in refmap:
                 if best_effort:  # whole-structure default: use what matches
                     skipped += 1

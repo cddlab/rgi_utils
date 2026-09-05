@@ -166,11 +166,17 @@ def _iter_cif_rows(block, path: str):
         return "" if s in (".", "?") else s
 
     def preferred(field):
-        for tag in _CIF_FIELD_PREFERENCE[field]:
-            col = column(tag)
-            if col is not None:
-                return col
-        return None
+        columns = [
+            col
+            for tag in _CIF_FIELD_PREFERENCE[field]
+            if (col := column(tag)) is not None
+        ]
+        if not columns:
+            return None
+        # Some writers provide auth_* columns but leave individual values unknown.
+        return [
+            next((raw for raw in row if value(raw)), row[0]) for row in zip(*columns)
+        ]
 
     x = column("Cartn_x")
     y = column("Cartn_y")
@@ -184,6 +190,16 @@ def _iter_cif_rows(block, path: str):
     # silent failure).
     if x is None or y is None or z is None or chain is None:
         raise ValueError(f"rmsd ref_cif has no _atom_site loop: {path!r}")
+    missing = [
+        field
+        for field, col in (("seq", seq), ("name", name), ("comp", comp))
+        if col is None
+    ]
+    if missing:
+        tags = ["/".join(_CIF_FIELD_PREFERENCE[field]) for field in missing]
+        raise ValueError(
+            f"rmsd ref_cif missing required _atom_site column(s) {tags}: {path!r}"
+        )
     group = column("group_PDB")
     element = column("type_symbol")
     altloc = column("label_alt_id")
@@ -202,7 +218,11 @@ def _iter_cif_rows(block, path: str):
         alt = value(altloc[i]) if altloc is not None else ""
         if alt not in ("", "A"):  # keep only the primary alternate location
             continue
-        grp = "HETATM" if value(group[i]).upper() == "HETATM" else "ATOM"
+        grp = (
+            "HETATM"
+            if group is not None and value(group[i]).upper() == "HETATM"
+            else "ATOM"
+        )
         el = gemmi.Element(value(element[i])).name if element is not None else ""
         try:
             xi = float(value(x[i]))

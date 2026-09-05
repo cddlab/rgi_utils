@@ -1,8 +1,10 @@
 import logging
+from collections.abc import Iterable
 from typing import Dict, List, Protocol, Union, runtime_checkable
 
 import numpy as np
 
+from rgi_utils._atom_names import normalise_atom_name
 from rgi_utils._moltype import polymer_type
 
 logger = logging.getLogger(__name__)
@@ -32,23 +34,23 @@ class Chain(SelectionNode):
 
 
 class ResId(SelectionNode):
-    def __init__(self, ids: List[int]):
-        self.ids = ids
+    def __init__(self, ids: Iterable[int]):
+        self.ids = ids if isinstance(ids, range) else frozenset(ids)
 
     def eval(self, mol: Dict[str, Union[str, int]]) -> bool:
         resid = mol.get("resid")
         # accept numpy ints too: isinstance(np.int64(5), int) is False, which would
         # otherwise make every atom fail to match if an adapter yields a numpy scalar
-        return isinstance(resid, (int, np.integer)) and resid in self.ids
+        return isinstance(resid, (int, np.integer)) and int(resid) in self.ids
 
 
 class Index(SelectionNode):
-    def __init__(self, indices: List[int]):
-        self.indices = indices
+    def __init__(self, indices: Iterable[int]):
+        self.indices = indices if isinstance(indices, range) else frozenset(indices)
 
     def eval(self, mol: Dict[str, Union[str, int]]) -> bool:
         index = mol.get("index")
-        return isinstance(index, (int, np.integer)) and index in self.indices
+        return isinstance(index, (int, np.integer)) and int(index) in self.indices
 
 
 class MolType(SelectionNode):
@@ -63,18 +65,6 @@ class MolType(SelectionNode):
 
     def eval(self, mol: Dict[str, Union[str, int]]) -> bool:
         return mol.get("mol_type") == self.kind
-
-
-def normalise_atom_name(name: str) -> str:
-    """Fold the interchangeable spellings of one atom name onto a single form.
-
-    A ribose prime is written ``'`` (PDB v3 / mmCIF), ``*`` (PDB v2) or — for a
-    double prime — ``"``; ``C1'``, ``C1*`` and ``H2"``/``H2''`` are the same atoms
-    under different conventions, and which one a file uses is not the user's choice.
-    Folding them here lets a selection written either way match a structure written
-    the other way.
-    """
-    return name.strip().upper().replace('"', "''").replace("*", "'")
 
 
 class Name(SelectionNode):
@@ -142,7 +132,9 @@ class Backbone(SelectionNode):
         if kind is None:
             return False
         name = mol.get("name")
-        return isinstance(name, str) and name.upper() in _backbone_names(kind)
+        return isinstance(name, str) and normalise_atom_name(name) in _backbone_names(
+            kind
+        )
 
 
 class Sidechain(SelectionNode):
@@ -158,7 +150,9 @@ class Sidechain(SelectionNode):
         if kind is None:
             return False
         name = mol.get("name")
-        return isinstance(name, str) and name.upper() not in _backbone_names(kind)
+        return isinstance(name, str) and normalise_atom_name(
+            name
+        ) not in _backbone_names(kind)
 
 
 class Not(SelectionNode):
@@ -388,7 +382,7 @@ class SelectionParser:
                 break
         return identifiers
 
-    def _parse_numbers(self) -> List[int]:
+    def _parse_numbers(self) -> list[int] | range:
         first = self._parse_usize()
 
         saved_pos_for_to = self.pos
@@ -418,7 +412,7 @@ class SelectionParser:
         # misleading "Expected an atomic selection at position 0".
         if last < first:
             raise SelectionError(f"Range end {last} is less than start {first}")
-        return list(range(first, last + 1))
+        return range(first, last + 1)
 
     def _parse_resid(self) -> SelectionNode:
         self._consume_tag("resid")

@@ -38,6 +38,8 @@ import math
 import os
 from dataclasses import dataclass, field
 
+from rgi_utils._atom_names import normalise_atom_name as _normalise_name
+
 logger = logging.getLogger(__name__)
 
 # 3 atoms are trivially coplanar and exert no force -- the same floor
@@ -58,11 +60,6 @@ _LINK_ID = {"protein": "TRANS", "dna": "p", "rna": "p"}
 _PEPTIDE_LINK_BY_GROUP = {"PPeptide": "PTRANS", "MPeptide": "NMTRANS"}
 
 _ON_MISSING = ("fallback", "error")
-
-
-def _normalise_name(name: str | None) -> str:
-    """Atom-name spelling shared with polymer.py (upper case, PDB v2 ``*`` -> ``'``)."""
-    return (name or "").strip().upper().replace("*", "'")
 
 
 @dataclass(frozen=True)

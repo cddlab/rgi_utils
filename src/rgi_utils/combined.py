@@ -26,7 +26,12 @@ from __future__ import annotations
 import logging
 
 from rgi_utils.config import RestraintsConfig
-from rgi_utils.energy._terms import BREAKDOWN_KEYS, PER_ENTRY_KEYS, iter_spec_terms
+from rgi_utils.energy._terms import (
+    BREAKDOWN_KEYS,
+    CONF_KEYS,
+    PER_ENTRY_KEYS,
+    iter_spec_terms,
+)
 from rgi_utils.featurizer import _conf_weight, build_spec
 from rgi_utils.polymer import build_polymer_geometry
 
@@ -175,12 +180,15 @@ class CombinedRestraints:
         distance_data = list(cfg.distance_data) + bp_distances
         plane_data = list(cfg.plane_data) + bp_planes
 
+        has_conformer = any(
+            _conf_weight(cfg.conformer_config, term) > 0 for term in CONF_KEYS
+        )
         ligand_confs = []
-        if hasattr(adapter, "iter_ligand_confs"):
+        if has_conformer and hasattr(adapter, "iter_ligand_confs"):
             ligand_confs = list(adapter.iter_ligand_confs())
 
         elements = None
-        if hasattr(adapter, "get_elements"):
+        if has_conformer and hasattr(adapter, "get_elements"):
             try:
                 elements = adapter.get_elements()
             except Exception as exc:
@@ -194,8 +202,10 @@ class CombinedRestraints:
                     raise
                 logger.warning("get_elements failed, VdW disabled: %s", exc)
 
-        polymer_geometry = build_polymer_geometry(
-            adapter, cfg.conformer_config, elements=elements
+        polymer_geometry = (
+            build_polymer_geometry(adapter, cfg.conformer_config, elements=elements)
+            if has_conformer
+            else None
         )
 
         self.spec = build_spec(

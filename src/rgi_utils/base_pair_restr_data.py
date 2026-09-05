@@ -53,8 +53,11 @@ from __future__ import annotations
 
 import logging
 
+from rgi_utils._atom_names import normalise_atom_name as _normalise_name
 from rgi_utils._config_util import (
     apply_window_params,
+    coerce_bool,
+    finite_float,
     parse_move_indices,
     warn_unknown_keys,
 )
@@ -111,11 +114,6 @@ _DEFAULT_TARGET = (2.7, 3.1)
 # docstring), so 0.45 penalises only arrangements flatter geometry cannot explain.
 _PAIR_SLACK = 0.0
 _TRIPLE_SLACK = 0.45
-
-
-def _normalise_name(name: str | None) -> str:
-    # match polymer._normalise_name: upper-case + map the '*' prime spelling to "'".
-    return (name or "").strip().upper().replace("*", "'")
 
 
 def _lookup_wc(base1: str, base2: str):
@@ -198,7 +196,7 @@ class BasePairData:
         self.residue1 = config.get("residue1", None)
         self.residue2 = config.get("residue2", None)
         self.residue3 = config.get("residue3", None)
-        self.hbonds = bool(config.get("hbonds", True))
+        self.hbonds = coerce_bool(config.get("hbonds"), default=True)
         self.pair = config.get("pair", None)
         if self.pair is not None:
             self.pair = str(self.pair).strip().upper()
@@ -207,10 +205,10 @@ class BasePairData:
                     f"base_pair 'pair' must be two base letters from ACGTU "
                     f"(e.g. 'GC', 'AU', 'GU'), got {config.get('pair')!r}"
                 )
-        self.coplanar = bool(config.get("coplanar", True))
+        self.coplanar = coerce_bool(config.get("coplanar"), default=True)
         slack = config.get("coplanar_slack")
         if slack is not None:
-            self.coplanar_slack = float(slack)
+            self.coplanar_slack = finite_float(slack, "base_pair coplanar_slack")
             if self.coplanar_slack < 0.0:
                 raise ValueError(
                     "base_pair 'coplanar_slack' is an out-of-plane RMS in Angstrom and "
@@ -245,14 +243,17 @@ class BasePairData:
         tgt = config.get("target")
         if tgt is not None:
             if isinstance(tgt, (list, tuple)):
-                if len(tgt) != 2 or float(tgt[0]) >= float(tgt[1]):
+                values = tuple(finite_float(t, "base_pair target") for t in tgt)
+                if len(values) != 2 or values[0] >= values[1]:
                     raise ValueError(
                         "base_pair 'target' list must be [low, high] with low < high "
                         f"(got {tgt!r})"
                     )
-                self.target = (float(tgt[0]), float(tgt[1]))
+                self.target = values
             else:
-                self.target = float(tgt)  # scalar -> harmonic
+                self.target = finite_float(
+                    tgt, "base_pair target"
+                )  # scalar -> harmonic
         self.run_restr = self.residue1 is not None and self.residue2 is not None
         if not self.run_restr:
             raise ValueError(

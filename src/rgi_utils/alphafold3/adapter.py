@@ -117,15 +117,25 @@ class AF3RestraintAdapter:
         one with the other leaves proteins right (both agree below the gap) and shifts
         every NUCLEIC name by one — an adenine token reads as ``G`` and a uridine as
         ``DA``. That silently mis-identifies bases for the base-pair macro and for
-        monomer-library lookups, so decide it from evidence: score both readings by how
-        many nucleic tokens land on a name their own ``is_rna``/``is_dna`` flag allows.
+        monomer-library lookups. Identify the known vocabularies directly, independently
+        of which bases occur in the sequence. For unfamiliar vocabularies, score both
+        readings against is_rna/is_dna and reject ties rather than guessing.
 
-        Only nucleic tokens can discriminate (protein indices are below the gap and read
-        identically either way), so a protein-only or ligand-only batch keeps shift 0.
+        A protein-only or ligand-only batch keeps shift 0: indices below the gap agree.
         """
         nucleic = np.flatnonzero(self.is_rna | self.is_dna)
         if not len(nucleic):
             return 0
+
+        vocabulary = self.polymer_residue_names
+        if len(vocabulary) > _GAP_INDEX and vocabulary[_GAP_INDEX] == "-":
+            return 0
+        known_gapless = tuple(vocabulary[_GAP_INDEX : _GAP_INDEX + 4]) == (
+            "A",
+            "G",
+            "C",
+            "U",
+        )
 
         def consistent(shift: int) -> int:
             hits = 0
@@ -138,11 +148,16 @@ class AF3RestraintAdapter:
             return hits
 
         direct, gapless = consistent(0), consistent(1)
-        if gapless <= direct:
+        if not known_gapless and direct > gapless:
             return 0
+        if not known_gapless and direct == gapless:
+            raise ValueError(
+                "ambiguous AF3 residue-name vocabulary: pass the vocabulary that "
+                "indexes aatype (including the gap token after UNK)"
+            )
         logger.warning(
             "residue-name vocabulary looks gap-less: %d/%d nucleic tokens name a "
-            "matching base after dropping AF3's gap token vs %d before — reading it "
+            "matching base after accounting for AF3's gap token vs %d before — reading it "
             "shifted. Pass the vocabulary that indexes `aatype` (the …_WITH_UNKNOWN_AND"
             "_GAP order) to silence this.",
             gapless,
@@ -342,29 +357,35 @@ class AF3RestraintAdapter:
 
     @staticmethod
     def _subset_mol(mol, kept, Chem):
-        """Copy ``mol`` keeping only atoms ``kept`` (elements, atom_name, chiral tags,
-        bonds among kept atoms and the conformer)."""
-        rw = Chem.RWMol()
-        old2new = {}
-        for new_i, old_i in enumerate(kept):
-            a = mol.GetAtomWithIdx(int(old_i))
-            na = Chem.Atom(a.GetAtomicNum())
-            if a.HasProp("atom_name"):
-                na.SetProp("atom_name", a.GetProp("atom_name"))
-            na.SetChiralTag(a.GetChiralTag())
-            rw.AddAtom(na)
-            old2new[int(old_i)] = new_i
-        for b in mol.GetBonds():
-            i, j = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
-            if i in old2new and j in old2new:
-                rw.AddBond(old2new[i], old2new[j], b.GetBondType())
+        """Copy selected atoms, retaining chemistry, properties and conformers."""
+        kept = [int(i) for i in kept]
+        retained = set(kept)
+        if len(retained) != len(kept) or any(
+            i < 0 or i >= mol.GetNumAtoms() for i in kept
+        ):
+            raise ValueError("kept must contain distinct valid atom indices")
+        rw = Chem.RWMol(mol)
+        for old_i in reversed(range(mol.GetNumAtoms())):
+            if old_i not in retained:
+                rw.RemoveAtom(old_i)
         out = rw.GetMol()
-        if mol.GetNumConformers() > 0:
-            conf = mol.GetConformer()
-            newconf = Chem.Conformer(len(kept))
-            for new_i, old_i in enumerate(kept):
-                newconf.SetAtomPosition(new_i, conf.GetAtomPosition(int(old_i)))
-            out.AddConformer(newconf, assignId=True)
+        ordered = sorted(retained)
+        if kept != ordered:
+            new_indices = {old_i: new_i for new_i, old_i in enumerate(ordered)}
+            out = Chem.RenumberAtoms(out, [new_indices[i] for i in kept])
+            # RenumberAtoms preserves atom/bond properties but drops molecule properties.
+            for key, value in mol.GetPropsAsDict(
+                includePrivate=True, includeComputed=False, autoConvertStrings=False
+            ).items():
+                if isinstance(value, bool):
+                    out.SetBoolProp(key, value)
+                elif isinstance(value, int):
+                    setter = out.SetUnsignedProp if value >= 2**31 else out.SetIntProp
+                    setter(key, value)
+                elif isinstance(value, float):
+                    out.SetDoubleProp(key, value)
+                else:
+                    out.SetProp(key, mol.GetProp(key))
         try:
             Chem.SanitizeMol(out)
         except Exception:  # geometry-only restraints don't need a clean valence model

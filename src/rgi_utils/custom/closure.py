@@ -62,6 +62,9 @@ def _ref_geom_penalty(ops, geom, type_code, value, target1, target2):
 
 def build_closure(spec, ops):
     """Build ``(active_coords) -> scalar`` for one custom spec."""
+    if spec.weight == 0:
+        # A disabled formula may be undefined at these coordinates (0 * NaN is NaN).
+        return lambda coords: ops.scalar_like(0.0, coords)
     selections = {key: ops.asint(value) for key, value in spec.selections.items()}
     refs = {
         key: (ops.asint(indices), ref_coords)
@@ -163,4 +166,5 @@ def build_terms(custom_specs, backend: str, device=None):
             build_closure(spec, ops),
         )
         for spec in custom_specs
+        if spec.weight != 0
     ]

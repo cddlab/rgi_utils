@@ -31,8 +31,7 @@ jobs:
       - name: Install dependencies
         # `--extra torch` pulls the CPU-only wheel (see the pytorch-cpu index in
         # pyproject.toml): the torch backend is the primary one (boltz / protenix /
-        # chai / esmfold2), so it must be exercised in CI. jax stays out -- those
-        # tests self-skip via importorskip.
-        run: uv sync --frozen --extra torch   # exact versions from uv.lock, no re-resolution
+        # chai / esmfold2). Install JAX too so AF3 and backend parity tests run.
+        run: uv sync --frozen --extra torch --extra jax
       - name: Test
         run: uv run pytest -m "not gpu"

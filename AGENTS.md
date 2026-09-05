@@ -134,8 +134,9 @@ free CCD component, giving an unconjugated exocyclic C-N (1.42 Å vs 1.33) and a
 `featurizer.py` DROPS every conformer-derived tuple whose atoms all lie in a covered residue
 (`PolymerGeometry.library_atoms`), so the two sources replace rather than stack, per residue.
 Library planes are named groups — a whole nucleobase (ring + exocyclic + `C1'`) in ONE group where
-SSSR perception splits a purine in two. Links come from the `TRANS` / `p` entries (the peptide
-PLANE stays built-in: its 5-atom omega group beats the library's 4-atom one). `chiral` stays
+SSSR perception splits a purine in two. Link bonds, angles and planes come from the
+`TRANS` / `p` entries; the built-in peptide fallback uses the same four-atom
+`{CA, C, O}(previous) + {N}(current)` plane. `chiral` stays
 conformer-derived — only the sign matters, and the library's `ChiralityType` convention would have
 to be reconciled with `_chiral_vol`'s atom ordering first. Uncovered residues fall back
 (`on_missing: error` to refuse instead); a bad path raises. Tests: `tests/test_monlib_geom.py`
@@ -208,8 +209,10 @@ one with the other leaves PROTEINS right (they sit below the gap) and shifts eve
 by one — an adenine token reads as `G`, a uridine as `DA`. That silently mis-identifies bases for
 the base-pair macro and for monomer-library lookups. `AF3RestraintAdapter._resolve_name_shift`
 settles it from evidence instead of trusting the vocabulary: it scores both readings by how many
-nucleic tokens land on a name their own `is_rna`/`is_dna` flag allows, and warns when it has to
-shift. Protein/ligand-only batches keep shift 0 (nothing below the gap moves).
+nucleic tokens land on a name their own `is_rna`/`is_dna` flag allows when the vocabulary
+is unfamiliar. Known gap/gapless vocabularies are identified directly, so an A/G/C-only
+sequence is unambiguous too. An unfamiliar vocabulary tied on both readings raises.
+It warns when shifting; protein/ligand-only batches keep shift 0 (nothing below the gap moves).
 
 #### `_mol_build.py`
 
@@ -340,7 +343,7 @@ restraint, configured under `conformer_restraints_config.vdw` (one of bond/angle
 plane/cistrans/vdw). `mode` picks **two categories** (default `both` = both):
 
 - **Intramolecular** (`mode: intramolecular`): clashes WITHIN one ligand. Static
-  non-bonded ligand-internal pairs (topo distance > 2, within `dmax`), built in
+  non-bonded ligand-internal pairs (topological distance > 3, without a reference-coordinate cutoff), built in
   `featurizer.py` (`_build_intramolecular_vdw`) and carried in `spec.vdw` (`VdwArrays`).
   Scored in the **energy layer → all backends**.
 - **Intermolecular** (`mode: intermolecular`): clashes between that ligand and **every
@@ -451,18 +454,19 @@ Non-obvious invariants: custom energies use **plain centroids** (no `_move_centr
 trick), so autodiff grad == numpy-FD while every prediction selection is free. `move` pins unlisted
 selection blocks with stop-gradient, so pinned cases use torch-vs-jax grad parity instead. The same
 exception applies to the three primitives that stop-gradient part of their maths — `kabsch`/`rmsd`
-(rotation) and `plane` (normal, via `ops.svd`: the covariance is symmetric PSD so `Vt`'s last row is
-the smallest eigenvector, which is why no `eigh` was added to the ops facade): a formula using them is
+(rotation) and `plane` (normal, via the smallest-eigenvalue eigenvector from `ops.eigh`): a formula using them is
 compared torch-vs-jax, not against a numpy FD. In `plane(A,B)` only the normal is fixed — the plane's
 CENTRE still carries gradient, so a free `B` is pulled toward `A` unless `move` pins it.
 The closure must reduce to a **scalar** (`ops.sum` over batch dims) or `jax.value_and_grad` rejects it.
 Selections resolve at setup via a **resolve pass** (run the energy with `ResolveContext`). On CUDA a
 custom restraint does NOT force the CG to eager: `gpu_cg`'s artifact is module-global and cannot see
-spec-specific closures, so `torch_optim._get_custom_cvg(mode)` compiles a **per-optimizer** energy that
-wraps the SAME `_torch_cg_gpu._ENERGY_BY_MODE[mode]` base and adds `gates[i] * closure_i` on top —
+spec-specific closures, so `torch_optim._get_custom_cvg(mode, active_terms)` compiles a **per-optimizer** energy that
+wraps the SAME `_torch_cg_gpu._ENERGY_BY_MODE[mode]` base and adds only active custom closures —
 so the two dynamic VdW terms (fixed background `mode&1`, active-active polymer `mode&2`) stay inside
 the compiled graph instead of dropping the whole CG to eager. Cost of the per-optimizer artifact: one
-compile per structure and per VdW gate state (the mode key), vs `gpu_cg`'s process-wide reuse. Any
+compile per structure, VdW mode and active custom subset, vs `gpu_cg`'s process-wide reuse.
+JAX uses `lax.cond` for custom gates; zero-weight closures are omitted. Disabled formulas
+must never be evaluated and multiplied by zero, because an undefined value would still poison gradients. Any
 compile failure still degrades to the eager CG, which sums the identical terms. `import
 rgi_utils` stays numpy-only (torch/jax pulled lazily per backend by `get_ops`). Harness:
 `tests/test_custom.py` + `tests/test_custom_move.py` (both paths × 3-backend energy/grad

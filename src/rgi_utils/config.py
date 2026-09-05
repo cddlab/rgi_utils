@@ -8,11 +8,13 @@ format and hand it here.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from numbers import Integral
 
 from rgi_utils import monlib_geom
 from rgi_utils._config_util import (
     check_window_exclusive,
     coerce_bool,
+    finite_float,
     validate_vdw_config,
 )
 from rgi_utils._mol_build import parse_relax_force_field
@@ -65,6 +67,24 @@ _ENTRY_ROUTES = (
     ),
 )
 
+# Shared with config validation tools so every entry type is discovered.
+RESTRAINT_SECTIONS = tuple(route.section for route in _ENTRY_ROUTES) + (
+    "conformer_restraints_config",
+    "custom_restraints_config",
+    "base_pair_restraints_config",
+)
+
+
+def _entries(config: dict, section: str):
+    entries = config.get(section)
+    if entries is None:
+        return ()
+    if not isinstance(entries, (list, tuple)) or any(
+        not isinstance(entry, dict) for entry in entries
+    ):
+        raise ValueError(f"{section} must be a list of mappings")
+    return entries
+
 
 @dataclass
 class RestraintsConfig:
@@ -109,7 +129,9 @@ class RestraintsConfig:
 
     @classmethod
     def from_dict(cls, config: dict | None) -> "RestraintsConfig":
-        config = config or {}
+        config = {} if config is None else config
+        if not isinstance(config, dict):
+            raise ValueError("restraints_config must be a mapping")
         # Validate top-level keys against a fixed whitelist and RAISE on anything
         # unknown. The dangerous case this catches: a misspelled SECTION name (e.g.
         # 'distance_restraint_config' instead of 'distance_restraints_config') makes
@@ -158,7 +180,10 @@ class RestraintsConfig:
                 "(or omit it: a restraint with no start_sigma is active at every step)."
             )
         _ALWAYS_ON = float("inf")  # omitted start_sigma -> active at every step
-        conformer_config = config.get("conformer_restraints_config", {}) or {}
+        conformer_config = config.get("conformer_restraints_config")
+        conformer_config = {} if conformer_config is None else conformer_config
+        if not isinstance(conformer_config, dict):
+            raise ValueError("conformer_restraints_config must be a mapping")
         # The conformer cis/trans term was renamed dihedral -> cistrans. Reject the old
         # key loudly (like the start_sigma / backend:numpy guards) rather than silently
         # falling back to the default weight, which would weaken or re-enable the term.
@@ -220,8 +245,12 @@ class RestraintsConfig:
         # otherwise driven to its exact target. Check every term's sub-keys while parsing.
         for term in ("bond", "angle", "chiral", "cistrans", "plane"):
             block = conformer_config.get(term)
-            if not isinstance(block, dict):
+            if block is None:
                 continue
+            if not isinstance(block, dict):
+                raise ValueError(
+                    f"conformer_restraints_config.{term} must be a mapping"
+                )
             unknown_term = {
                 key
                 for key in block
@@ -232,6 +261,12 @@ class RestraintsConfig:
                     f"conformer_restraints_config.{term}: unknown key(s) "
                     f"{sorted(unknown_term)}. Known keys: ['slack', 'weight']"
                 )
+            for key in ("weight", "slack"):
+                value = block.get(key)
+                if value is not None:
+                    parsed = finite_float(value, f"conformer {term} {key}")
+                    if key == "slack" and parsed < 0:
+                        raise ValueError(f"conformer {term} slack must be >= 0")
         # Validate the monomer-library spec HERE so a typo'd path/option raises while
         # parsing the config, not several minutes later when the first structure builds
         # its polymer geometry. Parsing is stdlib-only (gemmi loads lazily).
@@ -272,13 +307,20 @@ class RestraintsConfig:
                 f"unknown method {method!r}: expected a CG alias "
                 "(cg/ncg/nonlinear-cg/nonlinearcg) or l-bfgs (l-bfgs/lbfgs)"
             )
+        max_iter = config.get("max_iter", 100)
+        if (
+            isinstance(max_iter, bool)
+            or not isinstance(max_iter, Integral)
+            or max_iter < 0
+        ):
+            raise ValueError("max_iter must be an integer >= 0")
         cfg = cls(
             # coerce so a quoted/string value (e.g. "false"/"no"/"off"/"0") -- truthy in
             # plain Python -- correctly turns verbose OFF (mirrors the gpu coercion above).
             verbose=coerce_bool(config.get("verbose", False)),
             gpu=gpu,
             method=method,
-            max_iter=config.get("max_iter", 100),
+            max_iter=int(max_iter),
             # one start_sigma for all conformer terms (omitted -> +inf = every step)
             conf_start_sigma=conf_start_sigma,
             conf_stop_sigma=conf_stop_sigma,
@@ -290,7 +332,7 @@ class RestraintsConfig:
         # anchored entries keep their distinct closure path but share the same dispatch.
         for route in _ENTRY_ROUTES:
             destination = getattr(cfg, route.destination)
-            for entry in config.get(route.section, []) or []:
+            for entry in _entries(config, route.section):
                 if route.ref_geom is not None and is_ref_anchored(entry):
                     n_groups = (
                         route.ref_group_counter(entry)
@@ -308,7 +350,7 @@ class RestraintsConfig:
                 destination.append(restraint)
         # custom restraints (expression DSL / code fn). start_sigma None -> +inf (active
         # every step) is applied when the CustomSpec is built (CustomData.build_spec).
-        for entry in config.get("custom_restraints_config", []) or []:
+        for entry in _entries(config, "custom_restraints_config"):
             cd = CustomData()
             cd.set_config(entry)
             cfg.custom_data.append(cd)
@@ -316,7 +358,7 @@ class RestraintsConfig:
         # H-bond distance restraints (+ optional coplanarity plane) at resolve time. The
         # per-entry start_sigma applies to the generated distance restraints, so it uses
         # the same None -> +inf (every step) default as distance/rmsd.
-        for entry in config.get("base_pair_restraints_config", []) or []:
+        for entry in _entries(config, "base_pair_restraints_config"):
             bp = BasePairData()
             bp.set_config(entry)
             if bp.start_sigma is None:

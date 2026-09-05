@@ -542,7 +542,7 @@ def make_minimizer(
         vdw_bg_r = jnp.asarray(_vc.background_radii)
         vdw_scale = jnp.asarray(float(_vc.scale))
         vdw_weight = jnp.asarray(float(_vc.weight))
-        vdw_dmax = jnp.asarray(float(_vc.dmax))
+        vdw_dmax = jnp.asarray(_vc.search_radius)
         vdw_max_neighbors = int(_vc.max_neighbors)
     _ac = getattr(spec, "active_vdw_config", None)
     has_active_vdw = _ac is not None and _ac.weight > 0
@@ -555,7 +555,7 @@ def make_minimizer(
         active_vdw_excluded = jnp.asarray(_ac.excluded_codes, dtype=jnp.int32)
         active_vdw_scale = jnp.asarray(float(_ac.scale))
         active_vdw_weight = jnp.asarray(float(_ac.weight))
-        active_vdw_dmax = jnp.asarray(float(_ac.dmax))
+        active_vdw_dmax = jnp.asarray(_ac.search_radius)
         active_vdw_max_neighbors = int(_ac.max_neighbors)
     has_static_vdw = spec.has_array_term("vdw")
     has_any_vdw = has_static_vdw or has_vdw or has_active_vdw
@@ -667,6 +667,8 @@ def make_minimizer(
                 # Another restraint can keep _descend active after the conformer window
                 # closes. Avoid the O(N log N) cell-list build when both dynamic VdW
                 # weights are zero while preserving the exact static carry shapes.
+                if not (has_vdw or has_active_vdw):
+                    return None, None, None, None
                 return jax.lax.cond(
                     in_win,
                     lambda x: build_dynamic_pairs(x, fixed_cutoff, active_cutoff),
@@ -706,15 +708,18 @@ def make_minimizer(
                 for _name, start, stop, start_step, stop_step, closure in custom_terms:
                     _sc = jnp.asarray(sigma)
                     _stc = jnp.asarray(step)
-                    gate = jnp.where(
+                    gate = (
                         (_sc <= start)
                         & (_sc >= stop)
                         & (_stc >= start_step)
-                        & (_stc <= stop_step),
-                        1.0,
-                        0.0,
+                        & (_stc <= stop_step)
                     )
-                    e = e + gate * closure(a)
+                    # Multiplying a disabled expression by zero still propagates NaNs.
+                    # Match its abstract scalar dtype without evaluating its value.
+                    dtype = jax.eval_shape(closure, a).dtype
+                    e = e + jax.lax.cond(
+                        gate, closure, lambda _: jnp.zeros((), dtype=dtype), a
+                    )
                 return e
 
             if is_cg and (has_vdw or has_active_vdw):
@@ -863,16 +868,20 @@ def make_minimizer(
                     max_atom_step=step_cap,
                 )
             else:
-                pairs = initial_dynamic_pairs(
-                    active,
-                    vdw_dmax if has_vdw else None,
-                    active_vdw_dmax if has_active_vdw else None,
-                )
                 import jaxopt  # only the non-default l-bfgs method needs jaxopt
+
+                def lbfgs_energy(a):
+                    # Every line-search trial needs neighbours at its own coordinates.
+                    pairs = initial_dynamic_pairs(
+                        a,
+                        vdw_dmax if has_vdw else None,
+                        active_vdw_dmax if has_active_vdw else None,
+                    )
+                    return energy_fn(a, *pairs)
 
                 opt = (
                     jaxopt.LBFGS(
-                        fun=lambda a: energy_fn(a, *pairs),
+                        fun=lbfgs_energy,
                         maxiter=max_iter,
                         linesearch="backtracking",
                         implicit_diff=False,
@@ -904,10 +913,16 @@ def energy_of(spec, coords) -> float:
     """Restraint energy at ``coords`` (for stats); host-side, not for the loop."""
     if not spec.is_active():
         return 0.0
+    from rgi_utils.custom.closure import build_terms
+
+    coords = jnp.asarray(coords)
     active_idx = jnp.asarray(spec.active_sites, dtype=jnp.int32)
     prepared = jax_energy.prepare_spec(spec)
     active = coords[..., active_idx, :]
-    return float(jax_energy.total_energy(active, prepared))
+    energy = jax_energy.total_energy(active, prepared)
+    for *_meta, closure in build_terms(spec.custom, "jax"):
+        energy = energy + closure(active)
+    return float(energy) + dynamic_vdw_energy(spec, coords)
 
 
 def dynamic_vdw_energy(spec, coords) -> float:
@@ -935,7 +950,7 @@ def dynamic_vdw_energy(spec, coords) -> float:
             active,
             bg_pos,
             lig_local,
-            jnp.asarray(float(vc.dmax), dtype=dtype),
+            jnp.asarray(vc.search_radius, dtype=dtype),
             int(vc.max_neighbors),
             lig_r,
             bg_r,
@@ -963,7 +978,7 @@ def dynamic_vdw_energy(spec, coords) -> float:
             radii,
             jnp.asarray(ac.polymer_mask, dtype=bool),
             jnp.asarray(ac.excluded_codes, dtype=jnp.int32),
-            jnp.asarray(float(ac.dmax), dtype=dtype),
+            jnp.asarray(ac.search_radius, dtype=dtype),
             int(ac.max_neighbors),
             scale,
         )

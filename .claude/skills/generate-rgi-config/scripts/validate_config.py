@@ -58,7 +58,8 @@ except ImportError:
             break
 
 try:
-    from rgi_utils.config import RestraintsConfig
+    from rgi_utils._config_util import coerce_bool
+    from rgi_utils.config import RESTRAINT_SECTIONS, RestraintsConfig
     from rgi_utils.ref_config import split_ref_selection
     from rgi_utils.selection import AtomSelector
 except ImportError as exc:  # pragma: no cover
@@ -119,29 +120,20 @@ def _find_configs(obj, path="<root>"):
         for name, q in obj["queries"].items():
             yield from _find_configs(q, f"{path}.queries.{name}")
     # chai sidecar / bare dict: the object itself is the restraints_config
-    _restraint_keys = {
-        "distance_restraints_config",
-        "angle_restraints_config",
-        "dihedral_restraints_config",
-        "plane_restraints_config",
-        "base_pair_restraints_config",
-        "conformer_restraints_config",
-        "rmsd_restraints_config",
-        "custom_restraints_config",
-    }
+    _restraint_keys = set(RESTRAINT_SECTIONS)
     if "restraints_config" not in obj and (_restraint_keys & set(obj)):
         yield (path, obj, obj)
 
 
 def _collect_selection_strings(cfg: dict):
     """Walk a restraints_config and yield (key, selection_string) pairs to syntax-check."""
-    for section in (
-        "distance_restraints_config",
-        "angle_restraints_config",
-        "dihedral_restraints_config",
-        "plane_restraints_config",
-        "rmsd_restraints_config",
-    ):
+    for section in RESTRAINT_SECTIONS:
+        if section in {
+            "conformer_restraints_config",
+            "base_pair_restraints_config",
+            "custom_restraints_config",
+        }:
+            continue
         for i, entry in enumerate(cfg.get(section, []) or []):
             if not isinstance(entry, dict):
                 continue
@@ -163,7 +155,7 @@ def _collect_selection_strings(cfg: dict):
     for i, entry in enumerate(cfg.get("base_pair_restraints_config", []) or []):
         if not isinstance(entry, dict):
             continue
-        for key in ("residue1", "residue2"):
+        for key in ("residue1", "residue2", "residue3"):
             if key in entry and isinstance(entry[key], str):
                 yield (f"base_pair_restraints_config[{i}].{key}", entry[key])
 
@@ -191,7 +183,7 @@ def _has_conformer_optin(enclosing: dict, cfg: dict) -> bool:
     """True if any ligand opts into conformer restraints (best-effort across formats)."""
     # chai sidecar: a {chain_id: bool} map lives in the config itself
     cmap = cfg.get("conformer_restraints")
-    if isinstance(cmap, dict) and any(bool(v) for v in cmap.values()):
+    if isinstance(cmap, dict) and any(coerce_bool(v) for v in cmap.values()):
         return True
     # Nested-input tools: conformer_restraints:true on a sequence entity somewhere
     found = [False]
@@ -200,7 +192,8 @@ def _has_conformer_optin(enclosing: dict, cfg: dict) -> bool:
         if found[0]:
             return
         if isinstance(o, dict):
-            if o.get("conformer_restraints") is True:
+            flag = o.get("conformer_restraints")
+            if not isinstance(flag, dict) and coerce_bool(flag):
                 found[0] = True
                 return
             for v in o.values():
@@ -230,6 +223,7 @@ def _validate_one(location: str, cfg: dict, enclosing: dict) -> int:
     print(
         f"  ✓ schema ok — distance={len(rc.distance_data)} "
         f"angle={len(rc.angle_data)} dihedral={len(rc.dihedral_data)} "
+        f"improper={len(rc.improper_data)} "
         f"plane={len(rc.plane_data)} base_pair={len(rc.base_pair_data)} "
         f"rmsd={len(rc.rmsd_data)} custom={len(rc.custom_data)}"
     )

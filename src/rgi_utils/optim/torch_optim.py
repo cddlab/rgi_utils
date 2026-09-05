@@ -83,8 +83,8 @@ class TorchRestraintOptimizer:
         # can't be saved for backward -- boltz/Lightning run under inference_mode).
         self._custom_terms = None
         # per-optimizer torch.compile'd energy+grad INCLUDING the custom closures (the
-        # module-global gpu_cg energy can't see them), keyed by the same VdW mode bits as
-        # _torch_cg_gpu._CVG_BY_MODE. Missing=unbuilt, False=disabled/failed for THAT mode
+        # module-global gpu_cg energy can't see them), keyed by VdW mode and active custom
+        # subset. Missing=unbuilt, False=disabled/failed for THAT key
         # (one artifact failing must not disable the others).
         self._custom_cvg = {}
 
@@ -107,47 +107,47 @@ class TorchRestraintOptimizer:
             total = e if total is None else total + e
         return total
 
-    def _get_custom_cvg(self, mode=0):
-        """The compiled ``grad_and_value`` of ``<mode's base energy> + sum(gate_i *
-        closure_i)``, built ONCE per optimizer and VdW ``mode`` (the custom closures are
-        spec-specific, so this can't reuse gpu_cg's module-global artifact). The base is
-        ``_torch_cg_gpu._ENERGY_BY_MODE[mode]``, i.e. the SAME function gpu_cg compiles for
-        the no-custom path, so the dynamic fixed-background / active-active VdW terms are
-        JIT-compiled here too instead of dropping the whole CG to eager. The per-entry sigma
-        gates are passed as a tensor argument (``gates``) — NOT a python-float — so one
-        artifact serves every noise level without a dynamo recompile. ``None`` -> compile
-        disabled / failed (caller runs eager). The AST/closures are static, so dynamo traces
-        them to a fixed graph; ``fullgraph=False`` tolerates any residual break."""
-        cached = self._custom_cvg.get(mode)
+    def _get_custom_cvg(self, mode=0, active_terms=None):
+        """Compile the mode's base energy plus the active custom closures.
+
+        Cache per optimizer, VdW mode and active subset. Omitting inactive closures
+        prevents undefined values in a disabled formula from poisoning the objective.
+        Device/dtype changes invalidate this cache in _ensure. None means compilation
+        is disabled or failed, so the caller uses eager evaluation.
+        """
+        if active_terms is None:
+            active_terms = tuple(range(len(self._custom_terms)))
+        key = (mode, tuple(active_terms))
+        cached = self._custom_cvg.get(key)
         if cached is False:
             return None
         if cached is not None:
             return cached
         if os.environ.get("RGI_DISABLE_COMPILE", "") not in ("", "0", "false"):
-            self._custom_cvg[mode] = False
+            self._custom_cvg[key] = False
             return None
         from rgi_utils.optim._torch_cg_gpu import _ENERGY_BY_MODE
 
         base = _ENERGY_BY_MODE[mode]
-        closures = [c for *_meta, c in self._custom_terms]
+        closures = [self._custom_terms[i][-1] for i in active_terms]
 
-        def energy(a, prepared, gates, *vdw_args):
+        def energy(a, prepared, *vdw_args):
             e = base(a, prepared, *vdw_args)
-            for i in range(len(closures)):
-                e = e + gates[i] * closures[i](a)
+            for closure in closures:
+                e = e + closure(a)
             return e
 
         try:
-            self._custom_cvg[mode] = torch.compile(
+            self._custom_cvg[key] = torch.compile(
                 torch.func.grad_and_value(energy, argnums=0), fullgraph=False
             )
         except Exception as exc:
             logger.warning(
                 "torch.compile of the custom GPU energy failed (%s); eager", exc
             )
-            self._custom_cvg[mode] = False
+            self._custom_cvg[key] = False
             return None
-        return self._custom_cvg[mode]
+        return self._custom_cvg[key]
 
     def _minimize_custom_gpu(
         self, active, sigma, step, mi, vdw, active_vdw, max_atom_step=None, state=None
@@ -158,28 +158,22 @@ class TorchRestraintOptimizer:
         ``(ok, state)``; ``ok`` is False (caller falls back to the eager CG) when compile is
         unavailable or the artifact fails."""
         mode = (1 if vdw is not None else 0) | (2 if active_vdw is not None else 0)
-        cvg = self._get_custom_cvg(mode)
+        active_terms = tuple(
+            i
+            for i, (_n, s, st, sstep, estep, _c) in enumerate(self._custom_terms)
+            if (sigma is None or st <= sigma <= s)
+            and (step is None or sstep <= step <= estep)
+        )
+        cvg = self._get_custom_cvg(mode, active_terms)
         if cvg is None:
             return False, None
         from rgi_utils.optim._torch_cg_gpu import _cg_minimize_torch
 
         vdw_args = (vdw or ()) + (active_vdw or ())
         prepared_g = self._gated_prepared(sigma, step)
-        # per-custom gate: active sigma window AND active step window (one or the other).
-        gates = torch.tensor(
-            [
-                1.0
-                if (sigma is None or (sigma <= s and sigma >= st))
-                and (step is None or (sstep <= step <= estep))
-                else 0.0
-                for _n, s, st, sstep, estep, _c in self._custom_terms
-            ],
-            dtype=active.dtype,
-            device=active.device,
-        )
         try:
             opt, out_state = _cg_minimize_torch(
-                lambda x: cvg(x, prepared_g, gates, *vdw_args),
+                lambda x: cvg(x, prepared_g, *vdw_args),
                 active.detach(),
                 mi,
                 max_atom_step=max_atom_step,
@@ -195,7 +189,7 @@ class TorchRestraintOptimizer:
             logger.warning(
                 "custom GPU CG (compiled) failed at runtime (%s); eager", exc
             )
-            self._custom_cvg[mode] = False
+            self._custom_cvg[(mode, active_terms)] = False
             return False, None
 
     def _ensure(self, device, dtype) -> None:
@@ -318,7 +312,7 @@ class TorchRestraintOptimizer:
                 ),
                 "weight": torch.as_tensor(float(vc.weight), dtype=dtype, device=device),
                 "scale": torch.as_tensor(float(vc.scale), dtype=dtype, device=device),
-                "dmax": torch.as_tensor(float(vc.dmax), dtype=dtype, device=device),
+                "dmax": torch.as_tensor(vc.search_radius, dtype=dtype, device=device),
                 "max_neighbors": int(vc.max_neighbors),
             }
 
@@ -336,7 +330,7 @@ class TorchRestraintOptimizer:
                 ),
                 "weight": torch.as_tensor(float(ac.weight), dtype=dtype, device=device),
                 "scale": torch.as_tensor(float(ac.scale), dtype=dtype, device=device),
-                "dmax": torch.as_tensor(float(ac.dmax), dtype=dtype, device=device),
+                "dmax": torch.as_tensor(ac.search_radius, dtype=dtype, device=device),
                 "max_neighbors": int(ac.max_neighbors),
             }
 
@@ -475,7 +469,7 @@ class TorchRestraintOptimizer:
                         dtype=work_dtype,
                         device=coords.device,
                     )
-                    bg_pos.copy_(coords[..., self._vdw["bg_global"], :])
+                    bg_pos.copy_(coords[..., self._vdw["bg_global"], :].detach())
                 fixed_vdw = None
                 active_vdw = None
 
@@ -668,14 +662,14 @@ class TorchRestraintOptimizer:
                         if torch.equal(active.detach(), before_block):
                             break
                 else:
-                    # L-BFGS keeps its previous one-list-per-diffusion-step behavior.
-                    rebuild_dynamic_pairs()
                     opt = torch.optim.LBFGS(
                         [active], max_iter=mi, line_search_fn="strong_wolfe"
                     )
 
                     def closure():
                         opt.zero_grad()
+                        # Line-search trials can move beyond the CG's Verlet bounds.
+                        rebuild_dynamic_pairs()
                         e = energy_fn()
                         if e.requires_grad:
                             e.backward()
@@ -698,8 +692,9 @@ class TorchRestraintOptimizer:
                 input_finite,
             )
             return coords
-        # back in the ambient (inference) context: in-place write is allowed
-        coords[..., self._active_idx, :] = new_active.to(out_dtype)
+        # The optimizer is an in-place correction, including for autograd leaf inputs.
+        with torch.no_grad():
+            coords[..., self._active_idx, :] = new_active.to(out_dtype)
         return coords
 
     def _is_cg(self) -> bool:
@@ -830,10 +825,10 @@ class TorchRestraintOptimizer:
         with torch.no_grad():
             active = coords[..., self._active_idx, :]
             e = torch_energy.total_energy(active, self._prepared)
-            if self._vdw is not None:
-                bg_pos = coords[..., self._vdw["bg_global"], :]
-                e = e + self._vdw_energy(active, bg_pos)
-            return float(e)
+            custom = self._custom_energy(active, None, None)
+            if custom is not None:
+                e = e + custom
+            return float(e) + self.dynamic_vdw_energy(coords)
 
     def dynamic_vdw_energy(self, coords) -> float:
         """The dynamic optimizer-only VdW terms (>= 0); for finalize stats.
